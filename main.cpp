@@ -1,6 +1,7 @@
+#include "instant-ngp.h"
 import std;
 
 int main() {
-    std::print("Hello, world!\n");
+    InstantNGP ngp;
     return 0;
 }

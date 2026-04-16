@@ -74,6 +74,7 @@ target_sources(
         instant-ngp
         PRIVATE
         instant-ngp.cpp
+        instant-ngp.cu
         PUBLIC
         instant-ngp.h
 )
