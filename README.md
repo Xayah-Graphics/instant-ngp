@@ -1,3 +1,4 @@
+![banner](https://github.com/Xayah-Graphics/imagebed/blob/78855d9c1638920ce1bac9302d56cf49305d518d/instant-ngp.png)
 # [SIGGRAPH 2022] Instant Neural Graphics Primitives with a Multiresolution Hash Encoding. Thomas Müller, et al.
 
 [![Linux Build (Arch)](https://github.com/Xayah-Graphics/instant-ngp/actions/workflows/arch-build.yml/badge.svg)](https://github.com/Xayah-Graphics/instant-ngp/actions/workflows/arch-build.yml)
