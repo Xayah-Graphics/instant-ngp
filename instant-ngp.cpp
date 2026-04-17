@@ -36,10 +36,9 @@ namespace ngp {
                     std::pair{"transforms_test.json", &loaded_dataset.test},
                 };
 
-                bool aabb_scale_initialized = false;
-                for (const auto& split : splits) {
-                    const std::filesystem::path json_path     = dataset_path / split.first;
-                    std::vector<Dataset::Frame>* const frames = split.second;
+                for (const auto& [fst, snd] : splits) {
+                    const std::filesystem::path json_path     = dataset_path / fst;
+                    std::vector<Dataset::Frame>* const frames = snd;
                     const std::string json_path_string        = json_path.string();
 
                     if (!std::filesystem::is_regular_file(json_path)) {
@@ -56,17 +55,6 @@ namespace ngp {
                     const nlohmann::json::const_iterator frames_iterator = json.find("frames");
                     if (frames_iterator == json.end()) {
                         throw std::runtime_error{std::format("Missing 'frames' in '{}'.", json_path_string)};
-                    }
-
-                    const int32_t split_aabb_scale = json.value("aabb_scale", 1);
-                    if (split_aabb_scale <= 0) {
-                        throw std::runtime_error{std::format("'aabb_scale' must be greater than 0 in '{}'.", json_path_string)};
-                    }
-                    if (!aabb_scale_initialized) {
-                        loaded_dataset.aabb_scale = split_aabb_scale;
-                        aabb_scale_initialized    = true;
-                    } else if (loaded_dataset.aabb_scale != split_aabb_scale) {
-                        throw std::runtime_error{std::format("Inconsistent 'aabb_scale' detected in '{}'.", json_path_string)};
                     }
 
                     const float camera_angle_x = camera_angle_x_iterator->get<float>();
@@ -189,7 +177,7 @@ namespace ngp {
                                     }
                                 } catch (...) {
                                     {
-                                        std::scoped_lock<std::mutex> first_exception_lock{first_exception_mutex};
+                                        std::scoped_lock first_exception_lock{first_exception_mutex};
                                         if (!first_exception) {
                                             first_exception = std::current_exception();
                                         }
@@ -209,10 +197,9 @@ namespace ngp {
 
                 dataset_ = std::move(loaded_dataset);
                 std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", dataset_.train.size(), dataset_.validation.size(), dataset_.test.size());
-                return;
+                break;
             }
+        default: throw std::runtime_error{std::format("Unsupported dataset type: {}.", std::to_underlying(dataset_type))};
         }
-
-        throw std::runtime_error{std::format("Unsupported dataset type: {}.", std::to_underlying(dataset_type))};
     }
 } // namespace ngp

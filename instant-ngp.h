@@ -1,19 +1,16 @@
 #ifndef INSTANT_NGP_H
 #define INSTANT_NGP_H
 
+#include "math-mat.h"
+#include "math-vec.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
 
-#include "math-vec.h"
-#include "math-mat.h"
-
 namespace ngp {
     struct Dataset {
-        enum class Type {
-            NerfSynthetic,
-        };
+        enum class Type { NerfSynthetic };
 
         struct Frame {
             std::vector<uint8_t> rgba;
@@ -27,7 +24,6 @@ namespace ngp {
         std::vector<Frame> train;
         std::vector<Frame> validation;
         std::vector<Frame> test;
-        int32_t aabb_scale = 1;
     };
 
 
