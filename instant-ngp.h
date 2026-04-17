@@ -6,11 +6,11 @@
 #include <filesystem>
 #include <vector>
 
-enum class DatasetType {
-    NerfSynthetic,
-};
-
 struct Dataset {
+    enum class Type {
+        NerfSynthetic,
+    };
+
     struct Frame {
         std::vector<uint8_t> rgba;
         uint32_t width                             = 0;
@@ -36,7 +36,7 @@ public:
     InstantNGP(InstantNGP&&) noexcept            = default;
     InstantNGP& operator=(InstantNGP&&) noexcept = default;
 
-    void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
+    void load_dataset(const std::filesystem::path& dataset_path, Dataset::Type dataset_type);
 
 private:
     Dataset dataset_ = {};

@@ -13,7 +13,7 @@ InstantNGP::InstantNGP() {
 InstantNGP::~InstantNGP() {
     std::print("Bye!\n");
 }
-void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type) {
+void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, Dataset::Type dataset_type) {
     if (dataset_path.empty()) {
         throw std::invalid_argument{"dataset_path must not be empty."};
     }
@@ -25,7 +25,7 @@ void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, Dataset
     }
 
     switch (dataset_type) {
-    case DatasetType::NerfSynthetic:
+    case Dataset::Type::NerfSynthetic:
         {
             Dataset loaded_dataset{};
             const std::array<std::pair<std::string_view, std::vector<Dataset::Frame>*>, 3> splits{
@@ -206,6 +206,7 @@ void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, Dataset
             }
 
             dataset_ = std::move(loaded_dataset);
+            std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", dataset_.train.size(), dataset_.validation.size(), dataset_.test.size());
             return;
         }
     }
