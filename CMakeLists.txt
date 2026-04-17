@@ -76,6 +76,8 @@ target_sources(
         instant-ngp.cpp
         instant-ngp.cu
         PUBLIC
+        math-vec.h
+        math-mat.h
         instant-ngp.h
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
