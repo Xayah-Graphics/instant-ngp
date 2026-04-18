@@ -74,8 +74,8 @@ target_sources(
         instant-ngp
         PRIVATE
         instant-ngp.cpp
-        instant-ngp.cu
         PUBLIC
+        legacy.cuh
         math-vec.h
         math-mat.h
         instant-ngp.h
