@@ -26,6 +26,8 @@ namespace ngp {
         std::vector<Frame> test;
     };
 
+    struct Runtime {};
+
 
     class InstantNGP final {
     public:
@@ -37,9 +39,11 @@ namespace ngp {
         InstantNGP& operator=(InstantNGP&&) noexcept = default;
 
         void load_dataset(const std::filesystem::path& dataset_path, Dataset::Type dataset_type);
+        void upload_dataset(const Dataset& dataset);
 
     private:
         Dataset dataset_ = {};
+        Runtime runtime_ = {};
     };
 
 } // namespace ngp
