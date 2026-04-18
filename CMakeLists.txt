@@ -74,10 +74,10 @@ target_sources(
         instant-ngp
         PRIVATE
         instant-ngp.cpp
+        encoding.cu
         PUBLIC
+        encoding.cuh
         legacy.cuh
-        math-vec.h
-        math-mat.h
         instant-ngp.h
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
