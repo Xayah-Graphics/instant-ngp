@@ -29,7 +29,8 @@ namespace ngp {
         }
 
         switch (dataset_type) {
-            case Runtime::Dataset::Type::NerfSynthetic: {
+        case Runtime::Dataset::Type::NerfSynthetic:
+            {
                 Runtime::Dataset loaded_dataset{};
                 const std::array<std::pair<std::string_view, std::vector<Runtime::Dataset::CPU::Frame>*>, 3> splits{
                     std::pair{"transforms_train.json", &loaded_dataset.cpu.train},
@@ -39,7 +40,7 @@ namespace ngp {
 
                 for (const auto& [file_name, frames] : splits) {
                     const std::filesystem::path json_path = dataset_path / file_name;
-                    const std::string json_path_string = json_path.string();
+                    const std::string json_path_string    = json_path.string();
 
                     if (!std::filesystem::is_regular_file(json_path)) {
                         throw std::runtime_error{std::format("Dataset transform file does not exist: '{}'.", json_path_string)};
@@ -48,7 +49,7 @@ namespace ngp {
                     std::ifstream json_stream{json_path, std::ios::binary};
                     json_stream.exceptions(std::ios::badbit);
 
-                    const nlohmann::json json = nlohmann::json::parse(json_stream, nullptr, true, true);
+                    const nlohmann::json json                                    = nlohmann::json::parse(json_stream, nullptr, true, true);
                     const nlohmann::json::const_iterator camera_angle_x_iterator = json.find("camera_angle_x");
                     if (camera_angle_x_iterator == json.end()) {
                         throw std::runtime_error{std::format("Missing 'camera_angle_x' in '{}'.", json_path_string)};
@@ -80,8 +81,8 @@ namespace ngp {
                         throw std::runtime_error{"std::thread::hardware_concurrency returned 0."};
                     }
 
-                    const std::size_t worker_count = std::min(frame_count, static_cast<std::size_t>(hardware_thread_count));
-                    const std::filesystem::path base_path = json_path.parent_path();
+                    const std::size_t worker_count            = std::min(frame_count, static_cast<std::size_t>(hardware_thread_count));
+                    const std::filesystem::path base_path     = json_path.parent_path();
                     std::atomic<std::size_t> next_frame_index = 0;
                     std::exception_ptr first_exception;
                     std::mutex first_exception_mutex;
@@ -99,7 +100,7 @@ namespace ngp {
                                 }
 
                                 try {
-                                    const nlohmann::json& frame_json = frames_json.at(frame_index);
+                                    const nlohmann::json& frame_json                        = frames_json.at(frame_index);
                                     const nlohmann::json::const_iterator file_path_iterator = frame_json.find("file_path");
                                     if (file_path_iterator == frame_json.end()) {
                                         throw std::runtime_error{std::format("Missing 'file_path' in '{}', frame {}.", json_path_string, frame_index)};
@@ -121,9 +122,9 @@ namespace ngp {
                                     }
 
                                     const std::string image_path_string_full = image_path.string();
-                                    int width = 0;
-                                    int height = 0;
-                                    int component_count = 0;
+                                    int width                                = 0;
+                                    int height                               = 0;
+                                    int component_count                      = 0;
                                     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> raw_pixels{
                                         stbi_load(image_path_string_full.c_str(), &width, &height, &component_count, 4),
                                         stbi_image_free,
@@ -137,7 +138,7 @@ namespace ngp {
                                     }
 
                                     const std::size_t pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-                                    const std::size_t rgba_size = pixel_count * 4ull;
+                                    const std::size_t rgba_size   = pixel_count * 4ull;
                                     if (pixel_count == 0 || rgba_size / 4ull != pixel_count) {
                                         throw std::runtime_error{std::format("Image '{}' size overflows addressable memory.", image_path_string_full)};
                                     }
@@ -153,10 +154,10 @@ namespace ngp {
                                     }
 
                                     Runtime::Dataset::CPU::Frame& frame = (*frames)[frame_index];
-                                    frame.width = static_cast<std::uint32_t>(width);
-                                    frame.height = static_cast<std::uint32_t>(height);
-                                    frame.focal_length_x = focal_length_x;
-                                    frame.focal_length_y = focal_length_x;
+                                    frame.width                         = static_cast<std::uint32_t>(width);
+                                    frame.height                        = static_cast<std::uint32_t>(height);
+                                    frame.focal_length_x                = focal_length_x;
+                                    frame.focal_length_y                = focal_length_x;
                                     frame.rgba.resize(rgba_size);
                                     std::memcpy(frame.rgba.data(), raw_pixels.get(), rgba_size);
 
@@ -203,7 +204,7 @@ namespace ngp {
                 loaded_dataset.gpu.train.pixels.resize(loaded_dataset.cpu.train.size());
                 std::vector<Runtime::Dataset::GPU::Frame> uploaded_frames(loaded_dataset.cpu.train.size());
 
-                cudaStream_t upload_stream = nullptr;
+                cudaStream_t upload_stream             = nullptr;
                 const cudaError_t stream_create_status = cudaStreamCreateWithFlags(&upload_stream, cudaStreamNonBlocking);
                 if (stream_create_status != cudaSuccess) {
                     throw std::runtime_error{std::string{"load_dataset failed to create a CUDA upload stream: "} + cudaGetErrorString(stream_create_status)};
@@ -223,7 +224,7 @@ namespace ngp {
                         }
 
                         const float focal_length_difference = std::fabs(source_frame.focal_length_x - source_frame.focal_length_y);
-                        const float focal_length_scale = std::max(1.0f, std::max(std::fabs(source_frame.focal_length_x), std::fabs(source_frame.focal_length_y)));
+                        const float focal_length_scale      = std::max(1.0f, std::max(std::fabs(source_frame.focal_length_x), std::fabs(source_frame.focal_length_y)));
                         if (focal_length_difference > 1e-6f * focal_length_scale) {
                             throw std::runtime_error{"load_dataset currently requires focal_length_x and focal_length_y to match before GPU upload."};
                         }
@@ -238,13 +239,13 @@ namespace ngp {
                         pixel_buffer.copy_from_host_async(source_frame.rgba.data(), upload_stream);
 
                         Runtime::Dataset::GPU::Frame& target_frame = uploaded_frames[frame_index];
-                        target_frame.pixels = pixel_buffer.data();
-                        target_frame.resolution = legacy::Int2{
+                        target_frame.pixels                        = pixel_buffer.data();
+                        target_frame.resolution                    = legacy::Int2{
                             static_cast<int>(source_frame.width),
                             static_cast<int>(source_frame.height),
                         };
                         target_frame.focal_length = source_frame.focal_length_x;
-                        target_frame.camera = legacy::nerf_matrix_to_ngp(source_frame.transform_matrix_4x4);
+                        target_frame.camera       = legacy::nerf_matrix_to_ngp(source_frame.transform_matrix_4x4);
                     }
 
                     loaded_dataset.gpu.train.frames.resize(uploaded_frames.size());
@@ -265,16 +266,10 @@ namespace ngp {
                 }
 
                 runtime_.dataset = std::move(loaded_dataset);
-                std::print(
-                    "Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n",
-                    runtime_.dataset.cpu.train.size(),
-                    runtime_.dataset.cpu.validation.size(),
-                    runtime_.dataset.cpu.test.size()
-                );
+                std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", runtime_.dataset.cpu.train.size(), runtime_.dataset.cpu.validation.size(), runtime_.dataset.cpu.test.size());
                 break;
             }
-            default:
-                throw std::runtime_error{std::format("Unsupported dataset type: {}.", std::to_underlying(dataset_type))};
+        default: throw std::runtime_error{std::format("Unsupported dataset type: {}.", std::to_underlying(dataset_type))};
         }
     }
 

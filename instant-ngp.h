@@ -2,8 +2,6 @@
 #define INSTANT_NGP_H
 
 #include "legacy.cuh"
-#include "math-mat.h"
-#include "math-vec.h"
 
 #include <array>
 #include <cstdint>
