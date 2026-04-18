@@ -74,10 +74,9 @@ target_sources(
         instant-ngp
         PRIVATE
         instant-ngp.cpp
-        encoding.cu
+        sampler.cu
+        network.cu
         PUBLIC
-        encoding.cuh
-        legacy.cuh
         instant-ngp.h
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)

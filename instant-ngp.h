@@ -1,8 +1,7 @@
 #ifndef INSTANT_NGP_H
 #define INSTANT_NGP_H
 
-#include "legacy.cuh"
-
+#include "common.cuh"
 #include <array>
 #include <cstdint>
 #include <filesystem>
