@@ -32,15 +32,15 @@ namespace ngp {
 
             struct GPU final {
                 struct Frame final {
-                    const std::uint8_t* pixels = nullptr;
-                    legacy::Int2 resolution = {};
-                    float focal_length = 0.0f;
-                    legacy::Mat4x3 camera = {};
+                    // const std::uint8_t* pixels = nullptr;
+                    // legacy::Int2 resolution = {};
+                    // float focal_length = 0.0f;
+                    // legacy::Mat4x3 camera = {};
                 };
 
                 struct Train final {
-                    std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
-                    legacy::GpuBuffer<Frame> frames = {};
+                    // std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
+                    // legacy::GpuBuffer<Frame> frames = {};
                 };
 
                 Train train = {};
