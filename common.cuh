@@ -1,13 +1,17 @@
 #ifndef NGP_LEGACY_CUH
 #define NGP_LEGACY_CUH
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <source_location>
 #include <sstream>
 #include <stdexcept>
