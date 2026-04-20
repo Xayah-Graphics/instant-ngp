@@ -300,6 +300,69 @@ namespace ngp {
         ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
     }
 
+    auto InstantNGP::begin_training_step() -> InstantNGP::TrainingStepWorkspace {
+        auto& counters = counters_rgb;
+        const std::uint32_t batch_size = plan.training.batch_size;
+
+        counters.numsteps_counter.enlarge(1u);
+        counters.numsteps_counter_compacted.enlarge(1u);
+        counters.loss.enlarge(counters.rays_per_batch);
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter_compacted.data(), 0, sizeof(std::uint32_t), stream.stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.loss.data(), 0, sizeof(float) * counters.rays_per_batch, stream.stream));
+
+        TrainingStepWorkspace workspace{};
+        workspace.padded_output_width = plan.training.padded_output_width;
+        workspace.floats_per_coord = plan.training.floats_per_coord;
+        workspace.max_samples = plan.training.max_samples;
+
+        const std::size_t ray_indices_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * sizeof(std::uint32_t));
+        const std::size_t rays_unnormalized_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * sizeof(Ray));
+        const std::size_t numsteps_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * 2u * sizeof(std::uint32_t));
+        const std::size_t coords_bytes = ngp::legacy::align_to_cacheline(workspace.max_samples * workspace.floats_per_coord * sizeof(float));
+        const std::size_t mlp_out_bytes = ngp::legacy::align_to_cacheline(std::max(batch_size, workspace.max_samples) * workspace.padded_output_width * sizeof(__half));
+        const std::size_t dloss_bytes = ngp::legacy::align_to_cacheline(batch_size * workspace.padded_output_width * sizeof(__half));
+        const std::size_t compacted_coords_bytes = ngp::legacy::align_to_cacheline(batch_size * workspace.floats_per_coord * sizeof(float));
+        const std::size_t ray_counter_bytes = ngp::legacy::align_to_cacheline(sizeof(std::uint32_t));
+        const std::size_t total_bytes = ray_indices_bytes + rays_unnormalized_bytes + numsteps_bytes + coords_bytes + mlp_out_bytes + dloss_bytes + compacted_coords_bytes + ray_counter_bytes;
+
+        workspace.alloc = ngp::network::detail::allocate_workspace(stream.stream, total_bytes);
+        std::uint8_t* base = workspace.alloc.data();
+        std::size_t offset = 0u;
+
+        workspace.ray_indices = reinterpret_cast<std::uint32_t*>(base + offset);
+        offset += ray_indices_bytes;
+        workspace.rays_unnormalized = base + offset;
+        offset += rays_unnormalized_bytes;
+        workspace.numsteps = reinterpret_cast<std::uint32_t*>(base + offset);
+        offset += numsteps_bytes;
+        workspace.coords = reinterpret_cast<float*>(base + offset);
+        offset += coords_bytes;
+        workspace.mlp_out = reinterpret_cast<__half*>(base + offset);
+        offset += mlp_out_bytes;
+        workspace.dloss_dmlp_out = reinterpret_cast<__half*>(base + offset);
+        offset += dloss_bytes;
+        workspace.coords_compacted = reinterpret_cast<float*>(base + offset);
+        offset += compacted_coords_bytes;
+        workspace.ray_counter = reinterpret_cast<std::uint32_t*>(base + offset);
+
+        workspace.max_inference = counters.measured_batch_size_before_compaction == 0u ? workspace.max_samples
+                                                                                        : ngp::legacy::next_multiple(std::min(counters.measured_batch_size_before_compaction, workspace.max_samples), ngp::network::detail::batch_size_granularity);
+        if (counters.measured_batch_size_before_compaction == 0u) counters.measured_batch_size_before_compaction = workspace.max_inference;
+
+        workspace.coords_matrix = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords, workspace.floats_per_coord, workspace.max_inference, ngp::legacy::CM};
+        workspace.rgbsigma_matrix = ngp::legacy::GPUMatrixDynamic<__half>{workspace.mlp_out, workspace.padded_output_width, workspace.max_inference, ngp::legacy::CM};
+        workspace.compacted_coords_matrix = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords_compacted, workspace.floats_per_coord, batch_size, ngp::legacy::CM};
+        workspace.gradient_matrix = ngp::legacy::GPUMatrixDynamic<__half>{workspace.dloss_dmlp_out, workspace.padded_output_width, batch_size, ngp::legacy::CM};
+        workspace.compacted_output = ngp::legacy::GPUMatrixDynamic<__half>{plan.training.padded_output_width, batch_size, stream.stream, ngp::legacy::CM};
+
+        if (training_step == 0u) counters.n_rays_total = 0u;
+        workspace.n_rays_total = counters.n_rays_total;
+        counters.n_rays_total += counters.rays_per_batch;
+
+        return workspace;
+    }
+
     void InstantNGP::update_density_grid() {
         const std::uint32_t n_uniform_density_grid_samples = training_step < plan.prep.warmup_steps ? plan.prep.uniform_samples_warmup : plan.prep.uniform_samples_steady;
         const std::uint32_t n_nonuniform_density_grid_samples = training_step < plan.prep.warmup_steps ? 0u : plan.prep.nonuniform_samples_steady;
@@ -384,6 +447,7 @@ namespace ngp {
         for (std::int32_t i = 0; i < iters; ++i) {
             std::printf("Training iteration %d.\n", i);
             run_training_prep();
+            trainer->optimizer.update_hyperparams(network_config.optimizer);
             ++training_step;
         }
     }

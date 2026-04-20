@@ -37,6 +37,9 @@ namespace ngp {
     };
 
     class InstantNGP final {
+    private:
+        struct TrainingStepWorkspace;
+
     public:
         enum class DatasetType { NerfSynthetic };
         enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
@@ -92,6 +95,7 @@ namespace ngp {
     protected:
         void run_training_prep();
         void update_density_grid();
+        [[nodiscard]] auto begin_training_step() -> TrainingStepWorkspace;
 
     private:
         struct Dataset final {
@@ -168,10 +172,47 @@ namespace ngp {
             } validation;
         } plan;
 
+        struct NerfCounters final {
+            legacy::GpuBuffer<std::uint32_t> numsteps_counter           = {};
+            legacy::GpuBuffer<std::uint32_t> numsteps_counter_compacted = {};
+            legacy::GpuBuffer<float> loss                               = {};
+
+            std::uint32_t rays_per_batch                        = 1u << 12;
+            std::uint32_t n_rays_total                          = 0u;
+            std::uint32_t measured_batch_size                   = 0u;
+            std::uint32_t measured_batch_size_before_compaction = 0u;
+        };
+
+        struct TrainingStepWorkspace final {
+            legacy::GpuAllocation alloc                         = {};
+            std::uint32_t* ray_indices                          = nullptr;
+            void* rays_unnormalized                             = nullptr;
+            std::uint32_t* numsteps                             = nullptr;
+            float* coords                                       = nullptr;
+            __half* mlp_out                                     = nullptr;
+            __half* dloss_dmlp_out                              = nullptr;
+            float* coords_compacted                             = nullptr;
+            std::uint32_t* ray_counter                          = nullptr;
+            std::uint32_t max_samples                           = 0u;
+            std::uint32_t max_inference                         = 0u;
+            std::uint32_t floats_per_coord                      = 0u;
+            std::uint32_t padded_output_width                   = 0u;
+            std::uint32_t n_rays_total                          = 0u;
+            legacy::GPUMatrixDynamic<float> coords_matrix       = {};
+            legacy::GPUMatrixDynamic<__half> rgbsigma_matrix    = {};
+            legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
+            legacy::GPUMatrixDynamic<__half> gradient_matrix    = {};
+            legacy::GPUMatrixDynamic<__half> compacted_output   = {};
+        };
+
         NetworkConfig network_config         = {};
         std::uint32_t seed                   = 1337;
         legacy::math::pcg32 rng              = legacy::math::pcg32{seed};
         legacy::math::pcg32 density_grid_rng = {};
+
+        NerfCounters counters_rgb = {};
+        bool snap_to_pixel_centers = true;
+        float near_distance = 0.1f;
 
         legacy::GpuBuffer<float> density_grid                 = {};
         legacy::GpuBuffer<std::uint8_t> density_grid_bitfield = {};
