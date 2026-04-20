@@ -96,6 +96,7 @@ namespace ngp {
         void run_training_prep();
         void update_density_grid();
         [[nodiscard]] auto begin_training_step() -> TrainingStepWorkspace;
+        void generate_training_batch(TrainingStepWorkspace& workspace);
 
     private:
         struct Dataset final {
