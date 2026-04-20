@@ -1,11 +1,391 @@
-#include "instant-ngp.h"
+#include "network.cuh"
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <sstream>
+#include <type_traits>
 
 namespace ngp {
-    void InstantNGP::update_density_grid() {
-        if (training_step < plan.prep.warmup_steps) {
 
-        }else {
+    void TrainerStateDeleter::operator()(ngp::network::TrainerState<__half>* trainer) const {
+        delete trainer;
+    }
 
+    struct Ray final {
+        ngp::legacy::math::vec3 o = {};
+        ngp::legacy::math::vec3 d = {};
+
+        __host__ __device__ ngp::legacy::math::vec3 operator()(const float t) const {
+            return o + t * d;
+        }
+
+        __host__ __device__ void advance(const float t) {
+            o += d * t;
+        }
+
+        __host__ __device__ bool is_valid() const {
+            return d != ngp::legacy::math::vec3(0.0f);
+        }
+    };
+
+    inline __host__ __device__ Ray uv_to_ray(const std::uint32_t spp, const ngp::legacy::math::vec2& uv, const ngp::legacy::math::ivec2& resolution, const float focal_length, const ngp::legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
+        (void) spp;
+        ngp::legacy::math::vec3 dir = {(uv.x - 0.5f) * (float) resolution.x / focal_length, (uv.y - 0.5f) * (float) resolution.y / focal_length, 1.0f};
+        dir = ngp::legacy::math::mat3(camera_matrix) * dir;
+        ngp::legacy::math::vec3 origin = camera_matrix[3];
+        origin += dir * near_distance;
+        return {origin, dir};
+    }
+
+    inline __host__ __device__ ngp::legacy::math::vec2 pos_to_uv(const ngp::legacy::math::vec3& pos, const ngp::legacy::math::ivec2& resolution, const float focal_length, const ngp::legacy::math::mat4x3& camera_matrix) {
+        ngp::legacy::math::vec3 dir = ngp::legacy::math::inverse(ngp::legacy::math::mat3(camera_matrix)) * (pos - camera_matrix[3]);
+        dir /= dir.z;
+        return dir.xy() * focal_length / ngp::legacy::math::vec2(resolution) + ngp::legacy::math::vec2(0.5f);
+    }
+
+    inline __host__ __device__ float network_to_density(const float val) {
+        return expf(val);
+    }
+
+    inline constexpr __host__ __device__ float SQRT3() {
+        return 1.73205080757f;
+    }
+
+    inline constexpr __host__ __device__ float STEPSIZE() {
+        return SQRT3() / 1024.0f;
+    }
+
+    inline constexpr __host__ __device__ float MIN_CONE_STEPSIZE() {
+        return STEPSIZE();
+    }
+
+    inline constexpr __host__ __device__ float NERF_MIN_OPTICAL_THICKNESS() {
+        return 0.01f;
+    }
+
+    struct DensityGridReduceOp final {
+        std::uint32_t base_grid_elements = 0u;
+
+        __device__ float operator()(const float val) const {
+            return fmaxf(val, 0.0f) / base_grid_elements;
+        }
+    };
+
+    inline __host__ __device__ ngp::legacy::math::vec3 warp_position(const ngp::legacy::math::vec3& pos, const ngp::legacy::BoundingBox& aabb) {
+        return aabb.relative_pos(pos);
+    }
+
+    inline __host__ __device__ float warp_dt(const float dt) {
+        (void) dt;
+        return 0.0f;
+    }
+
+    template <typename T>
+    inline __device__ T warp_reduce(T val) {
+        TCNN_PRAGMA_UNROLL
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) val += __shfl_xor_sync(0xffffffff, val, offset);
+        return val;
+    }
+
+    template <typename T, typename T_OUT, typename F>
+    __global__ void block_reduce(const std::uint32_t n_elements, const F fun, const T* __restrict__ input, T_OUT* __restrict__ output, const std::uint32_t n_blocks) {
+        const std::uint32_t sum_idx = blockIdx.x / n_blocks;
+        const std::uint32_t sub_blocks_idx = blockIdx.x % n_blocks;
+        const std::uint32_t i = threadIdx.x + sub_blocks_idx * blockDim.x;
+        const std::uint32_t block_offset = sum_idx * n_elements;
+
+        static __shared__ T_OUT sdata[32];
+
+        const int lane = threadIdx.x % warpSize;
+        const int wid = threadIdx.x / warpSize;
+
+        T_OUT val = {};
+        if constexpr (std::is_same_v<std::decay_t<T>, __half> || std::is_same_v<std::decay_t<T>, ::half>) {
+            if (i < n_elements) {
+                ::half vals[8];
+                *(int4*) &vals[0] = *((int4*) input + i + block_offset);
+                val = fun((T) vals[0]) + fun((T) vals[1]) + fun((T) vals[2]) + fun((T) vals[3]) + fun((T) vals[4]) + fun((T) vals[5]) + fun((T) vals[6]) + fun((T) vals[7]);
+            }
+        } else if constexpr (std::is_same_v<std::decay_t<T>, float>) {
+            if (i < n_elements) {
+                const float4 vals = *((float4*) input + i + block_offset);
+                val = fun((T) vals.x) + fun((T) vals.y) + fun((T) vals.z) + fun((T) vals.w);
+            }
+        } else if constexpr (std::is_same_v<std::decay_t<T>, double>) {
+            if (i < n_elements) {
+                const double2 vals = *((double2*) input + i + block_offset);
+                val = fun((T) vals.x) + fun((T) vals.y);
+            }
+        } else {
+            assert(false);
+            return;
+        }
+
+        val = warp_reduce(val);
+
+        if (lane == 0) sdata[wid] = val;
+        __syncthreads();
+
+        if (wid == 0) {
+            val = threadIdx.x < blockDim.x / warpSize ? sdata[lane] : static_cast<T_OUT>(0);
+            val = warp_reduce(val);
+            if (lane == 0) atomicAdd(&output[sum_idx], val);
         }
     }
+
+    template <typename T, typename T_OUT, typename F>
+    void reduce_sum(T* device_pointer, F fun, T_OUT* workspace, std::uint32_t n_elements, cudaStream_t stream, const std::uint32_t n_sums = 1u) {
+        const std::uint32_t threads = 1024u;
+        const std::uint32_t n_elems_per_load = 16u / sizeof(T);
+
+        if (n_elements % n_elems_per_load != 0u) throw std::runtime_error{"Number of bytes to reduce_sum must be a multiple of 16."};
+        if (((std::size_t) device_pointer) % 16u != 0u) throw std::runtime_error{"Can only reduce_sum on 16-byte aligned memory."};
+
+        n_elements /= n_elems_per_load;
+        const std::uint32_t blocks = (n_elements + threads - 1u) / threads;
+        block_reduce<T, T_OUT, F><<<blocks * n_sums, threads, 0, stream>>>(n_elements, fun, device_pointer, workspace, blocks);
+    }
+
+    inline std::uint32_t reduce_sum_workspace_size(const std::uint32_t n_elements) {
+        return (n_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+    }
+
+    __global__ void mark_untrained_density_grid(const std::uint32_t n_elements, float* __restrict__ grid_out, const std::uint32_t n_training_images, const InstantNGP::GpuFrame* __restrict__ frames) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_elements) return;
+
+        const std::uint32_t x = ngp::network::detail::morton3D_invert(i >> 0u);
+        const std::uint32_t y = ngp::network::detail::morton3D_invert(i >> 1u);
+        const std::uint32_t z = ngp::network::detail::morton3D_invert(i >> 2u);
+
+        const float voxel_size = 1.0f / ngp::legacy::NERF_GRIDSIZE();
+        const ngp::legacy::math::vec3 pos = ngp::legacy::math::vec3{(float) x, (float) y, (float) z} / (float) ngp::legacy::NERF_GRIDSIZE();
+
+        ngp::legacy::math::vec3 corners[8] = {
+            pos + ngp::legacy::math::vec3{0.0f, 0.0f, 0.0f},
+            pos + ngp::legacy::math::vec3{voxel_size, 0.0f, 0.0f},
+            pos + ngp::legacy::math::vec3{0.0f, voxel_size, 0.0f},
+            pos + ngp::legacy::math::vec3{voxel_size, voxel_size, 0.0f},
+            pos + ngp::legacy::math::vec3{0.0f, 0.0f, voxel_size},
+            pos + ngp::legacy::math::vec3{voxel_size, 0.0f, voxel_size},
+            pos + ngp::legacy::math::vec3{0.0f, voxel_size, voxel_size},
+            pos + ngp::legacy::math::vec3{voxel_size, voxel_size, voxel_size},
+        };
+
+        const std::uint32_t min_count = 1u;
+        std::uint32_t count = 0u;
+
+        for (std::uint32_t j = 0u; j < n_training_images && count < min_count; ++j) {
+            const auto& frame = frames[j];
+            const auto& xform = frame.camera;
+
+            for (std::uint32_t k = 0u; k < 8u; ++k) {
+                const ngp::legacy::math::vec3 dir = ngp::legacy::math::normalize(corners[k] - xform[3]);
+                if (ngp::legacy::math::dot(dir, xform[2]) < 1e-4f) continue;
+
+                const ngp::legacy::math::vec2 uv = pos_to_uv(corners[k], frame.resolution, frame.focal_length, xform);
+                const Ray ray = uv_to_ray(0u, uv, frame.resolution, frame.focal_length, xform);
+                if (ngp::legacy::math::distance(ngp::legacy::math::normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
+                    ++count;
+                    break;
+                }
+            }
+        }
+
+        grid_out[i] = count >= min_count ? 0.0f : -1.0f;
+    }
+
+    __global__ void generate_grid_samples_nerf_nonuniform(const std::uint32_t n_elements, ngp::legacy::math::pcg32 rng, const std::uint32_t step, ngp::legacy::BoundingBox aabb, const float* __restrict__ grid_in, ngp::legacy::NerfPosition* __restrict__ out, std::uint32_t* __restrict__ indices, const float thresh) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_elements) return;
+
+        rng.advance(i * 4u);
+        std::uint32_t idx = 0u;
+        for (std::uint32_t j = 0u; j < 10u; ++j) {
+            idx = ((i + step * n_elements) * 56924617u + j * 19349663u + 96925573u) % ngp::legacy::NERF_GRID_N_CELLS();
+            if (grid_in[idx] > thresh) break;
+        }
+
+        const std::uint32_t x = ngp::network::detail::morton3D_invert(idx >> 0u);
+        const std::uint32_t y = ngp::network::detail::morton3D_invert(idx >> 1u);
+        const std::uint32_t z = ngp::network::detail::morton3D_invert(idx >> 2u);
+        const ngp::legacy::math::vec3 pos = (ngp::legacy::math::vec3{(float) x, (float) y, (float) z} + ngp::network::detail::random_val_3d(rng)) / (float) ngp::legacy::NERF_GRIDSIZE();
+
+        out[i] = {warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE())};
+        indices[i] = idx;
+    }
+
+    __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const std::uint32_t n_elements, const std::uint32_t* __restrict__ indices, const __half* __restrict__ network_output, float* __restrict__ grid_out) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_elements) return;
+
+        const std::uint32_t idx = indices[i];
+        const float mlp = network_to_density(float(network_output[i]));
+        const float thickness = mlp * MIN_CONE_STEPSIZE();
+        atomicMax((std::uint32_t*) &grid_out[idx], __float_as_uint(thickness));
+    }
+
+    __global__ void ema_grid_samples_nerf(const std::uint32_t n_elements, const float decay, const std::uint32_t count, float* __restrict__ grid_out, const float* __restrict__ grid_in) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_elements) return;
+
+        (void) count;
+        const float importance = grid_in[i];
+        const float prev_val = grid_out[i];
+        const float val = prev_val < 0.0f ? prev_val : fmaxf(prev_val * decay, importance);
+        grid_out[i] = val;
+    }
+
+    __global__ void grid_to_bitfield(const std::uint32_t n_elements, const float* __restrict__ grid, std::uint8_t* __restrict__ grid_bitfield, const float* __restrict__ mean_density_ptr) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_elements) return;
+
+        std::uint8_t bits = 0u;
+        const float thresh = fminf(NERF_MIN_OPTICAL_THICKNESS(), *mean_density_ptr);
+
+        TCNN_PRAGMA_UNROLL
+        for (std::uint8_t j = 0u; j < 8u; ++j) bits |= grid[i * 8u + j] > thresh ? ((std::uint8_t) 1u << j) : 0u;
+
+        grid_bitfield[i] = bits;
+    }
+
+    InstantNGP::InstantNGP(const NetworkConfig& network_config_) : network_config{network_config_} {
+        std::printf("Making training plan at training step %u.\n", training_step);
+
+        plan = {};
+        plan.training.batch_size = 1u << 18;
+        plan.training.floats_per_coord = sizeof(ngp::legacy::NerfCoordinate) / sizeof(float);
+        plan.validation.floats_per_coord = plan.training.floats_per_coord;
+        plan.validation.max_samples = plan.validation.tile_rays * plan.validation.max_samples_per_ray;
+
+        constexpr std::uint32_t n_pos_dims = sizeof(ngp::legacy::NerfPosition) / sizeof(float);
+        plan.network.n_pos_dims = n_pos_dims;
+        plan.network.n_dir_dims = 3u;
+        plan.network.dir_offset = n_pos_dims + 1u;
+        plan.network.density_alignment = 16u;
+        plan.network.density_output_dims = 16u;
+        plan.network.rgb_alignment = 16u;
+        plan.network.rgb_output_dims = 3u;
+
+        const std::uint32_t encoding_output_dims = network_config.encoding.n_levels * network_config.encoding.n_features_per_level;
+        plan.network.density_input_dims = ngp::legacy::next_multiple(encoding_output_dims, ngp::legacy::lcm(plan.network.density_alignment, network_config.encoding.n_features_per_level));
+        const std::uint32_t dir_output_dims = network_config.direction_encoding.sh_degree * network_config.direction_encoding.sh_degree;
+        plan.network.dir_encoding_output_dims = ngp::legacy::next_multiple(dir_output_dims, plan.network.rgb_alignment);
+        plan.network.rgb_input_dims = ngp::legacy::next_multiple(plan.network.density_output_dims + plan.network.dir_encoding_output_dims, plan.network.rgb_alignment);
+
+        plan.training.padded_output_width = std::max(ngp::legacy::next_multiple(plan.network.rgb_output_dims, 16u), 4u);
+        plan.training.max_samples = plan.training.batch_size * 16u;
+        plan.prep.uniform_samples_warmup = ngp::legacy::NERF_GRID_N_CELLS();
+        plan.prep.uniform_samples_steady = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
+        plan.prep.nonuniform_samples_steady = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
+        plan.density_grid.padded_output_width = plan.network.density_output_dims;
+        plan.density_grid.query_batch_size = ngp::legacy::NERF_GRID_N_CELLS() * 2u;
+        plan.density_grid.n_elements = ngp::legacy::NERF_GRID_N_CELLS();
+        plan.validation.padded_output_width = plan.training.padded_output_width;
+
+        rng = ngp::legacy::math::pcg32{seed};
+        density_grid_rng = ngp::legacy::math::pcg32{rng.next_uint()};
+        trainer = std::unique_ptr<ngp::network::TrainerState<__half>, ngp::TrainerStateDeleter>{new ngp::network::TrainerState<__half>(network_config, plan, seed, stream.stream)};
+    }
+
+    InstantNGP::~InstantNGP() = default;
+
+    void InstantNGP::run_training_prep() {
+        const std::uint32_t n_prep_to_skip = std::clamp(training_step / plan.prep.skip_growth_interval, 1u, plan.prep.max_skip);
+        if (training_step % n_prep_to_skip != 0u) return;
+
+        const auto start = std::chrono::steady_clock::now();
+        ngp::legacy::ScopeGuard timing_guard{[&] { training_prep_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() / n_prep_to_skip; }};
+        update_density_grid();
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+    }
+
+    void InstantNGP::update_density_grid() {
+        const std::uint32_t n_uniform_density_grid_samples = training_step < plan.prep.warmup_steps ? plan.prep.uniform_samples_warmup : plan.prep.uniform_samples_steady;
+        const std::uint32_t n_nonuniform_density_grid_samples = training_step < plan.prep.warmup_steps ? 0u : plan.prep.nonuniform_samples_steady;
+        const std::uint32_t n_elements = plan.density_grid.n_elements;
+
+        density_grid.resize(n_elements);
+        const std::uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
+        const std::uint32_t padded_output_width = plan.density_grid.padded_output_width;
+
+        const std::size_t positions_bytes = ngp::legacy::align_to_cacheline(n_density_grid_samples * sizeof(ngp::legacy::NerfPosition));
+        const std::size_t indices_bytes = ngp::legacy::align_to_cacheline(n_elements * sizeof(std::uint32_t));
+        const std::size_t density_tmp_bytes = ngp::legacy::align_to_cacheline(n_elements * sizeof(float));
+        const std::size_t mlp_out_bytes = ngp::legacy::align_to_cacheline(n_density_grid_samples * padded_output_width * sizeof(__half));
+        ngp::legacy::GpuAllocation alloc = ngp::network::detail::allocate_workspace(stream.stream, positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes);
+
+        std::uint8_t* base = alloc.data();
+        std::size_t offset = 0u;
+        auto* density_grid_positions = reinterpret_cast<ngp::legacy::NerfPosition*>(base + offset);
+        offset += positions_bytes;
+        auto* density_grid_indices = reinterpret_cast<std::uint32_t*>(base + offset);
+        offset += indices_bytes;
+        auto* density_grid_tmp = reinterpret_cast<float*>(base + offset);
+        offset += density_tmp_bytes;
+        auto* mlp_out = reinterpret_cast<__half*>(base + offset);
+
+        if (training_step == 0u) {
+            density_grid_ema_step = 0u;
+            if (n_elements > 0u) {
+                const std::uint32_t blocks = (n_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+                mark_untrained_density_grid<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_elements, density_grid.data(), static_cast<std::uint32_t>(dataset.gpu.train.frames.size()), dataset.gpu.train.frames.data());
+            }
+        }
+
+        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_tmp, 0, sizeof(float) * n_elements, stream.stream));
+
+        if (n_uniform_density_grid_samples > 0u) {
+            const std::uint32_t blocks = (n_uniform_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_uniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions, density_grid_indices, -0.01f);
+        }
+        density_grid_rng.advance();
+
+        if (n_nonuniform_density_grid_samples > 0u) {
+            const std::uint32_t blocks = (n_nonuniform_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_nonuniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples,
+                NERF_MIN_OPTICAL_THICKNESS());
+        }
+        density_grid_rng.advance();
+
+        const std::size_t density_batch_size = plan.density_grid.query_batch_size;
+        for (std::size_t i = 0u; i < n_density_grid_samples; i += density_batch_size) {
+            const std::size_t batch_size = std::min(density_batch_size, static_cast<std::size_t>(n_density_grid_samples) - i);
+            ngp::legacy::GPUMatrixDynamic<__half> density_matrix(mlp_out + i, padded_output_width, batch_size, ngp::legacy::RM);
+            ngp::legacy::GPUMatrixDynamic<float> density_grid_position_matrix((float*) (density_grid_positions + i), sizeof(ngp::legacy::NerfPosition) / sizeof(float), batch_size, ngp::legacy::CM);
+            trainer->model.density(stream.stream, density_grid_position_matrix, density_matrix);
+        }
+
+        if (n_density_grid_samples > 0u) {
+            const std::uint32_t blocks = (n_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+            splat_grid_samples_nerf_max_nearest_neighbor<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp);
+        }
+
+        if (n_elements > 0u) {
+            const std::uint32_t blocks = (n_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+            ema_grid_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_elements, density_grid_decay, density_grid_ema_step, density_grid.data(), density_grid_tmp);
+        }
+        ++density_grid_ema_step;
+
+        const std::uint32_t base_grid_elements = ngp::legacy::NERF_GRID_N_CELLS();
+        density_grid_bitfield.enlarge(base_grid_elements / 8u);
+        density_grid_mean.enlarge(reduce_sum_workspace_size(base_grid_elements));
+
+        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_mean.data(), 0, sizeof(float), stream.stream));
+        reduce_sum(density_grid.data(), DensityGridReduceOp{base_grid_elements}, density_grid_mean.data(), base_grid_elements, stream.stream);
+
+        if (base_grid_elements / 8u > 0u) {
+            const std::uint32_t blocks = ((base_grid_elements / 8u) + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+            grid_to_bitfield<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(base_grid_elements / 8u, density_grid.data(), density_grid_bitfield.data(), density_grid_mean.data());
+        }
+    }
+
+    void InstantNGP::train(const std::int32_t iters) {
+        for (std::int32_t i = 0; i < iters; ++i) {
+            std::printf("Training iteration %d.\n", i);
+            run_training_prep();
+            ++training_step;
+        }
+    }
+
 } // namespace ngp

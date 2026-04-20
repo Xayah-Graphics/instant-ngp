@@ -20,14 +20,32 @@ set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CMAKE_CUDA_ARCHITECTURES 120)
+set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(NGP_DENSITY_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the density FullyFusedMLP.")
+set(NGP_RGB_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the RGB FullyFusedMLP.")
+if (NOT NGP_DENSITY_NETWORK_WIDTH MATCHES "^(16|32|64|128)$")
+    message(FATAL_ERROR "NGP_DENSITY_NETWORK_WIDTH must be one of 16, 32, 64, or 128.")
+endif ()
+if (NOT NGP_RGB_NETWORK_WIDTH MATCHES "^(16|32|64|128)$")
+    message(FATAL_ERROR "NGP_RGB_NETWORK_WIDTH must be one of 16, 32, 64, or 128.")
+endif ()
 
 
 # ============================================================================
 # Dependencies
 # ============================================================================
 find_package(CUDAToolkit 13.2 REQUIRED)
+
+set(NGP_CUTLASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../instant-ngp/dependencies/cutlass" CACHE PATH "Pinned CUTLASS root for the network module.")
+if (NOT EXISTS "${NGP_CUTLASS_ROOT}/include/cutlass/cutlass.h")
+    message(FATAL_ERROR "CUTLASS headers are missing at '${NGP_CUTLASS_ROOT}'.")
+endif ()
+if (NOT EXISTS "${NGP_CUTLASS_ROOT}/tools/util/include")
+    message(FATAL_ERROR "CUTLASS utility headers are missing at '${NGP_CUTLASS_ROOT}/tools/util/include'.")
+endif ()
 
 function(download_if_needed url out_path)
     if (EXISTS "${out_path}")
@@ -80,7 +98,26 @@ target_sources(
         instant-ngp.h
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
-target_include_directories(instant-ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+target_compile_definitions(
+        instant-ngp
+        PRIVATE
+        NGP_DENSITY_NETWORK_WIDTH=${NGP_DENSITY_NETWORK_WIDTH}
+        NGP_RGB_NETWORK_WIDTH=${NGP_RGB_NETWORK_WIDTH}
+)
+target_compile_options(
+        instant-ngp
+        PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
+)
+target_include_directories(
+        instant-ngp
+        PRIVATE
+        "${NGP_CUTLASS_ROOT}/include"
+        "${NGP_CUTLASS_ROOT}/tools/util/include"
+        "${CMAKE_CURRENT_BINARY_DIR}/vendor"
+)
 set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 
 

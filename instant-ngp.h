@@ -5,9 +5,24 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <vector>
 
 namespace ngp {
+
+    namespace network {
+        template <typename T>
+        struct TrainerState;
+    } // namespace network
+
+    struct TrainerStateDeleter final {
+        void operator()(network::TrainerState<__half>* trainer) const;
+    };
+
+    namespace network::detail {
+        void free_aux_stream_pool(cudaStream_t parent_stream);
+    } // namespace network::detail
 
     struct StreamState {
         StreamState();
@@ -26,6 +41,14 @@ namespace ngp {
         enum class DatasetType { NerfSynthetic };
         enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
         enum class GridStorage { Hash, Dense, Tiled };
+
+        struct GpuFrame final {
+            const std::uint8_t* pixels     = nullptr;
+            legacy::math::ivec2 resolution = {};
+            float focal_length             = 0.0f;
+            legacy::math::mat4x3 camera    = {};
+        };
+
         void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
         void train(std::int32_t iters);
 
@@ -88,16 +111,9 @@ namespace ngp {
             };
 
             struct GPU final {
-                struct Frame final {
-                    const std::uint8_t* pixels     = nullptr;
-                    legacy::math::ivec2 resolution = {};
-                    float focal_length             = 0.0f;
-                    legacy::math::mat4x3 camera    = {};
-                };
-
                 struct Train final {
                     std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
-                    legacy::GpuBuffer<Frame> frames                     = {};
+                    legacy::GpuBuffer<GpuFrame> frames                  = {};
                 };
 
                 Train train = {};
@@ -152,12 +168,24 @@ namespace ngp {
             } validation;
         } plan;
 
+        NetworkConfig network_config         = {};
+        std::uint32_t seed                   = 1337;
+        legacy::math::pcg32 rng              = legacy::math::pcg32{seed};
+        legacy::math::pcg32 density_grid_rng = {};
+
+        legacy::GpuBuffer<float> density_grid                 = {};
+        legacy::GpuBuffer<std::uint8_t> density_grid_bitfield = {};
+        legacy::GpuBuffer<float> density_grid_mean            = {};
+        std::uint32_t density_grid_ema_step                   = 0;
+
+        legacy::BoundingBox aabb = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
         float density_grid_decay = 0.95f;
 
-        uint32_t training_step = 0;
-        float training_prep_ms = 0.0f;
-        float training_ms      = 0.0f;
-        float loss_scalar      = 0.0f;
+        std::unique_ptr<network::TrainerState<__half>, TrainerStateDeleter> trainer = {};
+        uint32_t training_step                                                      = 0;
+        float training_prep_ms                                                      = 0.0f;
+        float training_ms                                                           = 0.0f;
+        float loss_scalar                                                           = 0.0f;
 
         StreamState stream;
     };
