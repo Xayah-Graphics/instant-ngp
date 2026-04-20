@@ -63,6 +63,7 @@ namespace ngp {
         InstantNGP& operator=(InstantNGP&&) noexcept = default;
 
         void load_dataset(const std::filesystem::path& dataset_path, Runtime::Dataset::Type dataset_type);
+        void train();
 
     private:
         Runtime runtime_ = {};

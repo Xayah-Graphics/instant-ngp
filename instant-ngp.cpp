@@ -45,8 +45,8 @@ namespace ngp {
                         throw std::runtime_error{std::format("Failed to open dataset transform file '{}'.", json_path.string())};
                     }
 
-                    const nlohmann::json json   = nlohmann::json::parse(json_stream, nullptr, true, true);
-                    const float camera_angle_x  = json.at("camera_angle_x").get<float>();
+                    const nlohmann::json json        = nlohmann::json::parse(json_stream, nullptr, true, true);
+                    const float camera_angle_x       = json.at("camera_angle_x").get<float>();
                     const nlohmann::json& split_json = json.at("frames");
                     if (!std::isfinite(camera_angle_x) || camera_angle_x <= 0.0f || camera_angle_x >= std::numbers::pi_v<float>) {
                         throw std::runtime_error{std::format("Invalid 'camera_angle_x' in '{}'.", json_path.string())};
@@ -103,8 +103,8 @@ namespace ngp {
 
                         Runtime::Dataset::CPU::Frame& frame = (*frames)[frame_index];
                         frame.rgba.assign(raw_pixels.get(), raw_pixels.get() + rgba_size);
-                        frame.width = static_cast<std::uint32_t>(width);
-                        frame.height = static_cast<std::uint32_t>(height);
+                        frame.width          = static_cast<std::uint32_t>(width);
+                        frame.height         = static_cast<std::uint32_t>(height);
                         frame.focal_length_x = focal_length_x;
                         frame.focal_length_y = focal_length_x;
 
@@ -145,7 +145,7 @@ namespace ngp {
                     }
 
                     const float focal_length_difference = std::fabs(source_frame.focal_length_x - source_frame.focal_length_y);
-                    const float focal_length_scale = std::max(1.0f, std::max(std::fabs(source_frame.focal_length_x), std::fabs(source_frame.focal_length_y)));
+                    const float focal_length_scale      = std::max(1.0f, std::max(std::fabs(source_frame.focal_length_x), std::fabs(source_frame.focal_length_y)));
                     if (focal_length_difference > 1e-6f * focal_length_scale) {
                         throw std::runtime_error{"load_dataset currently requires focal_length_x and focal_length_y to match before GPU upload."};
                     }
@@ -160,8 +160,8 @@ namespace ngp {
                     pixel_buffer.copy_from_host(source_frame.rgba);
 
                     Runtime::Dataset::GPU::Frame& target_frame = uploaded_frames[frame_index];
-                    target_frame.pixels = pixel_buffer.data();
-                    target_frame.resolution = legacy::math::ivec2{
+                    target_frame.pixels                        = pixel_buffer.data();
+                    target_frame.resolution                    = legacy::math::ivec2{
                         static_cast<int>(source_frame.width),
                         static_cast<int>(source_frame.height),
                     };
@@ -173,26 +173,24 @@ namespace ngp {
                     }
                     target_frame.camera[1] *= -1.0f;
                     target_frame.camera[2] *= -1.0f;
-                    target_frame.camera[3] = target_frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
+                    target_frame.camera[3]               = target_frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
                     const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(target_frame.camera, 0);
-                    target_frame.camera = ngp::legacy::math::row(target_frame.camera, 0, ngp::legacy::math::row(target_frame.camera, 1));
-                    target_frame.camera = ngp::legacy::math::row(target_frame.camera, 1, ngp::legacy::math::row(target_frame.camera, 2));
-                    target_frame.camera = ngp::legacy::math::row(target_frame.camera, 2, camera_row0);
+                    target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 0, ngp::legacy::math::row(target_frame.camera, 1));
+                    target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 1, ngp::legacy::math::row(target_frame.camera, 2));
+                    target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 2, camera_row0);
                 }
 
                 loaded_dataset.gpu.train.frames.resize(uploaded_frames.size());
                 loaded_dataset.gpu.train.frames.copy_from_host(uploaded_frames);
                 runtime_.dataset = std::move(loaded_dataset);
-                std::print(
-                    "Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n",
-                    runtime_.dataset.cpu.train.size(),
-                    runtime_.dataset.cpu.validation.size(),
-                    runtime_.dataset.cpu.test.size()
-                );
+                std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", runtime_.dataset.cpu.train.size(), runtime_.dataset.cpu.validation.size(), runtime_.dataset.cpu.test.size());
                 return;
             }
         default: throw std::runtime_error{std::format("Unsupported dataset type: {}.", static_cast<int>(dataset_type))};
         }
+    }
+    void InstantNGP::train() {
+        return;
     }
 
 } // namespace ngp
