@@ -98,6 +98,7 @@ namespace ngp {
         [[nodiscard]] auto begin_training_step() -> TrainingStepWorkspace;
         void generate_training_batch(TrainingStepWorkspace& workspace);
         void compact_training_batch(TrainingStepWorkspace& workspace);
+        void optimize_training_batch(TrainingStepWorkspace& workspace);
 
     private:
         struct Dataset final {
