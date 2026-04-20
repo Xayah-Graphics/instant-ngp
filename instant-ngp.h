@@ -99,6 +99,7 @@ namespace ngp {
         void generate_training_batch(TrainingStepWorkspace& workspace);
         void compact_training_batch(TrainingStepWorkspace& workspace);
         void optimize_training_batch(TrainingStepWorkspace& workspace);
+        void finish_training_step(TrainingStepWorkspace& workspace, bool get_loss_scalar);
 
     private:
         struct Dataset final {

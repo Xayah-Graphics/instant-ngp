@@ -79,6 +79,12 @@ namespace ngp {
         }
     };
 
+    struct SumIdentityOp final {
+        __device__ float operator()(const float val) const {
+            return val;
+        }
+    };
+
     inline __host__ __device__ ngp::legacy::math::vec3 warp_position(const ngp::legacy::math::vec3& pos, const ngp::legacy::BoundingBox& aabb) {
         return aabb.relative_pos(pos);
     }
@@ -773,6 +779,60 @@ namespace ngp {
         fill_rollover_and_rescale<__half><<<((dloss_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(),
             workspace.dloss_dmlp_out);
         fill_rollover<float><<<((coords_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
+    }
+
+    void InstantNGP::optimize_training_batch(TrainingStepWorkspace& workspace) {
+        ngp::legacy::run_graph_capture(trainer->graph, stream.stream, [&]() {
+            trainer->model.forward(stream.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, trainer->scratch);
+            trainer->model.backward(stream.stream, trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, ngp::network::detail::GradientMode::Overwrite);
+        });
+
+        trainer->optimizer.step(stream.stream, ngp::network::detail::default_loss_scale<__half>(), trainer->params.full_precision, trainer->params.values, trainer->params.gradients);
+        ++training_step;
+    }
+
+    void InstantNGP::finish_training_step(TrainingStepWorkspace& workspace, const bool get_loss_scalar) {
+        (void) workspace;
+        auto& counters = counters_rgb;
+        const std::uint32_t batch_size = plan.training.batch_size;
+
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+
+        std::uint32_t measured_batch_size_before_compaction = 0u;
+        std::uint32_t measured_batch_size = 0u;
+        counters.numsteps_counter.copy_to_host(&measured_batch_size_before_compaction, 1u);
+        counters.numsteps_counter_compacted.copy_to_host(&measured_batch_size, 1u);
+        counters.measured_batch_size_before_compaction = 0u;
+        counters.measured_batch_size = 0u;
+
+        float loss_scalar = 0.0f;
+        if (measured_batch_size_before_compaction != 0u && measured_batch_size != 0u) {
+            counters.measured_batch_size_before_compaction = measured_batch_size_before_compaction;
+            counters.measured_batch_size = measured_batch_size;
+
+            if (get_loss_scalar) {
+                ngp::legacy::GpuAllocation reduction_alloc = ngp::network::detail::allocate_workspace(stream.stream, reduce_sum_workspace_size(counters.rays_per_batch) * sizeof(float));
+                float* reduction_workspace = reinterpret_cast<float*>(reduction_alloc.data());
+                ngp::legacy::cuda_check(cudaMemsetAsync(reduction_workspace, 0, sizeof(float), stream.stream));
+                reduce_sum(counters.loss.data(), SumIdentityOp{}, reduction_workspace, counters.rays_per_batch, stream.stream);
+                ngp::legacy::cuda_check(cudaMemcpyAsync(&loss_scalar, reduction_workspace, sizeof(float), cudaMemcpyDeviceToHost, stream.stream));
+                ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+                loss_scalar *= (float) counters.measured_batch_size / (float) batch_size;
+            }
+
+            counters.rays_per_batch = (std::uint32_t) ((float) counters.rays_per_batch * (float) batch_size / (float) counters.measured_batch_size);
+            counters.rays_per_batch = std::min(ngp::legacy::next_multiple(counters.rays_per_batch, ngp::network::detail::batch_size_granularity), 1u << 18);
+        }
+
+        if (get_loss_scalar) this->loss_scalar = loss_scalar;
+
+        if (counters.measured_batch_size == 0u) {
+            this->loss_scalar = 0.0f;
+            std::fprintf(stderr, "Nerf training generated 0 samples. Aborting training.\n");
+            throw std::runtime_error{"Training stopped unexpectedly."};
+        }
+
+        rng.advance();
     }
 
     void InstantNGP::update_density_grid() {
