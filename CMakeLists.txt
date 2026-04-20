@@ -74,7 +74,7 @@ target_sources(
         instant-ngp
         PRIVATE
         instant-ngp.cpp
-        sampler.cu
+        instant-ngp.cu
         network.cu
         PUBLIC
         instant-ngp.h

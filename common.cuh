@@ -2075,6 +2075,38 @@ namespace ngp::legacy {
         math::vec3 min = math::vec3(std::numeric_limits<float>::infinity());
         math::vec3 max = math::vec3(-std::numeric_limits<float>::infinity());
     };
+
+    struct NerfPosition {
+        __host__ __device__ NerfPosition(const math::vec3& pos, float dt) : p{pos} {}
+        math::vec3 p;
+    };
+
+    struct NerfDirection {
+        __host__ __device__ NerfDirection(const math::vec3& dir, float dt) : d{dir} {}
+        math::vec3 d;
+    };
+
+    struct NerfCoordinate {
+        __host__ __device__ NerfCoordinate(const math::vec3& pos, const math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
+
+        __host__ __device__ void set(const math::vec3& pos, const math::vec3& dir, float dt) {
+            this->dt  = dt;
+            this->pos = NerfPosition(pos, dt);
+            this->dir = NerfDirection(dir, dt);
+        }
+
+        NerfPosition pos;
+        float dt;
+        NerfDirection dir;
+    };
+
+    inline constexpr __host__ __device__ uint32_t NERF_GRIDSIZE() {
+        return 128;
+    }
+
+    inline constexpr __host__ __device__ uint32_t NERF_GRID_N_CELLS() {
+        return NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE();
+    }
 } // namespace ngp::legacy
 
 #endif // NGP_LEGACY_CUH

@@ -14,7 +14,7 @@ namespace ngp {
         return *stream_pools;
     }
 
-    inline void free_aux_stream_pool(cudaStream_t parent_stream) {
+    inline void free_aux_stream_pool(const cudaStream_t parent_stream) {
         legacy::check_or_throw(parent_stream != nullptr);
         stream_pools().erase(parent_stream);
     }
@@ -42,9 +42,54 @@ namespace ngp {
         *this = std::move(other);
     }
 
-    InstantNGP::InstantNGP() = default;
+    InstantNGP::InstantNGP(const NetworkConfig& network_config) {
+        std::print("Making training plan at training step {}.\n", training_step);
+        TrainPlan plan{};
+        plan.training.batch_size         = 1u << 18;
+        plan.training.floats_per_coord   = sizeof(legacy::NerfCoordinate) / sizeof(float);
+        plan.validation.floats_per_coord = plan.training.floats_per_coord;
+        plan.validation.max_samples      = plan.validation.tile_rays * plan.validation.max_samples_per_ray;
 
+        constexpr uint32_t n_pos_dims    = sizeof(legacy::NerfPosition) / sizeof(float);
+        plan.network.n_pos_dims          = n_pos_dims;
+        plan.network.n_dir_dims          = 3u;
+        plan.network.dir_offset          = n_pos_dims + 1u;
+        plan.network.density_alignment   = 16u;
+        plan.network.density_output_dims = 16u;
+        plan.network.rgb_alignment       = 16u;
+        plan.network.rgb_output_dims     = 3u;
+
+        const uint32_t encoding_output_dims   = network_config.encoding.n_levels * network_config.encoding.n_features_per_level;
+        plan.network.density_input_dims       = legacy::next_multiple(encoding_output_dims, legacy::lcm(plan.network.density_alignment, network_config.encoding.n_features_per_level));
+        const uint32_t dir_output_dims        = network_config.direction_encoding.sh_degree * network_config.direction_encoding.sh_degree;
+        plan.network.dir_encoding_output_dims = legacy::next_multiple(dir_output_dims, plan.network.rgb_alignment);
+        plan.network.rgb_input_dims           = legacy::next_multiple(plan.network.density_output_dims + plan.network.dir_encoding_output_dims, plan.network.rgb_alignment);
+
+        plan.training.padded_output_width     = std::max(legacy::next_multiple(plan.network.rgb_output_dims, 16u), 4u);
+        plan.training.max_samples             = plan.training.batch_size * 16u;
+        plan.prep.uniform_samples_warmup      = legacy::NERF_GRID_N_CELLS();
+        plan.prep.uniform_samples_steady      = legacy::NERF_GRID_N_CELLS() / 4;
+        plan.prep.nonuniform_samples_steady   = legacy::NERF_GRID_N_CELLS() / 4;
+        plan.density_grid.padded_output_width = plan.network.density_output_dims;
+        plan.density_grid.query_batch_size    = legacy::NERF_GRID_N_CELLS() * 2u;
+        plan.density_grid.n_elements          = legacy::NERF_GRID_N_CELLS();
+        plan.validation.padded_output_width   = plan.training.padded_output_width;
+    }
     InstantNGP::~InstantNGP() = default;
+    void InstantNGP::run_training_prep() {
+        const uint32_t n_prep_to_skip = std::clamp(training_step / plan.prep.skip_growth_interval, 1u, plan.prep.max_skip);
+        if (training_step % n_prep_to_skip != 0) {
+            return;
+        }
+
+        auto start = std::chrono::steady_clock::now();
+        legacy::ScopeGuard timing_guard{[&] { training_prep_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() / n_prep_to_skip; }};
+        update_density_grid();
+        legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+    }
+    void InstantNGP::update_density_grid() {
+        std::print("Updating density grid at training step {}.\n", training_step);
+    }
 
     void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type) {
         if (dataset_path.empty()) {
@@ -92,7 +137,7 @@ namespace ngp {
                     frames->resize(split_json.size());
                     for (std::size_t frame_index = 0; frame_index < split_json.size(); ++frame_index) {
                         const nlohmann::json& frame_json = split_json.at(frame_index);
-                        std::string image_path_string    = frame_json.at("file_path").get<std::string>();
+                        auto image_path_string           = frame_json.at("file_path").get<std::string>();
                         if (image_path_string.empty()) {
                             throw std::runtime_error{std::format("Empty 'file_path' in '{}', frame {}.", json_path.string(), frame_index)};
                         }
@@ -222,8 +267,11 @@ namespace ngp {
         default: throw std::runtime_error{std::format("Unsupported dataset type: {}.", static_cast<int>(dataset_type))};
         }
     }
-    void InstantNGP::train() {
-        return;
+    void InstantNGP::train(const std::int32_t iters) {
+        for (std::int32_t i = 0; i < iters; ++i) {
+            std::print("Training iteration {}.\n", i);
+            this->run_training_prep();
+        }
     }
 
 } // namespace ngp

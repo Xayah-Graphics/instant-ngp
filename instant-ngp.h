@@ -24,12 +24,51 @@ namespace ngp {
     class InstantNGP final {
     public:
         enum class DatasetType { NerfSynthetic };
-        InstantNGP();
+        enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
+        enum class GridStorage { Hash, Dense, Tiled };
+        void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
+        void train(std::int32_t iters);
+
+        struct NetworkConfig {
+            struct HashGridConfig {
+                uint32_t n_levels             = 8;
+                uint32_t n_features_per_level = 4;
+                uint32_t log2_hashmap_size    = 19;
+                uint32_t base_resolution      = 16;
+                std::optional<float> per_level_scale;
+                bool stochastic_interpolation = false;
+                GridStorage storage           = GridStorage::Hash;
+            } encoding;
+
+            struct DirectionEncodingConfig {
+                uint32_t sh_degree = 4;
+            } direction_encoding;
+
+            struct FullyFusedMlpConfig {
+                uint32_t n_hidden_layers         = 1;
+                ActivationMode activation        = ActivationMode::ReLU;
+                ActivationMode output_activation = ActivationMode::None;
+            } density_network, rgb_network;
+
+            struct AdamConfig {
+                float learning_rate = 1e-2f;
+                float beta1         = 0.9f;
+                float beta2         = 0.99f;
+                float epsilon       = 1e-15f;
+                float l2_reg        = 1e-6f;
+            } optimizer;
+        };
+
+        explicit InstantNGP(const NetworkConfig& network_config);
         ~InstantNGP();
         InstantNGP(const InstantNGP&)                = delete;
         InstantNGP& operator=(const InstantNGP&)     = delete;
         InstantNGP(InstantNGP&&) noexcept            = default;
         InstantNGP& operator=(InstantNGP&&) noexcept = default;
+
+    protected:
+        void run_training_prep();
+        void update_density_grid();
 
     private:
         struct Dataset final {
@@ -67,11 +106,60 @@ namespace ngp {
             CPU cpu = {};
             GPU gpu = {};
         } dataset = {};
-        StreamState stream;
 
-    public:
-        void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
-        void train();
+        struct TrainPlan {
+            struct NetworkStage {
+                uint32_t n_pos_dims               = 0;
+                uint32_t n_dir_dims               = 0;
+                uint32_t dir_offset               = 0;
+                uint32_t density_alignment        = 0;
+                uint32_t density_input_dims       = 0;
+                uint32_t density_output_dims      = 0;
+                uint32_t dir_encoding_output_dims = 0;
+                uint32_t rgb_alignment            = 0;
+                uint32_t rgb_input_dims           = 0;
+                uint32_t rgb_output_dims          = 3;
+            } network;
+
+            struct TrainingStage {
+                uint32_t batch_size          = 0;
+                uint32_t floats_per_coord    = 0;
+                uint32_t padded_output_width = 0;
+                uint32_t max_samples         = 0;
+            } training;
+
+            struct TrainingPrepStage {
+                uint32_t warmup_steps              = 256;
+                uint32_t skip_growth_interval      = 16;
+                uint32_t max_skip                  = 16;
+                uint32_t uniform_samples_warmup    = 0;
+                uint32_t uniform_samples_steady    = 0;
+                uint32_t nonuniform_samples_steady = 0;
+            } prep;
+
+            struct DensityGridStage {
+                uint32_t padded_output_width = 0;
+                uint32_t query_batch_size    = 0;
+                uint32_t n_elements          = 0;
+            } density_grid;
+
+            struct ValidationStage {
+                uint32_t tile_rays           = 4096;
+                uint32_t max_samples_per_ray = 96;
+                uint32_t floats_per_coord    = 0;
+                uint32_t padded_output_width = 0;
+                uint32_t max_samples         = 0;
+            } validation;
+        } plan;
+
+        float density_grid_decay = 0.95f;
+
+        uint32_t training_step = 0;
+        float training_prep_ms = 0.0f;
+        float training_ms      = 0.0f;
+        float loss_scalar      = 0.0f;
+
+        StreamState stream;
     };
 
 } // namespace ngp
