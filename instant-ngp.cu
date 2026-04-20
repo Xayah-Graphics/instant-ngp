@@ -1,7 +1,9 @@
 #include "network.cuh"
+#include "stb/stb_image_write.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <sstream>
 #include <type_traits>
 
@@ -28,10 +30,23 @@ namespace ngp {
         }
     };
 
+    struct ValidationRenderWorkspace final {
+        std::uint32_t total_pixels                               = 0u;
+        std::uint32_t padded_output_width                        = 0u;
+        std::uint32_t floats_per_coord                           = 0u;
+        std::uint32_t max_samples                                = 0u;
+        ngp::legacy::GpuBuffer<ngp::legacy::math::vec3> rendered = {};
+        ngp::legacy::GpuBuffer<std::uint32_t> tile_numsteps      = {};
+        ngp::legacy::GpuBuffer<float> tile_coords                = {};
+        ngp::legacy::GpuBuffer<__half> tile_mlp_out              = {};
+        ngp::legacy::GpuBuffer<std::uint32_t> sample_counter     = {};
+        ngp::legacy::GpuBuffer<std::uint32_t> overflow_counter   = {};
+    };
+
     inline __host__ __device__ Ray uv_to_ray(const std::uint32_t spp, const ngp::legacy::math::vec2& uv, const ngp::legacy::math::ivec2& resolution, const float focal_length, const ngp::legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
         (void) spp;
-        ngp::legacy::math::vec3 dir = {(uv.x - 0.5f) * (float) resolution.x / focal_length, (uv.y - 0.5f) * (float) resolution.y / focal_length, 1.0f};
-        dir = ngp::legacy::math::mat3(camera_matrix) * dir;
+        ngp::legacy::math::vec3 dir    = {(uv.x - 0.5f) * (float) resolution.x / focal_length, (uv.y - 0.5f) * (float) resolution.y / focal_length, 1.0f};
+        dir                            = ngp::legacy::math::mat3(camera_matrix) * dir;
         ngp::legacy::math::vec3 origin = camera_matrix[3];
         origin += dir * near_distance;
         return {origin, dir};
@@ -112,10 +127,10 @@ namespace ngp {
 
     inline __host__ __device__ float distance_to_next_voxel(const ngp::legacy::math::vec3& pos, const ngp::legacy::math::vec3& dir, const ngp::legacy::math::vec3& idir) {
         const ngp::legacy::math::vec3 p = (float) ngp::legacy::NERF_GRIDSIZE() * (pos - 0.5f);
-        const float tx = (floorf(p.x + 0.5f + 0.5f * ngp::legacy::math::sign(dir.x)) - p.x) * idir.x;
-        const float ty = (floorf(p.y + 0.5f + 0.5f * ngp::legacy::math::sign(dir.y)) - p.y) * idir.y;
-        const float tz = (floorf(p.z + 0.5f + 0.5f * ngp::legacy::math::sign(dir.z)) - p.z) * idir.z;
-        const float t = fminf(fminf(tx, ty), tz);
+        const float tx                  = (floorf(p.x + 0.5f + 0.5f * ngp::legacy::math::sign(dir.x)) - p.x) * idir.x;
+        const float ty                  = (floorf(p.y + 0.5f + 0.5f * ngp::legacy::math::sign(dir.y)) - p.y) * idir.y;
+        const float tz                  = (floorf(p.z + 0.5f + 0.5f * ngp::legacy::math::sign(dir.z)) - p.z) * idir.z;
+        const float t                   = fminf(fminf(tx, ty), tz);
         return fmaxf(t / (float) ngp::legacy::NERF_GRIDSIZE(), 0.0f);
     }
 
@@ -170,7 +185,7 @@ namespace ngp {
     }
 
     inline __host__ __device__ ngp::legacy::math::vec4 read_rgba(const ngp::legacy::math::ivec2& px, const ngp::legacy::math::ivec2& resolution, const std::uint8_t* pixels, const std::uint32_t img = 0u) {
-        const std::uint32_t rgba32 = ((const std::uint32_t*) pixels)[pixel_idx(px, resolution, img)];
+        const std::uint32_t rgba32     = ((const std::uint32_t*) pixels)[pixel_idx(px, resolution, img)];
         ngp::legacy::math::vec4 result = {
             ((rgba32 & 0x000000FFu) >> 0u) * (1.0f / 255.0f),
             ((rgba32 & 0x0000FF00u) >> 8u) * (1.0f / 255.0f),
@@ -186,7 +201,7 @@ namespace ngp {
     }
 
     struct LossAndGradient final {
-        ngp::legacy::math::vec3 loss = {};
+        ngp::legacy::math::vec3 loss     = {};
         ngp::legacy::math::vec3 gradient = {};
 
         __host__ __device__ LossAndGradient operator*(const float scalar) {
@@ -238,9 +253,17 @@ namespace ngp {
         return MIN_CONE_STEPSIZE();
     }
 
+    inline __host__ __device__ ngp::legacy::math::vec3 clamp_rgb01(const ngp::legacy::math::vec3& value) {
+        return {
+            ngp::legacy::math::clamp(value.x, 0.0f, 1.0f),
+            ngp::legacy::math::clamp(value.y, 0.0f, 1.0f),
+            ngp::legacy::math::clamp(value.z, 0.0f, 1.0f),
+        };
+    }
+
     template <typename T>
     __global__ void fill_rollover(const std::uint32_t n_elements, const std::uint32_t stride, const std::uint32_t* n_input_elements_ptr, T* inout) {
-        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        const std::uint32_t i                = threadIdx.x + blockIdx.x * blockDim.x;
         const std::uint32_t n_input_elements = *n_input_elements_ptr;
         if (i < (n_input_elements * stride) || i >= (n_elements * stride) || n_input_elements == 0u) return;
         inout[i] = inout[i % (n_input_elements * stride)];
@@ -248,12 +271,12 @@ namespace ngp {
 
     template <typename T>
     __global__ void fill_rollover_and_rescale(const std::uint32_t n_elements, const std::uint32_t stride, const std::uint32_t* n_input_elements_ptr, T* inout) {
-        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        const std::uint32_t i                = threadIdx.x + blockIdx.x * blockDim.x;
         const std::uint32_t n_input_elements = *n_input_elements_ptr;
         if (i < (n_input_elements * stride) || i >= (n_elements * stride) || n_input_elements == 0u) return;
 
         T result = inout[i % (n_input_elements * stride)];
-        result = (T) ((float) result * n_input_elements / n_elements);
+        result   = (T) ((float) result * n_input_elements / n_elements);
         inout[i] = result;
     }
 
@@ -266,32 +289,32 @@ namespace ngp {
 
     template <typename T, typename T_OUT, typename F>
     __global__ void block_reduce(const std::uint32_t n_elements, const F fun, const T* __restrict__ input, T_OUT* __restrict__ output, const std::uint32_t n_blocks) {
-        const std::uint32_t sum_idx = blockIdx.x / n_blocks;
+        const std::uint32_t sum_idx        = blockIdx.x / n_blocks;
         const std::uint32_t sub_blocks_idx = blockIdx.x % n_blocks;
-        const std::uint32_t i = threadIdx.x + sub_blocks_idx * blockDim.x;
-        const std::uint32_t block_offset = sum_idx * n_elements;
+        const std::uint32_t i              = threadIdx.x + sub_blocks_idx * blockDim.x;
+        const std::uint32_t block_offset   = sum_idx * n_elements;
 
         static __shared__ T_OUT sdata[32];
 
         const int lane = threadIdx.x % warpSize;
-        const int wid = threadIdx.x / warpSize;
+        const int wid  = threadIdx.x / warpSize;
 
         T_OUT val = {};
         if constexpr (std::is_same_v<std::decay_t<T>, __half> || std::is_same_v<std::decay_t<T>, ::half>) {
             if (i < n_elements) {
                 ::half vals[8];
                 *(int4*) &vals[0] = *((int4*) input + i + block_offset);
-                val = fun((T) vals[0]) + fun((T) vals[1]) + fun((T) vals[2]) + fun((T) vals[3]) + fun((T) vals[4]) + fun((T) vals[5]) + fun((T) vals[6]) + fun((T) vals[7]);
+                val               = fun((T) vals[0]) + fun((T) vals[1]) + fun((T) vals[2]) + fun((T) vals[3]) + fun((T) vals[4]) + fun((T) vals[5]) + fun((T) vals[6]) + fun((T) vals[7]);
             }
         } else if constexpr (std::is_same_v<std::decay_t<T>, float>) {
             if (i < n_elements) {
                 const float4 vals = *((float4*) input + i + block_offset);
-                val = fun((T) vals.x) + fun((T) vals.y) + fun((T) vals.z) + fun((T) vals.w);
+                val               = fun((T) vals.x) + fun((T) vals.y) + fun((T) vals.z) + fun((T) vals.w);
             }
         } else if constexpr (std::is_same_v<std::decay_t<T>, double>) {
             if (i < n_elements) {
                 const double2 vals = *((double2*) input + i + block_offset);
-                val = fun((T) vals.x) + fun((T) vals.y);
+                val                = fun((T) vals.x) + fun((T) vals.y);
             }
         } else {
             assert(false);
@@ -312,7 +335,7 @@ namespace ngp {
 
     template <typename T, typename T_OUT, typename F>
     void reduce_sum(T* device_pointer, F fun, T_OUT* workspace, std::uint32_t n_elements, cudaStream_t stream, const std::uint32_t n_sums = 1u) {
-        const std::uint32_t threads = 1024u;
+        const std::uint32_t threads          = 1024u;
         const std::uint32_t n_elems_per_load = 16u / sizeof(T);
 
         if (n_elements % n_elems_per_load != 0u) throw std::runtime_error{"Number of bytes to reduce_sum must be a multiple of 16."};
@@ -335,7 +358,7 @@ namespace ngp {
         const std::uint32_t y = ngp::network::detail::morton3D_invert(i >> 1u);
         const std::uint32_t z = ngp::network::detail::morton3D_invert(i >> 2u);
 
-        const float voxel_size = 1.0f / ngp::legacy::NERF_GRIDSIZE();
+        const float voxel_size            = 1.0f / ngp::legacy::NERF_GRIDSIZE();
         const ngp::legacy::math::vec3 pos = ngp::legacy::math::vec3{(float) x, (float) y, (float) z} / (float) ngp::legacy::NERF_GRIDSIZE();
 
         ngp::legacy::math::vec3 corners[8] = {
@@ -350,7 +373,7 @@ namespace ngp {
         };
 
         const std::uint32_t min_count = 1u;
-        std::uint32_t count = 0u;
+        std::uint32_t count           = 0u;
 
         for (std::uint32_t j = 0u; j < n_training_images && count < min_count; ++j) {
             const auto& frame = frames[j];
@@ -361,7 +384,7 @@ namespace ngp {
                 if (ngp::legacy::math::dot(dir, xform[2]) < 1e-4f) continue;
 
                 const ngp::legacy::math::vec2 uv = pos_to_uv(corners[k], frame.resolution, frame.focal_length, xform);
-                const Ray ray = uv_to_ray(0u, uv, frame.resolution, frame.focal_length, xform);
+                const Ray ray                    = uv_to_ray(0u, uv, frame.resolution, frame.focal_length, xform);
                 if (ngp::legacy::math::distance(ngp::legacy::math::normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
                     ++count;
                     break;
@@ -383,12 +406,12 @@ namespace ngp {
             if (grid_in[idx] > thresh) break;
         }
 
-        const std::uint32_t x = ngp::network::detail::morton3D_invert(idx >> 0u);
-        const std::uint32_t y = ngp::network::detail::morton3D_invert(idx >> 1u);
-        const std::uint32_t z = ngp::network::detail::morton3D_invert(idx >> 2u);
+        const std::uint32_t x             = ngp::network::detail::morton3D_invert(idx >> 0u);
+        const std::uint32_t y             = ngp::network::detail::morton3D_invert(idx >> 1u);
+        const std::uint32_t z             = ngp::network::detail::morton3D_invert(idx >> 2u);
         const ngp::legacy::math::vec3 pos = (ngp::legacy::math::vec3{(float) x, (float) y, (float) z} + ngp::network::detail::random_val_3d(rng)) / (float) ngp::legacy::NERF_GRIDSIZE();
 
-        out[i] = {warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE())};
+        out[i]     = {warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE())};
         indices[i] = idx;
     }
 
@@ -397,8 +420,8 @@ namespace ngp {
         if (i >= n_elements) return;
 
         const std::uint32_t idx = indices[i];
-        const float mlp = network_to_density(float(network_output[i]));
-        const float thickness = mlp * MIN_CONE_STEPSIZE();
+        const float mlp         = network_to_density(float(network_output[i]));
+        const float thickness   = mlp * MIN_CONE_STEPSIZE();
         atomicMax((std::uint32_t*) &grid_out[idx], __float_as_uint(thickness));
     }
 
@@ -408,16 +431,16 @@ namespace ngp {
 
         (void) count;
         const float importance = grid_in[i];
-        const float prev_val = grid_out[i];
-        const float val = prev_val < 0.0f ? prev_val : fmaxf(prev_val * decay, importance);
-        grid_out[i] = val;
+        const float prev_val   = grid_out[i];
+        const float val        = prev_val < 0.0f ? prev_val : fmaxf(prev_val * decay, importance);
+        grid_out[i]            = val;
     }
 
     __global__ void grid_to_bitfield(const std::uint32_t n_elements, const float* __restrict__ grid, std::uint8_t* __restrict__ grid_bitfield, const float* __restrict__ mean_density_ptr) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
-        std::uint8_t bits = 0u;
+        std::uint8_t bits  = 0u;
         const float thresh = fminf(NERF_MIN_OPTICAL_THICKNESS(), *mean_density_ptr);
 
         TCNN_PRAGMA_UNROLL
@@ -426,33 +449,33 @@ namespace ngp {
         grid_bitfield[i] = bits;
     }
 
-    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const ngp::legacy::BoundingBox aabb, const std::uint32_t max_samples, const std::uint32_t n_rays_total, ngp::legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, Ray* __restrict__ rays_out_unnormalized,
-        std::uint32_t* __restrict__ numsteps_out, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate> coords_out, const std::uint32_t n_training_images, const InstantNGP::GpuFrame* __restrict__ frames, const std::uint8_t* __restrict__ density_grid, const bool snap_to_pixel_centers) {
+    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const ngp::legacy::BoundingBox aabb, const std::uint32_t max_samples, const std::uint32_t n_rays_total, ngp::legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, Ray* __restrict__ rays_out_unnormalized, std::uint32_t* __restrict__ numsteps_out,
+        ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate> coords_out, const std::uint32_t n_training_images, const InstantNGP::GpuFrame* __restrict__ frames, const std::uint8_t* __restrict__ density_grid, const bool snap_to_pixel_centers) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_rays) return;
 
-        const std::uint32_t img = image_idx(i, n_rays, n_rays_total, n_training_images);
-        const auto& frame = frames[img];
+        const std::uint32_t img                   = image_idx(i, n_rays, n_rays_total, n_training_images);
+        const auto& frame                         = frames[img];
         const ngp::legacy::math::ivec2 resolution = frame.resolution;
 
         rng.advance(i * N_MAX_RANDOM_SAMPLES_PER_RAY());
         const ngp::legacy::math::vec2 uv = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
 
-        const float focal_length = frame.focal_length;
+        const float focal_length              = frame.focal_length;
         const ngp::legacy::math::mat4x3 xform = frame.camera;
 
         Ray ray_unnormalized = uv_to_ray(0u, uv, resolution, focal_length, xform);
         if (!ray_unnormalized.is_valid()) ray_unnormalized = {xform[3], xform[2]};
 
         const ngp::legacy::math::vec3 ray_d_normalized = ngp::legacy::math::normalize(ray_unnormalized.d);
-        ngp::legacy::math::vec2 tminmax = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
-        tminmax.x = fmaxf(tminmax.x, 0.0f);
+        ngp::legacy::math::vec2 tminmax                = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
+        tminmax.x                                      = fmaxf(tminmax.x, 0.0f);
 
-        const float startt = advance_n_steps(tminmax.x, ngp::network::detail::random_val(rng));
+        const float startt                 = advance_n_steps(tminmax.x, ngp::network::detail::random_val(rng));
         const ngp::legacy::math::vec3 idir = ngp::legacy::math::vec3(1.0f) / ray_d_normalized;
 
         std::uint32_t j = 0u;
-        float t = startt;
+        float t         = startt;
         ngp::legacy::math::vec3 pos;
 
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
@@ -467,20 +490,20 @@ namespace ngp {
         if (j == 0u) return;
 
         const std::uint32_t numsteps = j;
-        const std::uint32_t base = atomicAdd(numsteps_counter, numsteps);
+        const std::uint32_t base     = atomicAdd(numsteps_counter, numsteps);
         if (base + numsteps > max_samples) return;
 
         coords_out += base;
 
-        const std::uint32_t ray_idx = atomicAdd(ray_counter, 1u);
-        ray_indices_out[ray_idx] = i;
-        rays_out_unnormalized[ray_idx] = ray_unnormalized;
+        const std::uint32_t ray_idx     = atomicAdd(ray_counter, 1u);
+        ray_indices_out[ray_idx]        = i;
+        rays_out_unnormalized[ray_idx]  = ray_unnormalized;
         numsteps_out[ray_idx * 2u + 0u] = numsteps;
         numsteps_out[ray_idx * 2u + 1u] = base;
 
         const ngp::legacy::math::vec3 warped_dir = warp_direction(ray_d_normalized);
-        t = startt;
-        j = 0u;
+        t                                        = startt;
+        j                                        = 0u;
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
             const float dt = calc_dt();
             if (density_grid_occupied_at(pos, density_grid)) {
@@ -493,34 +516,34 @@ namespace ngp {
         }
     }
 
-    __global__ void compute_loss_kernel_train_nerf(const std::uint32_t n_rays, const ngp::legacy::BoundingBox aabb, const std::uint32_t n_rays_total, ngp::legacy::math::pcg32 rng, const std::uint32_t max_samples_compacted, const std::uint32_t* __restrict__ rays_counter, float loss_scale, const int padded_output_width, const std::uint32_t n_training_images, const InstantNGP::GpuFrame* __restrict__ frames,
-        const __half* network_output, std::uint32_t* __restrict__ numsteps_counter, const std::uint32_t* __restrict__ ray_indices_in, const Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate> coords_in, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate> coords_out,
-        __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr, const float near_distance) {
+    __global__ void compute_loss_kernel_train_nerf(const std::uint32_t n_rays, const ngp::legacy::BoundingBox aabb, const std::uint32_t n_rays_total, ngp::legacy::math::pcg32 rng, const std::uint32_t max_samples_compacted, const std::uint32_t* __restrict__ rays_counter, float loss_scale, const int padded_output_width, const std::uint32_t n_training_images, const InstantNGP::GpuFrame* __restrict__ frames, const __half* network_output,
+        std::uint32_t* __restrict__ numsteps_counter, const std::uint32_t* __restrict__ ray_indices_in, const Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate> coords_in, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate> coords_out, __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr,
+        const float near_distance) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= *rays_counter) return;
 
         std::uint32_t numsteps = numsteps_in[i * 2u + 0u];
-        std::uint32_t base = numsteps_in[i * 2u + 1u];
+        std::uint32_t base     = numsteps_in[i * 2u + 1u];
 
         coords_in += base;
         network_output += base * padded_output_width;
 
-        float T = 1.0f;
+        float T                 = 1.0f;
         constexpr float epsilon = 1e-4f;
 
-        ngp::legacy::math::vec3 rgb_ray = ngp::legacy::math::vec3(0.0f);
-        std::uint32_t compacted_numsteps = 0u;
+        ngp::legacy::math::vec3 rgb_ray     = ngp::legacy::math::vec3(0.0f);
+        std::uint32_t compacted_numsteps    = 0u;
         const ngp::legacy::math::vec3 ray_o = rays_in_unnormalized[i].o;
         for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
             if (T < epsilon) break;
 
             const ngp::legacy::math::tvec<__half, 4u> local_network_output = *(ngp::legacy::math::tvec<__half, 4u>*) network_output;
-            const ngp::legacy::math::vec3 rgb = network_to_rgb_vec(local_network_output);
-            const ngp::legacy::math::vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-            const float dt = unwarp_dt(coords_in.ptr->dt);
-            const float density = network_to_density(float(local_network_output[3]));
+            const ngp::legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
+            const ngp::legacy::math::vec3 pos                              = unwarp_position(coords_in.ptr->pos.p, aabb);
+            const float dt                                                 = unwarp_dt(coords_in.ptr->dt);
+            const float density                                            = network_to_density(float(local_network_output[3]));
 
-            const float alpha = 1.0f - __expf(-density * dt);
+            const float alpha  = 1.0f - __expf(-density * dt);
             const float weight = alpha * T;
             rgb_ray += weight * rgb;
             T *= (1.0f - alpha);
@@ -532,14 +555,14 @@ namespace ngp {
         const std::uint32_t ray_idx = ray_indices_in[i];
         rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
 
-        const std::uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images);
-        const auto& frame = frames[img];
+        const std::uint32_t img                   = image_idx(ray_idx, n_rays, n_rays_total, n_training_images);
+        const auto& frame                         = frames[img];
         const ngp::legacy::math::ivec2 resolution = frame.resolution;
 
-        const ngp::legacy::math::vec2 uv = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
+        const ngp::legacy::math::vec2 uv               = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
         const ngp::legacy::math::vec3 background_color = ngp::network::detail::random_val_3d(rng);
-        const ngp::legacy::math::vec4 texsamp = read_rgba(uv, resolution, frame.pixels);
-        const ngp::legacy::math::vec3 rgbtarget = linear_to_srgb(texsamp.rgb() + (1.0f - texsamp.a) * srgb_to_linear(background_color));
+        const ngp::legacy::math::vec4 texsamp          = read_rgba(uv, resolution, frame.pixels);
+        const ngp::legacy::math::vec3 rgbtarget        = linear_to_srgb(texsamp.rgb() + (1.0f - texsamp.a) * srgb_to_linear(background_color));
 
         if (compacted_numsteps == numsteps) rgb_ray += T * background_color;
 
@@ -547,15 +570,15 @@ namespace ngp {
         coords_in -= compacted_numsteps;
 
         std::uint32_t compacted_base = atomicAdd(numsteps_counter, compacted_numsteps);
-        compacted_numsteps = std::min(max_samples_compacted - std::min(max_samples_compacted, compacted_base), compacted_numsteps);
-        numsteps_in[i * 2u + 0u] = compacted_numsteps;
-        numsteps_in[i * 2u + 1u] = compacted_base;
+        compacted_numsteps           = std::min(max_samples_compacted - std::min(max_samples_compacted, compacted_base), compacted_numsteps);
+        numsteps_in[i * 2u + 0u]     = compacted_numsteps;
+        numsteps_in[i * 2u + 1u]     = compacted_base;
         if (compacted_numsteps == 0u) return;
 
         coords_out += compacted_base;
         dloss_doutput += compacted_base * padded_output_width;
 
-        LossAndGradient lg = loss_and_gradient(rgbtarget, rgb_ray);
+        LossAndGradient lg    = loss_and_gradient(rgbtarget, rgb_ray);
         const float mean_loss = ngp::legacy::math::mean(lg.loss);
         if (loss_output) loss_output[i] = mean_loss / (float) n_rays;
 
@@ -564,24 +587,24 @@ namespace ngp {
         const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS() ? 1e-4f : 0.0f;
 
         ngp::legacy::math::vec3 rgb_ray2 = {0.0f, 0.0f, 0.0f};
-        T = 1.0f;
+        T                                = 1.0f;
         for (std::uint32_t j = 0u; j < compacted_numsteps; ++j) {
-            ngp::legacy::NerfCoordinate* coord_out = coords_out(j);
+            ngp::legacy::NerfCoordinate* coord_out      = coords_out(j);
             const ngp::legacy::NerfCoordinate* coord_in = coords_in(j);
-            *coord_out = *coord_in;
+            *coord_out                                  = *coord_in;
 
-            const ngp::legacy::math::vec3 pos = unwarp_position(coord_in->pos.p, aabb);
-            const float depth = ngp::legacy::math::distance(pos, ray_o);
-            const float dt = unwarp_dt(coord_in->dt);
+            const ngp::legacy::math::vec3 pos                              = unwarp_position(coord_in->pos.p, aabb);
+            const float depth                                              = ngp::legacy::math::distance(pos, ray_o);
+            const float dt                                                 = unwarp_dt(coord_in->dt);
             const ngp::legacy::math::tvec<__half, 4u> local_network_output = *(ngp::legacy::math::tvec<__half, 4u>*) network_output;
-            const ngp::legacy::math::vec3 rgb = network_to_rgb_vec(local_network_output);
-            const float density = network_to_density(float(local_network_output[3]));
-            const float alpha = 1.0f - __expf(-density * dt);
-            const float weight = alpha * T;
+            const ngp::legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
+            const float density                                            = network_to_density(float(local_network_output[3]));
+            const float alpha                                              = 1.0f - __expf(-density * dt);
+            const float weight                                             = alpha * T;
             rgb_ray2 += weight * rgb;
             T *= (1.0f - alpha);
 
-            const ngp::legacy::math::vec3 suffix = rgb_ray - rgb_ray2;
+            const ngp::legacy::math::vec3 suffix        = rgb_ray - rgb_ray2;
             const ngp::legacy::math::vec3 dloss_by_drgb = weight * lg.gradient;
 
             ngp::legacy::math::tvec<__half, 4u> local_dL_doutput;
@@ -590,8 +613,8 @@ namespace ngp {
             local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z * network_to_rgb_derivative(local_network_output[2]));
 
             const float density_derivative = network_to_density_derivative(float(local_network_output[3]));
-            const float dloss_by_dmlp = density_derivative * (dt * ngp::legacy::math::dot(lg.gradient, T * rgb - suffix));
-            local_dL_doutput[3] = loss_scale * dloss_by_dmlp + (float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) + (float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
+            const float dloss_by_dmlp      = density_derivative * (dt * ngp::legacy::math::dot(lg.gradient, T * rgb - suffix));
+            local_dL_doutput[3]            = loss_scale * dloss_by_dmlp + (float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) + (float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
             *(ngp::legacy::math::tvec<__half, 4u>*) dloss_doutput = local_dL_doutput;
 
@@ -600,43 +623,141 @@ namespace ngp {
         }
     }
 
+    __global__ void generate_validation_samples_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, ngp::legacy::BoundingBox aabb, const std::uint32_t max_samples, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate> coords_out, InstantNGP::GpuFrame frame, const std::uint8_t* __restrict__ density_grid) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_pixels) return;
+
+        numsteps_out[i * 2u + 0u] = 0u;
+        numsteps_out[i * 2u + 1u] = 0u;
+
+        const std::uint32_t global_pixel          = pixel_offset + i;
+        const ngp::legacy::math::ivec2 resolution = frame.resolution;
+        const ngp::legacy::math::ivec2 px         = {(int) (global_pixel % (std::uint32_t) resolution.x), (int) (global_pixel / (std::uint32_t) resolution.x)};
+        const ngp::legacy::math::vec2 uv          = (ngp::legacy::math::vec2{(float) px.x + 0.5f, (float) px.y + 0.5f}) / ngp::legacy::math::vec2(resolution);
+        const ngp::legacy::math::mat4x3 xform     = frame.camera;
+
+        Ray ray_unnormalized = uv_to_ray(0u, uv, resolution, frame.focal_length, xform);
+        if (!ray_unnormalized.is_valid()) return;
+
+        const ngp::legacy::math::vec3 ray_d_normalized = ngp::legacy::math::normalize(ray_unnormalized.d);
+        ngp::legacy::math::vec2 tminmax                = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
+        tminmax.x                                      = fmaxf(tminmax.x, 0.0f);
+        if (tminmax.y <= tminmax.x) return;
+
+        float t                            = advance_n_steps(tminmax.x, 0.5f);
+        const ngp::legacy::math::vec3 idir = ngp::legacy::math::vec3(1.0f) / ray_d_normalized;
+
+        std::uint32_t numsteps = 0u;
+        ngp::legacy::math::vec3 pos;
+        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && numsteps < NERF_STEPS()) {
+            const float dt = calc_dt();
+            if (density_grid_occupied_at(pos, density_grid)) {
+                ++numsteps;
+                t += dt;
+            } else {
+                t = advance_to_next_voxel(t, pos, ray_d_normalized, idir);
+            }
+        }
+
+        if (numsteps == 0u) return;
+
+        const std::uint32_t base = atomicAdd(sample_counter, numsteps);
+        if (base + numsteps > max_samples) {
+            atomicAdd(overflow_counter, 1u);
+            return;
+        }
+
+        numsteps_out[i * 2u + 0u] = numsteps;
+        numsteps_out[i * 2u + 1u] = base;
+
+        coords_out += base;
+        const ngp::legacy::math::vec3 warped_dir = warp_direction(ray_d_normalized);
+        t                                        = advance_n_steps(tminmax.x, 0.5f);
+
+        std::uint32_t j = 0u;
+        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
+            const float dt = calc_dt();
+            if (density_grid_occupied_at(pos, density_grid)) {
+                coords_out(j)->set(warp_position(pos, aabb), warped_dir, warp_dt(dt));
+                ++j;
+                t += dt;
+            } else {
+                t = advance_to_next_voxel(t, pos, ray_d_normalized, idir);
+            }
+        }
+    }
+
+    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, ngp::legacy::math::vec3 background_color, ngp::legacy::math::vec3* __restrict__ image_out) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= n_pixels) return;
+
+        const std::uint32_t global_pixel = pixel_offset + i;
+        const std::uint32_t numsteps     = numsteps_in[i * 2u + 0u];
+        const std::uint32_t base         = numsteps_in[i * 2u + 1u];
+        float T                          = 1.0f;
+        ngp::legacy::math::vec3 rgb_ray  = ngp::legacy::math::vec3(0.0f);
+
+        if (numsteps > 0u) {
+            coords_in += base;
+            network_output += base * padded_output_width;
+
+            for (std::uint32_t j = 0u; j < numsteps; ++j) {
+                const ngp::legacy::math::tvec<__half, 4u> local_network_output = *(const ngp::legacy::math::tvec<__half, 4u>*) network_output;
+                const ngp::legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
+                const float dt                                                 = unwarp_dt(coords_in.ptr->dt);
+                const float density                                            = network_to_density(float(local_network_output[3]));
+                const float alpha                                              = 1.0f - __expf(-density * dt);
+                const float weight                                             = alpha * T;
+
+                rgb_ray += weight * rgb;
+                T *= (1.0f - alpha);
+
+                coords_in += 1;
+                network_output += padded_output_width;
+                if (T < 1e-4f) break;
+            }
+        }
+
+        image_out[global_pixel] = clamp_rgb01(rgb_ray + T * background_color);
+    }
+
     InstantNGP::InstantNGP(const NetworkConfig& network_config_) : network_config{network_config_} {
         std::printf("Making training plan at training step %u.\n", training_step);
 
-        plan = {};
-        plan.training.batch_size = 1u << 18;
-        plan.training.floats_per_coord = sizeof(ngp::legacy::NerfCoordinate) / sizeof(float);
+        plan                             = {};
+        plan.training.batch_size         = 1u << 18;
+        plan.training.floats_per_coord   = sizeof(ngp::legacy::NerfCoordinate) / sizeof(float);
         plan.validation.floats_per_coord = plan.training.floats_per_coord;
-        plan.validation.max_samples = plan.validation.tile_rays * plan.validation.max_samples_per_ray;
+        plan.validation.max_samples      = plan.validation.tile_rays * plan.validation.max_samples_per_ray;
 
         constexpr std::uint32_t n_pos_dims = sizeof(ngp::legacy::NerfPosition) / sizeof(float);
-        plan.network.n_pos_dims = n_pos_dims;
-        plan.network.n_dir_dims = 3u;
-        plan.network.dir_offset = n_pos_dims + 1u;
-        plan.network.density_alignment = 16u;
-        plan.network.density_output_dims = 16u;
-        plan.network.rgb_alignment = 16u;
-        plan.network.rgb_output_dims = 3u;
+        plan.network.n_pos_dims            = n_pos_dims;
+        plan.network.n_dir_dims            = 3u;
+        plan.network.dir_offset            = n_pos_dims + 1u;
+        plan.network.density_alignment     = 16u;
+        plan.network.density_output_dims   = 16u;
+        plan.network.rgb_alignment         = 16u;
+        plan.network.rgb_output_dims       = 3u;
 
         const std::uint32_t encoding_output_dims = network_config.encoding.n_levels * network_config.encoding.n_features_per_level;
-        plan.network.density_input_dims = ngp::legacy::next_multiple(encoding_output_dims, ngp::legacy::lcm(plan.network.density_alignment, network_config.encoding.n_features_per_level));
-        const std::uint32_t dir_output_dims = network_config.direction_encoding.sh_degree * network_config.direction_encoding.sh_degree;
-        plan.network.dir_encoding_output_dims = ngp::legacy::next_multiple(dir_output_dims, plan.network.rgb_alignment);
-        plan.network.rgb_input_dims = ngp::legacy::next_multiple(plan.network.density_output_dims + plan.network.dir_encoding_output_dims, plan.network.rgb_alignment);
+        plan.network.density_input_dims          = ngp::legacy::next_multiple(encoding_output_dims, ngp::legacy::lcm(plan.network.density_alignment, network_config.encoding.n_features_per_level));
+        const std::uint32_t dir_output_dims      = network_config.direction_encoding.sh_degree * network_config.direction_encoding.sh_degree;
+        plan.network.dir_encoding_output_dims    = ngp::legacy::next_multiple(dir_output_dims, plan.network.rgb_alignment);
+        plan.network.rgb_input_dims              = ngp::legacy::next_multiple(plan.network.density_output_dims + plan.network.dir_encoding_output_dims, plan.network.rgb_alignment);
 
-        plan.training.padded_output_width = std::max(ngp::legacy::next_multiple(plan.network.rgb_output_dims, 16u), 4u);
-        plan.training.max_samples = plan.training.batch_size * 16u;
-        plan.prep.uniform_samples_warmup = ngp::legacy::NERF_GRID_N_CELLS();
-        plan.prep.uniform_samples_steady = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
-        plan.prep.nonuniform_samples_steady = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
+        plan.training.padded_output_width     = std::max(ngp::legacy::next_multiple(plan.network.rgb_output_dims, 16u), 4u);
+        plan.training.max_samples             = plan.training.batch_size * 16u;
+        plan.prep.uniform_samples_warmup      = ngp::legacy::NERF_GRID_N_CELLS();
+        plan.prep.uniform_samples_steady      = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
+        plan.prep.nonuniform_samples_steady   = ngp::legacy::NERF_GRID_N_CELLS() / 4u;
         plan.density_grid.padded_output_width = plan.network.density_output_dims;
-        plan.density_grid.query_batch_size = ngp::legacy::NERF_GRID_N_CELLS() * 2u;
-        plan.density_grid.n_elements = ngp::legacy::NERF_GRID_N_CELLS();
-        plan.validation.padded_output_width = plan.training.padded_output_width;
+        plan.density_grid.query_batch_size    = ngp::legacy::NERF_GRID_N_CELLS() * 2u;
+        plan.density_grid.n_elements          = ngp::legacy::NERF_GRID_N_CELLS();
+        plan.validation.padded_output_width   = plan.training.padded_output_width;
 
-        rng = ngp::legacy::math::pcg32{seed};
+        rng              = ngp::legacy::math::pcg32{seed};
         density_grid_rng = ngp::legacy::math::pcg32{rng.next_uint()};
-        trainer = std::unique_ptr<ngp::network::TrainerState<__half>, ngp::TrainerStateDeleter>{new ngp::network::TrainerState<__half>(network_config, plan, seed, stream.stream)};
+        trainer          = std::unique_ptr<ngp::network::TrainerState<__half>, ngp::TrainerStateDeleter>{new ngp::network::TrainerState<__half>(network_config, plan, seed, stream.stream)};
     }
 
     InstantNGP::~InstantNGP() = default;
@@ -652,7 +773,7 @@ namespace ngp {
     }
 
     auto InstantNGP::begin_training_step() -> InstantNGP::TrainingStepWorkspace {
-        auto& counters = counters_rgb;
+        auto& counters                 = counters_rgb;
         const std::uint32_t batch_size = plan.training.batch_size;
 
         counters.numsteps_counter.enlarge(1u);
@@ -664,20 +785,20 @@ namespace ngp {
 
         TrainingStepWorkspace workspace{};
         workspace.padded_output_width = plan.training.padded_output_width;
-        workspace.floats_per_coord = plan.training.floats_per_coord;
-        workspace.max_samples = plan.training.max_samples;
+        workspace.floats_per_coord    = plan.training.floats_per_coord;
+        workspace.max_samples         = plan.training.max_samples;
 
-        const std::size_t ray_indices_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * sizeof(std::uint32_t));
+        const std::size_t ray_indices_bytes       = ngp::legacy::align_to_cacheline(counters.rays_per_batch * sizeof(std::uint32_t));
         const std::size_t rays_unnormalized_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * sizeof(Ray));
-        const std::size_t numsteps_bytes = ngp::legacy::align_to_cacheline(counters.rays_per_batch * 2u * sizeof(std::uint32_t));
-        const std::size_t coords_bytes = ngp::legacy::align_to_cacheline(workspace.max_samples * workspace.floats_per_coord * sizeof(float));
-        const std::size_t mlp_out_bytes = ngp::legacy::align_to_cacheline(std::max(batch_size, workspace.max_samples) * workspace.padded_output_width * sizeof(__half));
-        const std::size_t dloss_bytes = ngp::legacy::align_to_cacheline(batch_size * workspace.padded_output_width * sizeof(__half));
-        const std::size_t compacted_coords_bytes = ngp::legacy::align_to_cacheline(batch_size * workspace.floats_per_coord * sizeof(float));
-        const std::size_t ray_counter_bytes = ngp::legacy::align_to_cacheline(sizeof(std::uint32_t));
-        const std::size_t total_bytes = ray_indices_bytes + rays_unnormalized_bytes + numsteps_bytes + coords_bytes + mlp_out_bytes + dloss_bytes + compacted_coords_bytes + ray_counter_bytes;
+        const std::size_t numsteps_bytes          = ngp::legacy::align_to_cacheline(counters.rays_per_batch * 2u * sizeof(std::uint32_t));
+        const std::size_t coords_bytes            = ngp::legacy::align_to_cacheline(workspace.max_samples * workspace.floats_per_coord * sizeof(float));
+        const std::size_t mlp_out_bytes           = ngp::legacy::align_to_cacheline(std::max(batch_size, workspace.max_samples) * workspace.padded_output_width * sizeof(__half));
+        const std::size_t dloss_bytes             = ngp::legacy::align_to_cacheline(batch_size * workspace.padded_output_width * sizeof(__half));
+        const std::size_t compacted_coords_bytes  = ngp::legacy::align_to_cacheline(batch_size * workspace.floats_per_coord * sizeof(float));
+        const std::size_t ray_counter_bytes       = ngp::legacy::align_to_cacheline(sizeof(std::uint32_t));
+        const std::size_t total_bytes             = ray_indices_bytes + rays_unnormalized_bytes + numsteps_bytes + coords_bytes + mlp_out_bytes + dloss_bytes + compacted_coords_bytes + ray_counter_bytes;
 
-        workspace.alloc = ngp::network::detail::allocate_workspace(stream.stream, total_bytes);
+        workspace.alloc    = ngp::network::detail::allocate_workspace(stream.stream, total_bytes);
         std::uint8_t* base = workspace.alloc.data();
         std::size_t offset = 0u;
 
@@ -697,15 +818,14 @@ namespace ngp {
         offset += compacted_coords_bytes;
         workspace.ray_counter = reinterpret_cast<std::uint32_t*>(base + offset);
 
-        workspace.max_inference = counters.measured_batch_size_before_compaction == 0u ? workspace.max_samples
-                                                                                        : ngp::legacy::next_multiple(std::min(counters.measured_batch_size_before_compaction, workspace.max_samples), ngp::network::detail::batch_size_granularity);
+        workspace.max_inference = counters.measured_batch_size_before_compaction == 0u ? workspace.max_samples : ngp::legacy::next_multiple(std::min(counters.measured_batch_size_before_compaction, workspace.max_samples), ngp::network::detail::batch_size_granularity);
         if (counters.measured_batch_size_before_compaction == 0u) counters.measured_batch_size_before_compaction = workspace.max_inference;
 
-        workspace.coords_matrix = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords, workspace.floats_per_coord, workspace.max_inference, ngp::legacy::CM};
-        workspace.rgbsigma_matrix = ngp::legacy::GPUMatrixDynamic<__half>{workspace.mlp_out, workspace.padded_output_width, workspace.max_inference, ngp::legacy::CM};
+        workspace.coords_matrix           = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords, workspace.floats_per_coord, workspace.max_inference, ngp::legacy::CM};
+        workspace.rgbsigma_matrix         = ngp::legacy::GPUMatrixDynamic<__half>{workspace.mlp_out, workspace.padded_output_width, workspace.max_inference, ngp::legacy::CM};
         workspace.compacted_coords_matrix = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords_compacted, workspace.floats_per_coord, batch_size, ngp::legacy::CM};
-        workspace.gradient_matrix = ngp::legacy::GPUMatrixDynamic<__half>{workspace.dloss_dmlp_out, workspace.padded_output_width, batch_size, ngp::legacy::CM};
-        workspace.compacted_output = ngp::legacy::GPUMatrixDynamic<__half>{plan.training.padded_output_width, batch_size, stream.stream, ngp::legacy::CM};
+        workspace.gradient_matrix         = ngp::legacy::GPUMatrixDynamic<__half>{workspace.dloss_dmlp_out, workspace.padded_output_width, batch_size, ngp::legacy::CM};
+        workspace.compacted_output        = ngp::legacy::GPUMatrixDynamic<__half>{plan.training.padded_output_width, batch_size, stream.stream, ngp::legacy::CM};
 
         if (training_step == 0u) counters.n_rays_total = 0u;
         workspace.n_rays_total = counters.n_rays_total;
@@ -720,64 +840,26 @@ namespace ngp {
         ngp::legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), stream.stream));
         if (counters.rays_per_batch > 0u) {
             const std::uint32_t blocks = (counters.rays_per_batch + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            generate_training_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(
-                counters.rays_per_batch,
-                aabb,
-                workspace.max_inference,
-                workspace.n_rays_total,
-                rng,
-                workspace.ray_counter,
-                counters.numsteps_counter.data(),
-                workspace.ray_indices,
-                reinterpret_cast<Ray*>(workspace.rays_unnormalized),
-                workspace.numsteps,
-                ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u},
-                static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()),
-                dataset.gpu.train.frames.data(),
-                density_grid_bitfield.data(),
-                snap_to_pixel_centers
-            );
+            generate_training_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, workspace.n_rays_total, rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, reinterpret_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u},
+                static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), density_grid_bitfield.data(), snap_to_pixel_centers);
         }
 
         trainer->model.inference(stream.stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
     }
 
     void InstantNGP::compact_training_batch(TrainingStepWorkspace& workspace) {
-        auto& counters = counters_rgb;
+        auto& counters                 = counters_rgb;
         const std::uint32_t batch_size = plan.training.batch_size;
 
         if (counters.rays_per_batch > 0u) {
             const std::uint32_t blocks = (counters.rays_per_batch + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            compute_loss_kernel_train_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(
-                counters.rays_per_batch,
-                aabb,
-                workspace.n_rays_total,
-                rng,
-                batch_size,
-                workspace.ray_counter,
-                ngp::network::detail::default_loss_scale<__half>(),
-                workspace.padded_output_width,
-                static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()),
-                dataset.gpu.train.frames.data(),
-                workspace.mlp_out,
-                counters.numsteps_counter_compacted.data(),
-                workspace.ray_indices,
-                reinterpret_cast<const Ray*>(workspace.rays_unnormalized),
-                workspace.numsteps,
-                ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u},
-                ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords_compacted), 1u},
-                workspace.dloss_dmlp_out,
-                counters.loss.data(),
-                snap_to_pixel_centers,
-                density_grid_mean.data(),
-                near_distance
-            );
+            compute_loss_kernel_train_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(counters.rays_per_batch, aabb, workspace.n_rays_total, rng, batch_size, workspace.ray_counter, ngp::network::detail::default_loss_scale<__half>(), workspace.padded_output_width, static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
+                reinterpret_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u}, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), snap_to_pixel_centers, density_grid_mean.data(), near_distance);
         }
 
-        const std::uint32_t dloss_elements = batch_size * workspace.padded_output_width;
+        const std::uint32_t dloss_elements  = batch_size * workspace.padded_output_width;
         const std::uint32_t coords_elements = batch_size * workspace.floats_per_coord;
-        fill_rollover_and_rescale<__half><<<((dloss_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(),
-            workspace.dloss_dmlp_out);
+        fill_rollover_and_rescale<__half><<<((dloss_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(), workspace.dloss_dmlp_out);
         fill_rollover<float><<<((coords_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
     }
 
@@ -793,26 +875,26 @@ namespace ngp {
 
     void InstantNGP::finish_training_step(TrainingStepWorkspace& workspace, const bool get_loss_scalar) {
         (void) workspace;
-        auto& counters = counters_rgb;
+        auto& counters                 = counters_rgb;
         const std::uint32_t batch_size = plan.training.batch_size;
 
         ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
 
         std::uint32_t measured_batch_size_before_compaction = 0u;
-        std::uint32_t measured_batch_size = 0u;
+        std::uint32_t measured_batch_size                   = 0u;
         counters.numsteps_counter.copy_to_host(&measured_batch_size_before_compaction, 1u);
         counters.numsteps_counter_compacted.copy_to_host(&measured_batch_size, 1u);
         counters.measured_batch_size_before_compaction = 0u;
-        counters.measured_batch_size = 0u;
+        counters.measured_batch_size                   = 0u;
 
         float loss_scalar = 0.0f;
         if (measured_batch_size_before_compaction != 0u && measured_batch_size != 0u) {
             counters.measured_batch_size_before_compaction = measured_batch_size_before_compaction;
-            counters.measured_batch_size = measured_batch_size;
+            counters.measured_batch_size                   = measured_batch_size;
 
             if (get_loss_scalar) {
                 ngp::legacy::GpuAllocation reduction_alloc = ngp::network::detail::allocate_workspace(stream.stream, reduce_sum_workspace_size(counters.rays_per_batch) * sizeof(float));
-                float* reduction_workspace = reinterpret_cast<float*>(reduction_alloc.data());
+                float* reduction_workspace                 = reinterpret_cast<float*>(reduction_alloc.data());
                 ngp::legacy::cuda_check(cudaMemsetAsync(reduction_workspace, 0, sizeof(float), stream.stream));
                 reduce_sum(counters.loss.data(), SumIdentityOp{}, reduction_workspace, counters.rays_per_batch, stream.stream);
                 ngp::legacy::cuda_check(cudaMemcpyAsync(&loss_scalar, reduction_workspace, sizeof(float), cudaMemcpyDeviceToHost, stream.stream));
@@ -836,22 +918,22 @@ namespace ngp {
     }
 
     void InstantNGP::update_density_grid() {
-        const std::uint32_t n_uniform_density_grid_samples = training_step < plan.prep.warmup_steps ? plan.prep.uniform_samples_warmup : plan.prep.uniform_samples_steady;
+        const std::uint32_t n_uniform_density_grid_samples    = training_step < plan.prep.warmup_steps ? plan.prep.uniform_samples_warmup : plan.prep.uniform_samples_steady;
         const std::uint32_t n_nonuniform_density_grid_samples = training_step < plan.prep.warmup_steps ? 0u : plan.prep.nonuniform_samples_steady;
-        const std::uint32_t n_elements = plan.density_grid.n_elements;
+        const std::uint32_t n_elements                        = plan.density_grid.n_elements;
 
         density_grid.resize(n_elements);
         const std::uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
-        const std::uint32_t padded_output_width = plan.density_grid.padded_output_width;
+        const std::uint32_t padded_output_width    = plan.density_grid.padded_output_width;
 
-        const std::size_t positions_bytes = ngp::legacy::align_to_cacheline(n_density_grid_samples * sizeof(ngp::legacy::NerfPosition));
-        const std::size_t indices_bytes = ngp::legacy::align_to_cacheline(n_elements * sizeof(std::uint32_t));
+        const std::size_t positions_bytes   = ngp::legacy::align_to_cacheline(n_density_grid_samples * sizeof(ngp::legacy::NerfPosition));
+        const std::size_t indices_bytes     = ngp::legacy::align_to_cacheline(n_elements * sizeof(std::uint32_t));
         const std::size_t density_tmp_bytes = ngp::legacy::align_to_cacheline(n_elements * sizeof(float));
-        const std::size_t mlp_out_bytes = ngp::legacy::align_to_cacheline(n_density_grid_samples * padded_output_width * sizeof(__half));
-        ngp::legacy::GpuAllocation alloc = ngp::network::detail::allocate_workspace(stream.stream, positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes);
+        const std::size_t mlp_out_bytes     = ngp::legacy::align_to_cacheline(n_density_grid_samples * padded_output_width * sizeof(__half));
+        ngp::legacy::GpuAllocation alloc    = ngp::network::detail::allocate_workspace(stream.stream, positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes);
 
-        std::uint8_t* base = alloc.data();
-        std::size_t offset = 0u;
+        std::uint8_t* base           = alloc.data();
+        std::size_t offset           = 0u;
         auto* density_grid_positions = reinterpret_cast<ngp::legacy::NerfPosition*>(base + offset);
         offset += positions_bytes;
         auto* density_grid_indices = reinterpret_cast<std::uint32_t*>(base + offset);
@@ -878,8 +960,7 @@ namespace ngp {
 
         if (n_nonuniform_density_grid_samples > 0u) {
             const std::uint32_t blocks = (n_nonuniform_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_nonuniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples,
-                NERF_MIN_OPTICAL_THICKNESS());
+            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_nonuniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS());
         }
         density_grid_rng.advance();
 
@@ -915,12 +996,156 @@ namespace ngp {
         }
     }
 
+    auto InstantNGP::read_train_stats() const -> TrainStats {
+        TrainStats stats{};
+        stats.loss                                  = loss_scalar;
+        stats.train_ms                              = training_ms;
+        stats.prep_ms                               = training_prep_ms;
+        stats.training_step                         = training_step;
+        stats.batch_size                            = plan.training.batch_size;
+        stats.rays_per_batch                        = counters_rgb.rays_per_batch;
+        stats.measured_batch_size                   = counters_rgb.measured_batch_size;
+        stats.measured_batch_size_before_compaction = counters_rgb.measured_batch_size_before_compaction;
+        return stats;
+    }
+
+    auto InstantNGP::render_validation_image(const std::filesystem::path& output_path, const std::uint32_t validation_image_index) -> ValidationResult {
+        if (output_path.empty()) throw std::invalid_argument{"validation output path must not be empty."};
+        if (!trainer) throw std::runtime_error{"Validation rendering requires an initialized network."};
+
+        const std::size_t validation_count = dataset.cpu.validation.size();
+        if (validation_count == 0u) throw std::runtime_error{"No validation images are available in the current dataset."};
+        if (validation_image_index >= validation_count) throw std::runtime_error{"Validation image index is out of range."};
+
+        const Dataset::CPU::Frame& source = dataset.cpu.validation[validation_image_index];
+        if (source.width == 0u || source.height == 0u) throw std::runtime_error{"Validation frame has zero resolution."};
+        if (!std::isfinite(source.focal_length_x) || source.focal_length_x <= 0.0f) throw std::runtime_error{"Validation frame has an invalid focal_length_x."};
+        if (!std::isfinite(source.focal_length_y) || source.focal_length_y <= 0.0f) throw std::runtime_error{"Validation frame has an invalid focal_length_y."};
+
+        const float focal_length_difference = std::fabs(source.focal_length_x - source.focal_length_y);
+        const float focal_length_scale      = std::max(1.0f, std::max(std::fabs(source.focal_length_x), std::fabs(source.focal_length_y)));
+        if (focal_length_difference > 1e-6f * focal_length_scale) throw std::runtime_error{"Validation currently requires focal_length_x and focal_length_y to match."};
+
+        GpuFrame frame{};
+        frame.resolution   = ngp::legacy::math::ivec2{(int) source.width, (int) source.height};
+        frame.focal_length = source.focal_length_x;
+        for (std::size_t row = 0u; row < 3u; ++row) {
+            for (std::size_t column = 0u; column < 4u; ++column) frame.camera[column][row] = source.transform_matrix_4x4[row * 4u + column];
+        }
+        frame.camera[1] *= -1.0f;
+        frame.camera[2] *= -1.0f;
+        frame.camera[3]                           = frame.camera[3] * 0.33f + ngp::legacy::math::vec3(0.5f);
+        const ngp::legacy::math::vec4 camera_row0 = ngp::legacy::math::row(frame.camera, 0);
+        frame.camera                              = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
+        frame.camera                              = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
+        frame.camera                              = ngp::legacy::math::row(frame.camera, 2, camera_row0);
+
+        const ngp::legacy::math::ivec2 resolution = frame.resolution;
+        const ngp::legacy::math::vec3 background  = ngp::legacy::math::vec3(1.0f);
+
+        ValidationRenderWorkspace workspace{};
+        workspace.total_pixels        = (std::uint32_t) ngp::legacy::math::product(resolution);
+        workspace.padded_output_width = plan.validation.padded_output_width;
+        workspace.floats_per_coord    = plan.validation.floats_per_coord;
+        workspace.max_samples         = plan.validation.max_samples;
+        workspace.rendered            = ngp::legacy::GpuBuffer<ngp::legacy::math::vec3>{workspace.total_pixels};
+        workspace.tile_numsteps       = ngp::legacy::GpuBuffer<std::uint32_t>{plan.validation.tile_rays * 2u};
+        workspace.tile_coords         = ngp::legacy::GpuBuffer<float>{workspace.max_samples * workspace.floats_per_coord};
+        workspace.tile_mlp_out        = ngp::legacy::GpuBuffer<__half>{workspace.max_samples * workspace.padded_output_width};
+        workspace.sample_counter      = ngp::legacy::GpuBuffer<std::uint32_t>{1u};
+        workspace.overflow_counter    = ngp::legacy::GpuBuffer<std::uint32_t>{1u};
+
+        for (std::uint32_t pixel_offset = 0u; pixel_offset < workspace.total_pixels; pixel_offset += plan.validation.tile_rays) {
+            const std::uint32_t tile_pixels = std::min(plan.validation.tile_rays, workspace.total_pixels - pixel_offset);
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.tile_numsteps.data(), 0, workspace.tile_numsteps.size() * sizeof(std::uint32_t), stream.stream));
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.sample_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.overflow_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
+
+            if (tile_pixels > 0u) {
+                const std::uint32_t blocks = (tile_pixels + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+                generate_validation_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(tile_pixels, pixel_offset, aabb, workspace.max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{(ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, frame, density_grid_bitfield.data());
+            }
+
+            std::uint32_t used_samples    = 0u;
+            std::uint32_t overflowed_rays = 0u;
+            ngp::legacy::cuda_check(cudaMemcpyAsync(&used_samples, workspace.sample_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream.stream));
+            ngp::legacy::cuda_check(cudaMemcpyAsync(&overflowed_rays, workspace.overflow_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream.stream));
+            ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+
+            if (overflowed_rays != 0u) {
+                std::ostringstream message;
+                message << "Validation render sample budget overflowed for " << overflowed_rays << " rays. Reduce tile size or increase the sample budget.";
+                throw std::runtime_error{message.str()};
+            }
+
+            if (used_samples > 0u) {
+                const std::uint32_t padded_used_samples = ngp::legacy::next_multiple(used_samples, ngp::network::detail::batch_size_granularity);
+                const std::uint32_t coord_elements      = padded_used_samples * workspace.floats_per_coord;
+                fill_rollover<float><<<((coord_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
+
+                ngp::legacy::GPUMatrixDynamic<float> coords_matrix((float*) workspace.tile_coords.data(), workspace.floats_per_coord, padded_used_samples, ngp::legacy::CM);
+                ngp::legacy::GPUMatrixDynamic<__half> rgbsigma_matrix(workspace.tile_mlp_out.data(), workspace.padded_output_width, padded_used_samples, ngp::legacy::CM);
+                trainer->model.inference(stream.stream, coords_matrix, rgbsigma_matrix);
+            }
+
+            if (tile_pixels > 0u) {
+                const std::uint32_t blocks = (tile_pixels + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+                composite_validation_kernel_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{(const ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, workspace.tile_mlp_out.data(), workspace.padded_output_width, background, workspace.rendered.data());
+            }
+        }
+
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+
+        std::vector<ngp::legacy::math::vec3> rendered_host(workspace.total_pixels);
+        workspace.rendered.copy_to_host(rendered_host);
+
+        std::vector<std::uint8_t> png_rgb((std::size_t) workspace.total_pixels * 3u);
+        double total_squared_error = 0.0;
+        for (int y = 0; y < resolution.y; ++y) {
+            for (int x = 0; x < resolution.x; ++x) {
+                const std::size_t pixel_index            = (std::size_t) x + (std::size_t) y * (std::size_t) resolution.x;
+                const ngp::legacy::math::vec3 prediction = clamp_rgb01(rendered_host[pixel_index]);
+                const ngp::legacy::math::vec4 gt         = read_rgba(ngp::legacy::math::ivec2{x, y}, resolution, source.rgba.data());
+                const ngp::legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(gt.rgb() + (1.0f - gt.a) * background));
+                const ngp::legacy::math::vec3 diff       = prediction - target;
+                total_squared_error += (double) ngp::legacy::math::mean(diff * diff);
+
+                png_rgb[pixel_index * 3u + 0u] = (std::uint8_t) lrintf(prediction.x * 255.0f);
+                png_rgb[pixel_index * 3u + 1u] = (std::uint8_t) lrintf(prediction.y * 255.0f);
+                png_rgb[pixel_index * 3u + 2u] = (std::uint8_t) lrintf(prediction.z * 255.0f);
+            }
+        }
+
+        const std::filesystem::path parent_dir = output_path.parent_path();
+        if (!parent_dir.empty() && !std::filesystem::exists(parent_dir) && !std::filesystem::create_directories(parent_dir)) throw std::runtime_error{"Failed to create image directory '" + parent_dir.string() + "'."};
+        if (stbi_write_png(output_path.string().c_str(), resolution.x, resolution.y, 3, png_rgb.data(), resolution.x * 3) == 0) throw std::runtime_error{"Failed to write PNG image '" + output_path.string() + "'."};
+
+        ValidationResult validation{};
+        validation.width       = (std::uint32_t) resolution.x;
+        validation.height      = (std::uint32_t) resolution.y;
+        validation.mse         = (float) (total_squared_error / (double) workspace.total_pixels);
+        validation.psnr        = validation.mse > 0.0f ? -10.0f * std::log10(validation.mse) : std::numeric_limits<float>::infinity();
+        validation.image_index = (std::int32_t) validation_image_index;
+        return validation;
+    }
+
     void InstantNGP::train(const std::int32_t iters) {
+        if (!trainer || dataset.gpu.train.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
+
         for (std::int32_t i = 0; i < iters; ++i) {
             std::printf("Training iteration %d.\n", i);
             run_training_prep();
             trainer->optimizer.update_hyperparams(network_config.optimizer);
-            ++training_step;
+
+            const bool get_loss_scalar = training_step % 16u == 0u;
+            const auto train_start     = std::chrono::steady_clock::now();
+            ngp::legacy::ScopeGuard train_timing_guard{[&] { training_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(); }};
+
+            auto workspace = begin_training_step();
+            generate_training_batch(workspace);
+            compact_training_batch(workspace);
+            optimize_training_batch(workspace);
+            finish_training_step(workspace, get_loss_scalar);
         }
     }
 

@@ -3,6 +3,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
+
 #include "json/json.hpp"
 
 import std;
@@ -178,9 +181,9 @@ namespace ngp {
                     pixel_buffer.resize(source_frame.rgba.size());
                     pixel_buffer.copy_from_host(source_frame.rgba);
 
-                    GpuFrame& target_frame = uploaded_frames[frame_index];
-                    target_frame.pixels               = pixel_buffer.data();
-                    target_frame.resolution           = legacy::math::ivec2{
+                    GpuFrame& target_frame  = uploaded_frames[frame_index];
+                    target_frame.pixels     = pixel_buffer.data();
+                    target_frame.resolution = legacy::math::ivec2{
                         static_cast<int>(source_frame.width),
                         static_cast<int>(source_frame.height),
                     };

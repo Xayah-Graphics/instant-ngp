@@ -1,8 +1,11 @@
 #ifndef NETWORK_CUH
 #define NETWORK_CUH
 
-#include "instant-ngp.h"
 #include "common.cuh"
+#include "instant-ngp.h"
+#include <algorithm>
+#include <concepts>
+#include <cstdint>
 #include <cutlass/array.h>
 #include <cutlass/cutlass.h>
 #include <cutlass/functional.h>
@@ -10,11 +13,8 @@
 #include <cutlass/gemm/device/gemm_splitk_parallel.h>
 #include <cutlass/numeric_conversion.h>
 #include <cutlass/numeric_types.h>
-#include <mma.h>
-#include <algorithm>
-#include <concepts>
-#include <cstdint>
 #include <limits>
+#include <mma.h>
 #include <source_location>
 #include <sstream>
 #include <type_traits>
@@ -227,9 +227,9 @@ namespace ngp::network::detail {
     }
 
     __device__ inline void pos_fract(const float input, float* pos, std::uint32_t* pos_grid, const float scale) {
-        *pos      = fmaf(scale, input, 0.5f);
+        *pos            = fmaf(scale, input, 0.5f);
         const float tmp = floorf(*pos);
-        *pos_grid = static_cast<std::uint32_t>(static_cast<int>(tmp));
+        *pos_grid       = static_cast<std::uint32_t>(static_cast<int>(tmp));
         *pos -= tmp;
     }
 
@@ -254,7 +254,7 @@ namespace ngp::network::detail {
         if (n_elements == 0u) return;
 
         const std::size_t n_threads = (n_elements + n_to_generate - 1u) / n_to_generate;
-        const std::size_t blocks = (n_threads + n_threads_linear - 1u) / n_threads_linear;
+        const std::size_t blocks    = (n_threads + n_threads_linear - 1u) / n_threads_linear;
         generate_random_uniform_kernel<T, RNG, n_to_generate><<<blocks, n_threads_linear>>>(n_elements, rng, out, lower, upper);
         rng.advance(n_elements);
     }
@@ -301,7 +301,7 @@ namespace ngp::network::detail {
     template <typename V>
     struct VectorFragment final {
         static constexpr std::uint32_t num_elements = V::size();
-        V x = {};
+        V x                                         = {};
     };
 
     template <typename T>
@@ -321,41 +321,41 @@ namespace ngp::network::detail {
     inline constexpr float k_act = 10.0f;
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::None)
+        requires (activation == Activation::None)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         result = frag;
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::ReLU)
+        requires (activation == Activation::ReLU)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = relu(static_cast<T>(frag.x[t]));
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::LeakyReLU)
+        requires (activation == Activation::LeakyReLU)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(static_cast<T>(frag.x[t]) > static_cast<T>(0.0f) ? 1.0f : 0.01f);
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::Exponential)
+        requires (activation == Activation::Exponential)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(expf(static_cast<float>(frag.x[t])));
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::Sigmoid)
+        requires (activation == Activation::Sigmoid)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logistic(static_cast<float>(frag.x[t])));
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::Squareplus)
+        requires (activation == Activation::Squareplus)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) {
@@ -365,14 +365,14 @@ namespace ngp::network::detail {
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::Softplus)
+        requires (activation == Activation::Softplus)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logf(expf(static_cast<float>(frag.x[t]) * k_act) + 1.0f) / k_act);
     }
 
     template <typename T, typename Fragment, Activation activation>
-        requires(activation == Activation::Tanh)
+        requires (activation == Activation::Tanh)
     __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(tanhf(static_cast<float>(frag.x[t])));
@@ -585,8 +585,8 @@ namespace ngp::encoding {
         const std::uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
         if (i >= n_elements) return;
 
-        const std::uint32_t elem_idx = i;
-        const std::uint32_t dim_idx  = threadIdx.x;
+        const std::uint32_t elem_idx                      = i;
+        const std::uint32_t dim_idx                       = threadIdx.x;
         transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy(elem_idx)[dim_idx];
     }
 
@@ -607,15 +607,16 @@ namespace ngp::encoding {
     };
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const ngp::network::detail::GridType grid_type, const T* __restrict__ grid,
-        ngp::legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
+    __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const ngp::network::detail::GridType grid_type, const T* __restrict__ grid, ngp::legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
         const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= num_elements) return;
 
         const std::uint32_t level = blockIdx.y;
 
-        if (max_level_gpu) max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
-        else max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
+        if (max_level_gpu)
+            max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
+        else
+            max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
 
         if (level >= max_level + 1e-3f) {
             if (encoded_positions) {
@@ -646,7 +647,7 @@ namespace ngp::encoding {
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t idx = 0; idx < (1u << N_POS_DIMS); ++idx) {
-                float weight = 1.0f;
+                float weight                                       = 1.0f;
                 ngp::legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
 
                 TCNN_PRAGMA_UNROLL
@@ -669,16 +670,18 @@ namespace ngp::encoding {
     }
 
     template <typename T, typename GradT, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL, std::uint32_t N_FEATURES_PER_THREAD>
-    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const bool stochastic_interpolation,
-        const ngp::network::detail::GridType grid_type, GradT* __restrict__ grid_gradient, ngp::legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
+    __global__ void kernel_grid_backward(
+        const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const bool stochastic_interpolation, const ngp::network::detail::GridType grid_type, GradT* __restrict__ grid_gradient, ngp::legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
         const std::uint32_t i = ((blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD) / N_FEATURES_PER_LEVEL;
         if (i >= num_elements) return;
 
         const std::uint32_t level   = blockIdx.y;
         const std::uint32_t feature = (blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD - i * N_FEATURES_PER_LEVEL;
 
-        if (max_level_gpu) max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
-        else max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
+        if (max_level_gpu)
+            max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
+        else
+            max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
 
         if (level > max_level + 1e-3f) return;
 
@@ -704,13 +707,15 @@ namespace ngp::encoding {
         for (std::uint32_t f = 0; f < N_FEATURES_PER_THREAD; ++f) grad[f] = dL_dy[i + (level * N_FEATURES_PER_LEVEL + feature + f) * num_elements];
 
         if (stochastic_interpolation) {
-            const float sample = ngp::network::detail::random_val(1337u, i + level * num_elements);
+            const float sample                                 = ngp::network::detail::random_val(1337u, i + level * num_elements);
             ngp::legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t dim = 0; dim < N_POS_DIMS; ++dim) {
-                if (sample >= pos[dim]) pos_grid_local[dim] = pos_grid[dim];
-                else pos_grid_local[dim] = pos_grid[dim] + 1u;
+                if (sample >= pos[dim])
+                    pos_grid_local[dim] = pos_grid[dim];
+                else
+                    pos_grid_local[dim] = pos_grid[dim] + 1u;
             }
 
             add_grid_gradient(pos_grid_local, grad, 1.0f);
@@ -719,7 +724,7 @@ namespace ngp::encoding {
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t idx = 0; idx < (1u << N_POS_DIMS); ++idx) {
-            float weight = 1.0f;
+            float weight                                       = 1.0f;
             ngp::legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
 
             TCNN_PRAGMA_UNROLL
@@ -740,9 +745,8 @@ namespace ngp::encoding {
     template <typename T, std::uint32_t N_POS_DIMS = 3u, std::uint32_t N_FEATURES_PER_LEVEL = 2u>
     class GridEncodingTemplated final {
     public:
-        GridEncodingTemplated(const std::uint32_t n_features, const std::uint32_t log2_hashmap_size, const std::uint32_t base_resolution, const float per_level_scale, const bool stochastic_interpolation, const ngp::network::detail::GridType grid_type)
-            : m_n_features{n_features}, m_base_resolution{base_resolution}, m_per_level_scale{per_level_scale}, m_stochastic_interpolation{stochastic_interpolation}, m_grid_type{grid_type} {
-            m_n_levels = (m_n_features + N_FEATURES_PER_LEVEL - 1u) / N_FEATURES_PER_LEVEL;
+        GridEncodingTemplated(const std::uint32_t n_features, const std::uint32_t log2_hashmap_size, const std::uint32_t base_resolution, const float per_level_scale, const bool stochastic_interpolation, const ngp::network::detail::GridType grid_type) : m_n_features{n_features}, m_base_resolution{base_resolution}, m_per_level_scale{per_level_scale}, m_stochastic_interpolation{stochastic_interpolation}, m_grid_type{grid_type} {
+            m_n_levels           = (m_n_features + N_FEATURES_PER_LEVEL - 1u) / N_FEATURES_PER_LEVEL;
             std::uint32_t offset = 0u;
 
             if (m_n_levels > max_n_levels) {
@@ -754,7 +758,7 @@ namespace ngp::encoding {
             for (std::uint32_t i = 0; i < m_n_levels; ++i) {
                 const std::uint32_t resolution = ngp::network::detail::grid_resolution(ngp::network::detail::grid_scale(i, std::log2(per_level_scale), base_resolution));
                 const std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
-                std::uint32_t params_in_level = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : ngp::network::detail::powi(resolution, N_POS_DIMS);
+                std::uint32_t params_in_level  = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : ngp::network::detail::powi(resolution, N_POS_DIMS);
 
                 params_in_level = ngp::legacy::next_multiple(params_in_level, 8u);
 
@@ -812,7 +816,7 @@ namespace ngp::encoding {
 
             if (m_n_to_pad > 0u) {
                 if (output.layout() == ngp::legacy::AoS) {
-                    const dim3 threads = {m_n_to_pad, (ngp::network::detail::n_threads_linear + m_n_to_pad - 1u) / m_n_to_pad, 1u};
+                    const dim3 threads         = {m_n_to_pad, (ngp::network::detail::n_threads_linear + m_n_to_pad - 1u) / m_n_to_pad, 1u};
                     const std::uint32_t blocks = (num_elements + threads.y - 1u) / threads.y;
                     zero_padded_output_aos<T><<<blocks, threads, 0, aux_stream>>>(num_elements, m_n_output_dims, m_n_to_pad, output.pitched_ptr());
                 } else {
@@ -821,9 +825,9 @@ namespace ngp::encoding {
             }
 
             static constexpr std::uint32_t n_threads_hashgrid = 512u;
-            const dim3 blocks_hashgrid = {(num_elements + n_threads_hashgrid - 1u) / n_threads_hashgrid, m_n_levels, 1u};
+            const dim3 blocks_hashgrid                        = {(num_elements + n_threads_hashgrid - 1u) / n_threads_hashgrid, m_n_levels, 1u};
 
-            T* encoded_positions_soa = output.data();
+            T* encoded_positions_soa             = output.data();
             ngp::legacy::GpuAllocation workspace = {};
             if (output.layout() == ngp::legacy::AoS) {
                 workspace             = ngp::network::detail::allocate_workspace(main_stream, static_cast<std::size_t>(num_elements) * m_n_features * sizeof(T));
@@ -833,7 +837,7 @@ namespace ngp::encoding {
             kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, main_stream>>>(num_elements, m_n_features, m_offset_table, m_base_resolution, std::log2(m_per_level_scale), m_max_level, m_max_level_gpu, m_grid_type, params(), input.view(), encoded_positions_soa);
 
             if (output.layout() == ngp::legacy::AoS) {
-                const dim3 threads_transpose = {m_n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
+                const dim3 threads_transpose         = {m_n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
                 const std::uint32_t blocks_transpose = (num_elements + threads_transpose.y - 1u) / threads_transpose.y;
                 transpose_encoded_position<T><<<blocks_transpose, threads_transpose, 0, main_stream>>>(num_elements, encoded_positions_soa, output.pitched_ptr());
             }
@@ -852,12 +856,12 @@ namespace ngp::encoding {
             const std::uint32_t num_elements = input.n();
             if (param_gradients_mode == ngp::network::detail::GradientMode::Ignore || num_elements == 0u) return;
 
-            const T* dL_dy_rm = dL_doutput.data();
+            const T* dL_dy_rm                    = dL_doutput.data();
             ngp::legacy::GpuAllocation workspace = {};
             if (dL_doutput.layout() == ngp::legacy::CM) {
                 workspace = ngp::network::detail::allocate_workspace(stream, static_cast<std::size_t>(num_elements) * m_n_features * sizeof(T));
 
-                const dim3 threads_transpose = {m_n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
+                const dim3 threads_transpose         = {m_n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
                 const std::uint32_t blocks_transpose = (num_elements + threads_transpose.y - 1u) / threads_transpose.y;
                 transpose_gradients<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, reinterpret_cast<T*>(workspace.data()), dL_doutput.pitched_ptr());
 
@@ -865,7 +869,7 @@ namespace ngp::encoding {
             }
 
             typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type* grid_gradient = nullptr;
-            ngp::legacy::GpuAllocation grid_gradient_tmp = {};
+            ngp::legacy::GpuAllocation grid_gradient_tmp                                         = {};
 
             if constexpr (!std::is_same_v<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, T>) {
                 grid_gradient_tmp = ngp::network::detail::allocate_workspace(stream, n_params() * sizeof(typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type));
@@ -880,8 +884,7 @@ namespace ngp::encoding {
             static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
 
             const dim3 blocks_hashgrid = {((num_elements * N_FEATURES_PER_LEVEL / n_features_per_thread) + n_threads_hashgrid - 1u) / n_threads_hashgrid, m_n_levels, 1u};
-            kernel_grid_backward<T, typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, m_n_features, m_offset_table, m_base_resolution, std::log2(m_per_level_scale), m_max_level,
-                m_max_level_gpu, m_stochastic_interpolation, m_grid_type, grid_gradient, input.view(), dL_dy_rm);
+            kernel_grid_backward<T, typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, m_n_features, m_offset_table, m_base_resolution, std::log2(m_per_level_scale), m_max_level, m_max_level_gpu, m_stochastic_interpolation, m_grid_type, grid_gradient, input.view(), dL_dy_rm);
 
             if constexpr (!std::is_same_v<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, T>) {
                 if (n_params() > 0u) {
@@ -944,8 +947,8 @@ namespace ngp::encoding {
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL> make_hash_grid_encoding(const ngp::InstantNGP::NetworkConfig::HashGridConfig& config) {
         const ngp::network::detail::GridType grid_type = config.storage == ngp::InstantNGP::GridStorage::Hash ? ngp::network::detail::GridType::Hash : (config.storage == ngp::InstantNGP::GridStorage::Dense ? ngp::network::detail::GridType::Dense : (config.storage == ngp::InstantNGP::GridStorage::Tiled ? ngp::network::detail::GridType::Tiled : throw std::runtime_error{"Unsupported grid storage mode."}));
-        const std::uint32_t n_features = N_FEATURES_PER_LEVEL * config.n_levels;
-        const float per_level_scale = config.per_level_scale.has_value() ? *config.per_level_scale : (grid_type == ngp::network::detail::GridType::Dense && config.n_levels > 1u && config.base_resolution > 0u ? std::exp(std::log(256.0f / static_cast<float>(config.base_resolution)) / (config.n_levels - 1u)) : 2.0f);
+        const std::uint32_t n_features                 = N_FEATURES_PER_LEVEL * config.n_levels;
+        const float per_level_scale                    = config.per_level_scale.has_value() ? *config.per_level_scale : (grid_type == ngp::network::detail::GridType::Dense && config.n_levels > 1u && config.base_resolution > 0u ? std::exp(std::log(256.0f / static_cast<float>(config.base_resolution)) / (config.n_levels - 1u)) : 2.0f);
         return {n_features, config.log2_hashmap_size, config.base_resolution, per_level_scale, config.stochastic_interpolation, grid_type};
     }
 
@@ -1033,7 +1036,7 @@ namespace ngp::encoding {
         }
 
     private:
-        std::uint32_t m_degree       = 0u;
+        std::uint32_t m_degree        = 0u;
         std::uint32_t m_n_output_dims = 0u;
         std::uint32_t m_n_to_pad      = 0u;
     };
@@ -1097,7 +1100,7 @@ namespace ngp::mlp {
     template <typename V>
     struct CutlassFragmentWrapper final {
         static constexpr std::uint32_t num_elements = V::kElements;
-        V x = {};
+        V x                                         = {};
     };
 
     template <typename ElementOutput_, int Count, typename ElementAccumulator_ = ElementOutput_, typename ElementCompute_ = ElementOutput_, cutlass::FloatRoundStyle Round = cutlass::FloatRoundStyle::round_to_nearest>
@@ -1225,7 +1228,7 @@ namespace ngp::mlp {
         const std::size_t workspace_size = Gemm::get_workspace_size(args);
         Gemm gemm_op;
 
-        auto workspace = ngp::network::detail::allocate_workspace(stream, workspace_size);
+        auto workspace         = ngp::network::detail::allocate_workspace(stream, workspace_size);
         cutlass::Status status = gemm_op.initialize(args, workspace.data(), stream);
         cutlass_check(status);
 
@@ -1238,7 +1241,7 @@ namespace ngp::mlp {
         const std::size_t workspace_size = Gemm::get_workspace_size(args);
         Gemm gemm_op;
 
-        auto workspace = ngp::network::detail::allocate_workspace(stream, workspace_size);
+        auto workspace         = ngp::network::detail::allocate_workspace(stream, workspace_size);
         cutlass::Status status = gemm_op.initialize(args, workspace.data());
         cutlass_check(status);
 
@@ -1247,8 +1250,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, ngp::legacy::MatrixLayout LayoutB, typename TypeC, ngp::legacy::MatrixLayout LayoutC, typename TypeD, ngp::legacy::MatrixLayout LayoutD>
-    void fc_multiply(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrix<TypeB, LayoutB>& B, const ngp::legacy::GPUMatrix<TypeC, LayoutC>& C, const ngp::legacy::GPUMatrix<TypeD, LayoutD>& D, ngp::network::detail::Activation act = ngp::network::detail::Activation::None,
-        bool transfer = false, bool sum_source = false) {
+    void fc_multiply(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrix<TypeB, LayoutB>& B, const ngp::legacy::GPUMatrix<TypeC, LayoutC>& C, const ngp::legacy::GPUMatrix<TypeD, LayoutD>& D, ngp::network::detail::Activation act = ngp::network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
         static_assert(std::is_same_v<TypeA, TypeB>, "Type of matrix A and B must be equal");
         static_assert(std::is_same_v<TypeC, TypeD>, "Type of matrix C and D must be equal");
         static_assert(std::is_same_v<typename CutlassLayout<LayoutC>::type, typename CutlassLayout<LayoutD>::type>, "Layout of matrix C and D must be equal");
@@ -1275,15 +1277,15 @@ namespace ngp::mlp {
         typedef typename CutlassElementType<TypeC>::type MatmulTypeAccumulator;
 
         if (transfer) {
-            typedef cutlass::gemm::device::Gemm<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-                typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, ActivationTransferEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
+            typedef cutlass::gemm::device::Gemm<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>,
+                ActivationTransferEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
                 Gemm;
 
             typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {act}, 1};
             fc_multiply_impl<Gemm>(stream, arguments);
         } else {
-            typedef cutlass::gemm::device::Gemm<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-                typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, ActivationEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
+            typedef cutlass::gemm::device::Gemm<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>,
+                ActivationEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
                 Gemm;
 
             typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {act, sum_source}, 1};
@@ -1294,15 +1296,18 @@ namespace ngp::mlp {
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, ngp::legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
     void fc_multiply(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrix<TypeB, LayoutB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, ngp::network::detail::Activation act = ngp::network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
         if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
-        if (D.layout() == ngp::legacy::CM) fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer, sum_source);
-        else fc_multiply<Config>(stream, A, B, C.rm(), D.rm(), act, transfer, sum_source);
+        if (D.layout() == ngp::legacy::CM)
+            fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer, sum_source);
+        else
+            fc_multiply<Config>(stream, A, B, C.rm(), D.rm(), act, transfer, sum_source);
     }
 
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrixDynamic<TypeB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, ngp::network::detail::Activation act = ngp::network::detail::Activation::None, bool transfer = false,
-        bool sum_source = false) {
-        if (B.layout() == ngp::legacy::CM) fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer, sum_source);
-        else fc_multiply<Config>(stream, A, B.rm(), C, D, act, transfer, sum_source);
+    void fc_multiply(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrixDynamic<TypeB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, ngp::network::detail::Activation act = ngp::network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
+        if (B.layout() == ngp::legacy::CM)
+            fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer, sum_source);
+        else
+            fc_multiply<Config>(stream, A, B.rm(), C, D, act, transfer, sum_source);
     }
 
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, typename TypeD>
@@ -1336,8 +1341,8 @@ namespace ngp::mlp {
 
         typedef typename CutlassElementType<TypeA>::type MatmulTypeCompute;
         typedef typename CutlassElementType<TypeC>::type MatmulTypeAccumulator;
-        typedef cutlass::gemm::device::GemmSplitKParallel<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-            typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>>
+        typedef cutlass::gemm::device::GemmSplitKParallel<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>,
+            cutlass::epilogue::thread::LinearCombination<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>>
             Gemm;
 
         typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {(cutlass::half_t) 1.0f, (cutlass::half_t) beta}, (int) split_k_slices};
@@ -1347,20 +1352,26 @@ namespace ngp::mlp {
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, ngp::legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
     void fc_multiply_split_k(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrix<TypeB, LayoutB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
         if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
-        if (D.layout() == ngp::legacy::CM) fc_multiply_split_k<Config>(stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
-        else fc_multiply_split_k<Config>(stream, A, B, C.rm(), D.rm(), split_k_slices, beta);
+        if (D.layout() == ngp::legacy::CM)
+            fc_multiply_split_k<Config>(stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
+        else
+            fc_multiply_split_k<Config>(stream, A, B, C.rm(), D.rm(), split_k_slices, beta);
     }
 
     template <typename Config, typename TypeA, ngp::legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
     void fc_multiply_split_k(cudaStream_t stream, const ngp::legacy::GPUMatrix<TypeA, LayoutA>& A, const ngp::legacy::GPUMatrixDynamic<TypeB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
-        if (B.layout() == ngp::legacy::CM) fc_multiply_split_k<Config>(stream, A, B.cm(), C, D, split_k_slices, beta);
-        else fc_multiply_split_k<Config>(stream, A, B.rm(), C, D, split_k_slices, beta);
+        if (B.layout() == ngp::legacy::CM)
+            fc_multiply_split_k<Config>(stream, A, B.cm(), C, D, split_k_slices, beta);
+        else
+            fc_multiply_split_k<Config>(stream, A, B.rm(), C, D, split_k_slices, beta);
     }
 
     template <typename Config, typename TypeA, typename TypeB, typename TypeC, typename TypeD>
     void fc_multiply_split_k(cudaStream_t stream, const ngp::legacy::GPUMatrixDynamic<TypeA>& A, const ngp::legacy::GPUMatrixDynamic<TypeB>& B, const ngp::legacy::GPUMatrixDynamic<TypeC>& C, const ngp::legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
-        if (A.layout() == ngp::legacy::CM) fc_multiply_split_k<Config>(stream, A.cm(), B, C, D, split_k_slices, beta);
-        else fc_multiply_split_k<Config>(stream, A.rm(), B, C, D, split_k_slices, beta);
+        if (A.layout() == ngp::legacy::CM)
+            fc_multiply_split_k<Config>(stream, A.cm(), B, C, D, split_k_slices, beta);
+        else
+            fc_multiply_split_k<Config>(stream, A.rm(), B, C, D, split_k_slices, beta);
     }
 
     template <typename Config, typename TypeA, typename TypeB, typename TypeD>
@@ -1393,7 +1404,7 @@ namespace ngp::mlp {
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, bool BACKWARD = false>
     __device__ void threadblock_layer(ngp::network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const OUT_T* __restrict__ activation_aux = nullptr) {
-        constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
+        constexpr std::uint32_t SKEW     = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
 
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> act_frag;
@@ -1404,15 +1415,17 @@ namespace ngp::mlp {
         const std::uint32_t wi = threadIdx.y;
 
         const std::uint32_t lane_offset = (8u * li) % WIDTH;
-        const std::uint32_t row = (8u * li + wi * 8u * 32u) / WIDTH;
+        const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
         const std::uint32_t weights_col = 16u * wi;
 
         __syncthreads();
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t i = 0u; i < N_BLOCKS; ++i) {
-            if constexpr (BACKWARD) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * WIDTH + weights_col, WIDTH);
-            else nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * WIDTH, WIDTH);
+            if constexpr (BACKWARD)
+                nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * WIDTH + weights_col, WIDTH);
+            else
+                nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * WIDTH, WIDTH);
         }
 
         TCNN_PRAGMA_UNROLL
@@ -1454,27 +1467,26 @@ namespace ngp::mlp {
         const std::uint32_t wi = threadIdx.y;
 
         const std::uint32_t lane_offset = (8u * li) % WIDTH;
-        const std::uint32_t row = (8u * li + wi * 8u * 32u) / WIDTH;
+        const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)] = *(int4*) &input_threadblock[lane_offset + (row + 16u * i) * WIDTH];
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, ngp::network::detail::Activation ACTIVATION, typename OUTPUT_LAYOUT>
-    __global__ void kernel_mlp_fused_backward(const __half* __restrict__ dL_doutput, const __half* __restrict__ weights, __half* __restrict__ out_intermediate, const __half* __restrict__ forward, __half* __restrict__ dL_dinput, const __half* __restrict__ weights_first_layer, const std::uint32_t output_stride,
-        const std::uint32_t batch_size, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls) {
+    __global__ void kernel_mlp_fused_backward(const __half* __restrict__ dL_doutput, const __half* __restrict__ weights, __half* __restrict__ out_intermediate, const __half* __restrict__ forward, __half* __restrict__ dL_dinput, const __half* __restrict__ weights_first_layer, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls) {
         constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
 
-        const std::uint32_t wi = threadIdx.y;
-        const std::uint32_t bi = blockIdx.x;
+        const std::uint32_t wi            = threadIdx.y;
+        const std::uint32_t bi            = blockIdx.x;
         const std::uint32_t elem_idx_base = 16u * bi * N_ITERS;
-        const std::uint32_t elem_idx = elem_idx_base;
+        const std::uint32_t elem_idx      = elem_idx_base;
 
         extern __shared__ __half shmem[];
         __half* act_shmem = shmem;
 
         const std::uint32_t weights_stride = WIDTH * WIDTH;
-        const std::uint32_t layer_stride = WIDTH * batch_size;
+        const std::uint32_t layer_stride   = WIDTH * batch_size;
 
         if (out_width <= 16u) {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, OUTPUT_LAYOUT> act_frag;
@@ -1488,8 +1500,10 @@ namespace ngp::mlp {
             for (std::uint32_t l = 0u; l < N_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
 
-                if constexpr (std::is_same_v<OUTPUT_LAYOUT, nvcuda::wmma::row_major>) nvcuda::wmma::load_matrix_sync(act_frag, dL_doutput + (elem_idx + 16u * l) * output_stride, output_stride);
-                else nvcuda::wmma::load_matrix_sync(act_frag, dL_doutput + (elem_idx + 16u * l), output_stride);
+                if constexpr (std::is_same_v<OUTPUT_LAYOUT, nvcuda::wmma::row_major>)
+                    nvcuda::wmma::load_matrix_sync(act_frag, dL_doutput + (elem_idx + 16u * l) * output_stride, output_stride);
+                else
+                    nvcuda::wmma::load_matrix_sync(act_frag, dL_doutput + (elem_idx + 16u * l), output_stride);
 
                 nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
 
@@ -1505,9 +1519,9 @@ namespace ngp::mlp {
 
             __syncthreads();
 
-            const std::uint32_t li = threadIdx.x;
+            const std::uint32_t li          = threadIdx.x;
             const std::uint32_t lane_offset = (8u * li) % WIDTH;
-            const std::uint32_t row = (8u * li + wi * 8u * 32u) / WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &out_intermediate[lane_offset + (row + elem_idx + i * 16u) * WIDTH] = *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)];
@@ -1521,23 +1535,22 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, typename T, ngp::network::detail::Activation ACTIVATION>
-    void mlp_fused_backward(cudaStream_t stream, const ngp::legacy::GPUMatrix<T, ngp::legacy::RM>& weights_first_layer, const ngp::legacy::GPUMatrix<T, ngp::legacy::RM>& weights, const ngp::legacy::GPUMatrixDynamic<T>& dL_doutput, ngp::legacy::GPUMatrixDynamic<T>& temporaries, const ngp::legacy::GPUMatrixDynamic<T>& forward,
-        ngp::legacy::GPUMatrixDynamic<T>* dL_dinput, const std::uint32_t n_hidden_matmuls) {
+    void mlp_fused_backward(cudaStream_t stream, const ngp::legacy::GPUMatrix<T, ngp::legacy::RM>& weights_first_layer, const ngp::legacy::GPUMatrix<T, ngp::legacy::RM>& weights, const ngp::legacy::GPUMatrixDynamic<T>& dL_doutput, ngp::legacy::GPUMatrixDynamic<T>& temporaries, const ngp::legacy::GPUMatrixDynamic<T>& forward, ngp::legacy::GPUMatrixDynamic<T>* dL_dinput, const std::uint32_t n_hidden_matmuls) {
         static_assert(std::is_same_v<T, __half>, "The fully fused backward pass only supports __half precision.");
-        const std::uint32_t batch_size = dL_doutput.cols();
-        const std::uint32_t out_width = dL_doutput.rows();
+        const std::uint32_t batch_size   = dL_doutput.cols();
+        const std::uint32_t out_width    = dL_doutput.rows();
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
-        const std::uint32_t N_ITERS = WIDTH >= 256u ? 2u : 8u;
+        const std::uint32_t N_ITERS      = WIDTH >= 256u ? 2u : 8u;
 
         ngp::legacy::check_or_throw(forward.cols() == batch_size);
         ngp::legacy::check_or_throw(batch_size % (16u * N_ITERS) == 0u);
         ngp::legacy::check_or_throw(!dL_dinput || dL_dinput->layout() == ngp::legacy::RM || dL_dinput->stride() == dL_dinput->m());
 
-        const dim3 threads = {32u, N_BLOCKS, 1u};
+        const dim3 threads                    = {32u, N_BLOCKS, 1u};
         const std::uint32_t n_elems_per_block = 16u * N_ITERS;
-        const std::uint32_t n_blocks = (batch_size + n_elems_per_block - 1u) / n_elems_per_block;
-        const int shmem_size = sizeof(__half) * ((16u * N_ITERS) * (WIDTH + (WIDTH % 16u == 0u ? 8u : 0u)));
-        const dim3 blocks = {n_blocks, 1u, 1u};
+        const std::uint32_t n_blocks          = (batch_size + n_elems_per_block - 1u) / n_elems_per_block;
+        const int shmem_size                  = sizeof(__half) * ((16u * N_ITERS) * (WIDTH + (WIDTH % 16u == 0u ? 8u : 0u)));
+        const dim3 blocks                     = {n_blocks, 1u, 1u};
 
         if (dL_doutput.layout() == ngp::legacy::RM) {
             check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused_backward<WIDTH, N_ITERS, ACTIVATION, nvcuda::wmma::col_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem_size));
@@ -1550,28 +1563,28 @@ namespace ngp::mlp {
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, typename INPUT_LAYOUT>
     __device__ void threadblock_input_layer_forward_dynamic(ngp::network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ input_threadblock, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const std::uint32_t in_width, const std::uint32_t batch_size) {
-        constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
+        constexpr std::uint32_t SKEW       = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t INPUT_SKEW = 8u;
-        constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
+        constexpr std::uint32_t N_BLOCKS   = WIDTH / 16u;
 
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, INPUT_LAYOUT> act_frag;
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag;
         nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, OUT_T> result_frag[N_ITERS];
 
-        const std::uint32_t li = threadIdx.x;
-        const std::uint32_t wi = threadIdx.y;
+        const std::uint32_t li          = threadIdx.x;
+        const std::uint32_t wi          = threadIdx.y;
         const std::uint32_t lane_offset = (8u * li) % WIDTH;
-        const std::uint32_t row = (8u * li + wi * 8u * 32u) / WIDTH;
+        const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
         const std::uint32_t weights_col = 16u * wi;
 
-        __half* __restrict__ weights_shmem = act_shmem + 16u * (in_width + INPUT_SKEW);
+        __half* __restrict__ weights_shmem   = act_shmem + 16u * (in_width + INPUT_SKEW);
         const std::uint32_t n_elems_per_load = N_BLOCKS * 32u * 8u;
-        const std::uint32_t thread_elem_idx = (li + wi * 32u) * 8u;
-        const std::uint32_t n_elems_b = WIDTH * in_width;
+        const std::uint32_t thread_elem_idx  = (li + wi * 32u) * 8u;
+        const std::uint32_t n_elems_b        = WIDTH * in_width;
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t idx = thread_elem_idx; idx < n_elems_b; idx += n_elems_per_load) {
-            const std::uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+            const std::uint32_t idx_skewed      = idx + idx / in_width * INPUT_SKEW;
             *(int4*) &weights_shmem[idx_skewed] = *(int4*) &weights_this_layer[idx];
         }
 
@@ -1585,7 +1598,7 @@ namespace ngp::mlp {
 
                 TCNN_PRAGMA_UNROLL
                 for (std::uint32_t idx = thread_elem_idx; idx < n_elems_a; idx += n_elems_per_load) {
-                    const std::uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+                    const std::uint32_t idx_skewed  = idx + idx / in_width * INPUT_SKEW;
                     *(int4*) &act_shmem[idx_skewed] = *(int4*) &input_threadblock[l * n_elems_a + idx];
                 }
 
@@ -1595,8 +1608,10 @@ namespace ngp::mlp {
             nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t i = 0u; i < n_tensor_ops; ++i) {
-                if constexpr (std::is_same_v<INPUT_LAYOUT, nvcuda::wmma::row_major>) nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i, in_width + INPUT_SKEW);
-                else nvcuda::wmma::load_matrix_sync(act_frag, input_threadblock + 16u * i * batch_size + 16u * l, batch_size);
+                if constexpr (std::is_same_v<INPUT_LAYOUT, nvcuda::wmma::row_major>)
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i, in_width + INPUT_SKEW);
+                else
+                    nvcuda::wmma::load_matrix_sync(act_frag, input_threadblock + 16u * i * batch_size + 16u * l, batch_size);
 
                 nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (in_width + INPUT_SKEW), in_width + INPUT_SKEW);
                 nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
@@ -1621,7 +1636,7 @@ namespace ngp::mlp {
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T>
     __device__ void threadblock_last_layer_forward(ngp::network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out, const std::uint32_t output_stride, const nvcuda::wmma::layout_t output_layout) {
-        constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
+        constexpr std::uint32_t SKEW     = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
 
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> act_frag;
@@ -1632,8 +1647,8 @@ namespace ngp::mlp {
         const std::uint32_t wi = threadIdx.y;
 
         __half* __restrict__ weights_shmem = act_shmem + N_ITERS * 16u * (WIDTH + SKEW);
-        const std::uint32_t weights_row = (8u * li) % WIDTH;
-        const std::uint32_t weights_col = (8u * li + 8u * 32u * wi) / WIDTH;
+        const std::uint32_t weights_row    = (8u * li) % WIDTH;
+        const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / WIDTH;
 
         *(int4*) &weights_shmem[weights_row + weights_col * (WIDTH + SKEW)] = *(int4*) &weights_this_layer[weights_row + weights_col * WIDTH];
         __syncthreads();
@@ -1651,18 +1666,20 @@ namespace ngp::mlp {
             }
 
             ngp::network::detail::warp_activation<__half>(activation, result_frag, result_frag);
-            if (output_layout == nvcuda::wmma::mem_row_major) nvcuda::wmma::store_matrix_sync(out + idx * 16u * output_stride, result_frag, output_stride, output_layout);
-            else nvcuda::wmma::store_matrix_sync(out + idx * 16u, result_frag, output_stride, output_layout);
+            if (output_layout == nvcuda::wmma::mem_row_major)
+                nvcuda::wmma::store_matrix_sync(out + idx * 16u * output_stride, result_frag, output_stride, output_layout);
+            else
+                nvcuda::wmma::store_matrix_sync(out + idx * 16u, result_frag, output_stride, output_layout);
         }
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS>
     __device__ void threadblock_write_output_static(const __half* __restrict__ act_shmem, __half* __restrict__ output_threadblock) {
-        constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
-        const std::uint32_t li = threadIdx.x;
-        const std::uint32_t wi = threadIdx.y;
+        constexpr std::uint32_t SKEW    = WIDTH % 16u == 0u ? 8u : 0u;
+        const std::uint32_t li          = threadIdx.x;
+        const std::uint32_t wi          = threadIdx.y;
         const std::uint32_t lane_offset = (8u * li) % WIDTH;
-        const std::uint32_t row = (8u * li + wi * 8u * 32u) / WIDTH;
+        const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
 
         __syncthreads();
 
@@ -1671,32 +1688,36 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, ngp::network::detail::Activation ACTIVATION, bool INFERENCE>
-    __global__ void kernel_mlp_fused(const ngp::network::detail::Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t in_width,
-        const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout) {
+    __global__ void kernel_mlp_fused(
+        const ngp::network::detail::Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t in_width, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout) {
         extern __shared__ __half shmem[];
         __half* act_shmem = shmem;
 
         const std::uint32_t elem_idx = 16u * blockIdx.x * N_ITERS;
 
         if (input_layout == nvcuda::wmma::mem_col_major || in_width != WIDTH) {
-            if (input_layout == nvcuda::wmma::mem_row_major) threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::row_major>(ACTIVATION, act_shmem, input + elem_idx * in_width, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
-            else threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::col_major>(ACTIVATION, act_shmem, input + elem_idx, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
+            if (input_layout == nvcuda::wmma::mem_row_major)
+                threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::row_major>(ACTIVATION, act_shmem, input + elem_idx * in_width, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
+            else
+                threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::col_major>(ACTIVATION, act_shmem, input + elem_idx, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
         } else {
             threadblock_load_input_static<WIDTH, N_ITERS>(act_shmem, input + elem_idx * WIDTH);
             threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr);
         }
 
         const std::uint32_t first_weights_stride = WIDTH * in_width;
-        const std::uint32_t weights_stride = WIDTH * WIDTH;
-        const std::uint32_t layer_stride = WIDTH * batch_size;
+        const std::uint32_t weights_stride       = WIDTH * WIDTH;
+        const std::uint32_t layer_stride         = WIDTH * batch_size;
 
         for (std::uint32_t k = 0u; k < n_hidden_matmuls; ++k) threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights + first_weights_stride + weights_stride * k, !INFERENCE ? (out_intermediate + layer_stride * (k + 1u) + elem_idx * WIDTH) : nullptr);
 
         if (out_width > 16u) {
             if (INFERENCE) threadblock_write_output_static<WIDTH, N_ITERS>(act_shmem, out_intermediate + elem_idx * WIDTH);
         } else if (out != nullptr) {
-            if (output_layout == nvcuda::wmma::mem_row_major) threadblock_last_layer_forward<WIDTH, N_ITERS, OUT_T>(output_activation, act_shmem, weights + first_weights_stride + weights_stride * n_hidden_matmuls, out + elem_idx * output_stride, output_stride, output_layout);
-            else threadblock_last_layer_forward<WIDTH, N_ITERS, OUT_T>(output_activation, act_shmem, weights + first_weights_stride + weights_stride * n_hidden_matmuls, out + elem_idx, output_stride, output_layout);
+            if (output_layout == nvcuda::wmma::mem_row_major)
+                threadblock_last_layer_forward<WIDTH, N_ITERS, OUT_T>(output_activation, act_shmem, weights + first_weights_stride + weights_stride * n_hidden_matmuls, out + elem_idx * output_stride, output_stride, output_layout);
+            else
+                threadblock_last_layer_forward<WIDTH, N_ITERS, OUT_T>(output_activation, act_shmem, weights + first_weights_stride + weights_stride * n_hidden_matmuls, out + elem_idx, output_stride, output_layout);
         }
     }
 
@@ -1704,10 +1725,10 @@ namespace ngp::mlp {
     void mlp_fused_forward(cudaStream_t stream, ngp::network::detail::Activation output_activation, const ngp::legacy::GPUMatrix<T, ngp::legacy::RM>& weights, const ngp::legacy::GPUMatrixDynamic<T>& input, ngp::legacy::GPUMatrixDynamic<T>& output_intermediate, ngp::legacy::GPUMatrixDynamic<T>* output, const std::uint32_t n_hidden_layers) {
         static_assert(std::is_same_v<T, __half>, "The fully fused forward pass only supports __half precision.");
         const std::uint32_t batch_size = input.cols();
-        const std::uint32_t in_width = input.rows();
+        const std::uint32_t in_width   = input.rows();
 
-        constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
-        constexpr std::uint32_t INPUT_SKEW = 8u;
+        constexpr std::uint32_t SKEW         = WIDTH % 16u == 0u ? 8u : 0u;
+        constexpr std::uint32_t INPUT_SKEW   = 8u;
         constexpr std::uint32_t N_BLOCK_ROWS = WIDTH / 16u;
 
         static_assert(WIDTH % 16u == 0u, "Width must be a multiply of 16.");
@@ -1726,9 +1747,9 @@ namespace ngp::mlp {
             throw std::runtime_error{stream_message.str()};
         }
 
-        const dim3 threads = {32u, N_BLOCK_ROWS, 1u};
+        const dim3 threads                    = {32u, N_BLOCK_ROWS, 1u};
         const std::uint32_t n_elems_per_block = 16u * N_ITERS;
-        const std::uint32_t n_blocks = (batch_size + n_elems_per_block - 1u) / n_elems_per_block;
+        const std::uint32_t n_blocks          = (batch_size + n_elems_per_block - 1u) / n_elems_per_block;
 
         std::size_t shmem_size = sizeof(__half) * (16u + 16u * N_ITERS) * (WIDTH + SKEW);
         if (in_width != WIDTH || input.layout() == ngp::legacy::RM) shmem_size = std::max(shmem_size, sizeof(__half) * (WIDTH + 16u) * (in_width + INPUT_SKEW));
@@ -1736,8 +1757,8 @@ namespace ngp::mlp {
         const dim3 blocks = {n_blocks, 1u, 1u};
 
         check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) shmem_size));
-        kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE><<<blocks, threads, shmem_size, stream>>>(output_activation, input.data(), weights.data(), output_intermediate.data(), output ? output->data() : nullptr, output ? output->stride() : 0u, batch_size, in_width, output ? output->rows() : 0u,
-            n_hidden_layers, input.layout() == ngp::legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major, output && output->layout() == ngp::legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major);
+        kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>
+            <<<blocks, threads, shmem_size, stream>>>(output_activation, input.data(), weights.data(), output_intermediate.data(), output ? output->data() : nullptr, output ? output->stride() : 0u, batch_size, in_width, output ? output->rows() : 0u, n_hidden_layers, input.layout() == ngp::legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major, output && output->layout() == ngp::legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major);
     }
 
     template <typename T, std::uint32_t WIDTH>
@@ -1766,8 +1787,7 @@ namespace ngp::mlp {
         void inference(cudaStream_t stream, const ngp::legacy::GPUMatrixDynamic<T>& input, ngp::legacy::GPUMatrixDynamic<T>& output);
         void prepare_scratch(cudaStream_t stream, std::uint32_t batch_size, ngp::legacy::MatrixLayout output_layout, Scratch& scratch);
         void forward(cudaStream_t stream, const ngp::legacy::GPUMatrixDynamic<T>& input, ngp::legacy::GPUMatrixDynamic<T>* output, Scratch& scratch);
-        void backward(cudaStream_t stream, Scratch& scratch, const ngp::legacy::GPUMatrixDynamic<T>& input, const ngp::legacy::GPUMatrixDynamic<T>& output, const ngp::legacy::GPUMatrixDynamic<T>& dL_doutput, ngp::legacy::GPUMatrixDynamic<T>* dL_dinput = nullptr,
-            ngp::network::detail::GradientMode param_gradients_mode = ngp::network::detail::GradientMode::Overwrite);
+        void backward(cudaStream_t stream, Scratch& scratch, const ngp::legacy::GPUMatrixDynamic<T>& input, const ngp::legacy::GPUMatrixDynamic<T>& output, const ngp::legacy::GPUMatrixDynamic<T>& dL_doutput, ngp::legacy::GPUMatrixDynamic<T>* dL_dinput = nullptr, ngp::network::detail::GradientMode param_gradients_mode = ngp::network::detail::GradientMode::Overwrite);
 
         void initialize_params(ngp::legacy::math::pcg32& rnd, float* params_full_precision, float scale = 1.0f);
 
@@ -1812,27 +1832,26 @@ namespace ngp::mlp {
         }
 
     private:
-        std::uint32_t m_n_hidden_layers = 0u;
-        std::uint32_t m_n_hidden_matmuls = 0u;
-        std::uint32_t m_input_width = 0u;
-        std::uint32_t m_network_width = WIDTH;
-        std::uint32_t m_output_width = 0u;
-        std::uint32_t m_padded_output_width = 0u;
-        ngp::network::detail::Activation m_activation = ngp::network::detail::Activation::None;
+        std::uint32_t m_n_hidden_layers                      = 0u;
+        std::uint32_t m_n_hidden_matmuls                     = 0u;
+        std::uint32_t m_input_width                          = 0u;
+        std::uint32_t m_network_width                        = WIDTH;
+        std::uint32_t m_output_width                         = 0u;
+        std::uint32_t m_padded_output_width                  = 0u;
+        ngp::network::detail::Activation m_activation        = ngp::network::detail::Activation::None;
         ngp::network::detail::Activation m_output_activation = ngp::network::detail::Activation::None;
         std::vector<ngp::legacy::GPUMatrix<T, ngp::legacy::RM>> m_weight_matrices;
         std::size_t m_total_n_params = 0u;
         std::vector<ngp::legacy::GPUMatrix<T, ngp::legacy::RM>> m_gradient_matrices;
-        T* m_params = nullptr;
+        T* m_params    = nullptr;
         T* m_gradients = nullptr;
     };
 
     template <typename T, std::uint32_t WIDTH>
-    FullyFusedMLP<T, WIDTH>::FullyFusedMLP(const std::uint32_t input_width, const std::uint32_t output_width, const std::uint32_t n_hidden_layers, const ngp::network::detail::Activation activation, const ngp::network::detail::Activation output_activation)
-        : m_n_hidden_layers{n_hidden_layers}, m_input_width{input_width}, m_output_width{output_width}, m_activation{activation}, m_output_activation{output_activation} {
+    FullyFusedMLP<T, WIDTH>::FullyFusedMLP(const std::uint32_t input_width, const std::uint32_t output_width, const std::uint32_t n_hidden_layers, const ngp::network::detail::Activation activation, const ngp::network::detail::Activation output_activation) : m_n_hidden_layers{n_hidden_layers}, m_input_width{input_width}, m_output_width{output_width}, m_activation{activation}, m_output_activation{output_activation} {
         if (m_n_hidden_layers <= 0u) throw std::runtime_error{"FullyFusedMLP requires at least 1 hidden layer (3 layers in total)."};
 
-        m_n_hidden_matmuls = n_hidden_layers - 1u;
+        m_n_hidden_matmuls    = n_hidden_layers - 1u;
         m_padded_output_width = ngp::legacy::next_multiple(m_output_width, 16u);
 
         m_weight_matrices.emplace_back(nullptr, m_network_width, m_input_width);
@@ -1858,7 +1877,7 @@ namespace ngp::mlp {
         ngp::legacy::check_or_throw(input.n() == output.n());
         ngp::legacy::check_or_throw(params() != nullptr);
 
-        const std::uint32_t batch_size = input.n();
+        const std::uint32_t batch_size                 = input.n();
         ngp::legacy::GPUMatrixDynamic<T> inference_tmp = m_output_width > 16u ? ngp::legacy::GPUMatrixDynamic<T>{m_network_width, batch_size, stream, ngp::legacy::CM} : ngp::legacy::GPUMatrixDynamic<T>{nullptr, m_network_width, batch_size, ngp::legacy::CM};
 
         switch (m_activation) {
@@ -1917,14 +1936,12 @@ namespace ngp::mlp {
 
         const float param_gradient_beta = param_gradients_mode == ngp::network::detail::GradientMode::Accumulate ? 1.0f : 0.0f;
         std::vector<ngp::network::detail::SyncedStreamReservation> multi_streams;
-        const std::uint32_t split_k_factor = batch_size / std::min(1u << 12u, batch_size);
+        const std::uint32_t split_k_factor                     = batch_size / std::min(1u << 12u, batch_size);
         const ngp::legacy::GPUMatrixDynamic<T>& tmp_dL_doutput = m_output_activation == ngp::network::detail::Activation::None ? dL_doutput : scratch.backward_output;
 
-        auto dynamic_view = [](auto& matrix) {
-            return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<decltype(matrix)>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()};
-        };
+        auto dynamic_view = [](auto& matrix) { return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<decltype(matrix)>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()}; };
 
-        std::uint32_t tmp_idx = m_n_hidden_matmuls;
+        std::uint32_t tmp_idx          = m_n_hidden_matmuls;
         std::uint32_t backward_tmp_idx = 0u;
 
         if (param_gradients_mode != ngp::network::detail::GradientMode::Ignore) {
@@ -1979,7 +1996,7 @@ namespace ngp::mlp {
         scratch.forward_hidden.resize(m_n_hidden_layers);
         scratch.backward_hidden.resize(m_n_hidden_layers);
 
-        std::size_t shared_forward_bytes = 0u;
+        std::size_t shared_forward_bytes  = 0u;
         std::size_t shared_backward_bytes = 0u;
         for (std::uint32_t i = 0u; i < m_n_hidden_layers; ++i) {
             scratch.forward_hidden[i].set_size_unsafe(m_network_width, batch_size);
@@ -1988,12 +2005,12 @@ namespace ngp::mlp {
             shared_backward_bytes += scratch.backward_hidden[i].n_bytes();
         }
 
-        scratch.forward_alloc = ngp::network::detail::allocate_workspace(stream, shared_forward_bytes);
+        scratch.forward_alloc  = ngp::network::detail::allocate_workspace(stream, shared_forward_bytes);
         scratch.backward_alloc = ngp::network::detail::allocate_workspace(stream, shared_backward_bytes);
 
-        void* forward_base = scratch.forward_alloc.data();
-        void* backward_base = scratch.backward_alloc.data();
-        std::size_t forward_offset = 0u;
+        void* forward_base          = scratch.forward_alloc.data();
+        void* backward_base         = scratch.backward_alloc.data();
+        std::size_t forward_offset  = 0u;
         std::size_t backward_offset = 0u;
         for (std::uint32_t i = 0u; i < m_n_hidden_layers; ++i) {
             scratch.forward_hidden[i].set_data_unsafe(static_cast<char*>(forward_base) + forward_offset);
@@ -2002,13 +2019,15 @@ namespace ngp::mlp {
             backward_offset += scratch.backward_hidden[i].n_bytes();
         }
 
-        if (m_output_activation != ngp::network::detail::Activation::None) scratch.backward_output = {m_padded_output_width, batch_size, stream, output_layout};
-        else scratch.backward_output = {};
+        if (m_output_activation != ngp::network::detail::Activation::None)
+            scratch.backward_output = {m_padded_output_width, batch_size, stream, output_layout};
+        else
+            scratch.backward_output = {};
     }
 
     template <typename T, std::uint32_t WIDTH>
     void FullyFusedMLP<T, WIDTH>::set_params(T* params, T* gradients) {
-        m_params = params;
+        m_params    = params;
         m_gradients = gradients;
 
         std::size_t current_pos = 0u;
@@ -2039,8 +2058,7 @@ namespace ngp::mlp {
 namespace ngp::optimizer {
 
     template <typename T>
-    __global__ void adam_step(const std::uint32_t n_elements, const std::uint32_t n_matrix_weights, const float loss_scale, const float learning_rate, const float beta1, const float beta2, const float epsilon, const float l2_reg, float* __restrict__ weights_full_precision, T* __restrict__ weights, const T* __restrict__ gradients, float* __restrict__ first_moments,
-        float* __restrict__ second_moments, std::uint32_t* __restrict__ param_steps) {
+    __global__ void adam_step(const std::uint32_t n_elements, const std::uint32_t n_matrix_weights, const float loss_scale, const float learning_rate, const float beta1, const float beta2, const float epsilon, const float l2_reg, float* __restrict__ weights_full_precision, T* __restrict__ weights, const T* __restrict__ gradients, float* __restrict__ first_moments, float* __restrict__ second_moments, std::uint32_t* __restrict__ param_steps) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
@@ -2050,12 +2068,12 @@ namespace ngp::optimizer {
         const float weight_fp = weights_full_precision[i];
         if (i < n_matrix_weights) gradient += l2_reg * weight_fp;
 
-        const float gradient_sq = gradient * gradient;
+        const float gradient_sq  = gradient * gradient;
         const float first_moment = first_moments[i] = beta1 * first_moments[i] + (1.0f - beta1) * gradient;
         const float second_moment = second_moments[i] = beta2 * second_moments[i] + (1.0f - beta2) * gradient_sq;
-        const std::uint32_t current_step = ++param_steps[i];
-        const float corrected_learning_rate = learning_rate * sqrtf(1.0f - powf(beta2, static_cast<float>(current_step))) / (1.0f - powf(beta1, static_cast<float>(current_step)));
-        const float new_weight = weight_fp - corrected_learning_rate * first_moment / (sqrtf(second_moment) + epsilon);
+        const std::uint32_t current_step              = ++param_steps[i];
+        const float corrected_learning_rate           = learning_rate * sqrtf(1.0f - powf(beta2, static_cast<float>(current_step))) / (1.0f - powf(beta1, static_cast<float>(current_step)));
+        const float new_weight                        = weight_fp - corrected_learning_rate * first_moment / (sqrtf(second_moment) + epsilon);
 
         weights_full_precision[i] = new_weight;
         weights[i]                = static_cast<T>(new_weight);
@@ -2107,8 +2125,8 @@ namespace ngp::optimizer {
         std::uint32_t m_n_weights        = 0;
         std::uint32_t m_n_matrix_weights = 0;
 
-        ngp::legacy::GpuBuffer<float> m_first_moments    = {};
-        ngp::legacy::GpuBuffer<float> m_second_moments   = {};
+        ngp::legacy::GpuBuffer<float> m_first_moments       = {};
+        ngp::legacy::GpuBuffer<float> m_second_moments      = {};
         ngp::legacy::GpuBuffer<std::uint32_t> m_param_steps = {};
 
         float m_base_learning_rate = 1e-3f;
@@ -2134,8 +2152,8 @@ namespace ngp::network {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
-        const std::uint32_t elem_idx = i / 3u;
-        const std::uint32_t dim_idx = i - elem_idx * 3u;
+        const std::uint32_t elem_idx         = i / 3u;
+        const std::uint32_t dim_idx          = i - elem_idx * 3u;
         rgb[elem_idx * rgb_stride + dim_idx] = rgbd[elem_idx * output_stride + dim_idx];
     }
 
@@ -2149,23 +2167,23 @@ namespace ngp::network {
     template <typename T>
     struct ModelState {
         struct Layout {
-            std::uint32_t pos_input_width = 0u;
-            std::uint32_t pos_output_width = 0u;
+            std::uint32_t pos_input_width        = 0u;
+            std::uint32_t pos_output_width       = 0u;
             ngp::legacy::MatrixLayout pos_layout = ngp::legacy::CM;
-            std::size_t pos_param_count = 0u;
-            std::uint32_t dir_input_width = 0u;
-            std::uint32_t dir_output_width = 0u;
+            std::size_t pos_param_count          = 0u;
+            std::uint32_t dir_input_width        = 0u;
+            std::uint32_t dir_output_width       = 0u;
             ngp::legacy::MatrixLayout dir_layout = ngp::legacy::CM;
-            std::uint32_t density_output_width = 0u;
-            std::uint32_t rgb_output_width = 0u;
-            std::uint32_t padded_output_width = 0u;
+            std::uint32_t density_output_width   = 0u;
+            std::uint32_t rgb_output_width       = 0u;
+            std::uint32_t padded_output_width    = 0u;
         };
 
         struct ParamLayout {
             std::size_t density_network = 0u;
-            std::size_t rgb_network = 0u;
-            std::size_t pos_encoding = 0u;
-            std::size_t total = 0u;
+            std::size_t rgb_network     = 0u;
+            std::size_t pos_encoding    = 0u;
+            std::size_t total           = 0u;
         };
 
         struct Scratch {
@@ -2184,28 +2202,24 @@ namespace ngp::network {
 
         template <typename Plan>
         ModelState(const ngp::InstantNGP::NetworkConfig& config, const Plan& plan)
-            : pos_encoding{ngp::encoding::create_position_encoding<T>(plan.network.n_pos_dims, config.encoding, plan.network.density_alignment)},
-              dir_encoding{ngp::encoding::create_direction_encoding<T>(plan.network.n_dir_dims, config.direction_encoding, plan.network.rgb_alignment)},
-              density_network{plan.network.density_input_dims, plan.network.density_output_dims, config.density_network.n_hidden_layers, ngp::network::detail::activation_from_config(config.density_network.activation),
-                  ngp::network::detail::activation_from_config(config.density_network.output_activation)},
-              rgb_network{plan.network.rgb_input_dims, plan.network.rgb_output_dims, config.rgb_network.n_hidden_layers, ngp::network::detail::activation_from_config(config.rgb_network.activation), ngp::network::detail::activation_from_config(config.rgb_network.output_activation)},
-              rgb_network_input_width{plan.network.rgb_input_dims},
-              dir_offset{plan.network.dir_offset} {
-            layout.pos_input_width = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.input_width(); });
-            layout.pos_output_width = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.padded_output_width(); });
-            layout.pos_layout = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.preferred_output_layout(); });
-            layout.pos_param_count = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.n_params(); });
-            layout.dir_input_width = dir_encoding.input_width();
-            layout.dir_output_width = dir_encoding.padded_output_width();
-            layout.dir_layout = dir_encoding.preferred_output_layout();
+            : pos_encoding{ngp::encoding::create_position_encoding<T>(plan.network.n_pos_dims, config.encoding, plan.network.density_alignment)}, dir_encoding{ngp::encoding::create_direction_encoding<T>(plan.network.n_dir_dims, config.direction_encoding, plan.network.rgb_alignment)},
+              density_network{plan.network.density_input_dims, plan.network.density_output_dims, config.density_network.n_hidden_layers, ngp::network::detail::activation_from_config(config.density_network.activation), ngp::network::detail::activation_from_config(config.density_network.output_activation)},
+              rgb_network{plan.network.rgb_input_dims, plan.network.rgb_output_dims, config.rgb_network.n_hidden_layers, ngp::network::detail::activation_from_config(config.rgb_network.activation), ngp::network::detail::activation_from_config(config.rgb_network.output_activation)}, rgb_network_input_width{plan.network.rgb_input_dims}, dir_offset{plan.network.dir_offset} {
+            layout.pos_input_width      = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.input_width(); });
+            layout.pos_output_width     = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.padded_output_width(); });
+            layout.pos_layout           = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.preferred_output_layout(); });
+            layout.pos_param_count      = ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.n_params(); });
+            layout.dir_input_width      = dir_encoding.input_width();
+            layout.dir_output_width     = dir_encoding.padded_output_width();
+            layout.dir_layout           = dir_encoding.preferred_output_layout();
             layout.density_output_width = density_network.padded_output_width();
-            layout.rgb_output_width = rgb_network.padded_output_width();
-            layout.padded_output_width = std::max(layout.rgb_output_width, 4u);
+            layout.rgb_output_width     = rgb_network.padded_output_width();
+            layout.padded_output_width  = std::max(layout.rgb_output_width, 4u);
 
             params.density_network = 0u;
-            params.rgb_network = params.density_network + density_network.n_params();
-            params.pos_encoding = params.rgb_network + rgb_network.n_params();
-            params.total = params.pos_encoding + ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.n_params(); });
+            params.rgb_network     = params.density_network + density_network.n_params();
+            params.pos_encoding    = params.rgb_network + rgb_network.n_params();
+            params.total           = params.pos_encoding + ngp::network::detail::visit_module(pos_encoding, [](const auto& impl) { return impl.n_params(); });
         }
 
         void set_params(T* params_ptr, T* gradients_ptr) {
@@ -2257,19 +2271,20 @@ namespace ngp::network {
 
             if (batch_size > 0u) {
                 const std::uint32_t blocks = (batch_size + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-                extract_density<T><<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(batch_size, density_output.layout() == ngp::legacy::AoS ? density_output.stride() : 1u, output.layout() == ngp::legacy::AoS ? padded_output_width() : 1u, density_output.data(),
-                    output.data() + 3u * (output.layout() == ngp::legacy::AoS ? 1u : batch_size));
+                extract_density<T><<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(batch_size, density_output.layout() == ngp::legacy::AoS ? density_output.stride() : 1u, output.layout() == ngp::legacy::AoS ? padded_output_width() : 1u, density_output.data(), output.data() + 3u * (output.layout() == ngp::legacy::AoS ? 1u : batch_size));
             }
         }
 
         void prepare_scratch(cudaStream_t stream, const std::uint32_t batch_size, const ngp::legacy::MatrixLayout output_layout, Scratch& scratch) {
-            scratch.density_network_input = ngp::legacy::GPUMatrixDynamic<T>{layout.pos_output_width, batch_size, stream, layout.pos_layout};
-            scratch.rgb_network_input = ngp::legacy::GPUMatrixDynamic<T>{rgb_network_input_width, batch_size, stream, layout.dir_layout};
+            scratch.density_network_input  = ngp::legacy::GPUMatrixDynamic<T>{layout.pos_output_width, batch_size, stream, layout.pos_layout};
+            scratch.rgb_network_input      = ngp::legacy::GPUMatrixDynamic<T>{rgb_network_input_width, batch_size, stream, layout.dir_layout};
             scratch.density_network_output = scratch.rgb_network_input.slice_rows(0u, layout.density_output_width);
-            scratch.dL_drgb = ngp::legacy::GPUMatrixDynamic<T>{layout.rgb_output_width, batch_size, stream, output_layout};
-            scratch.dL_drgb_input = ngp::legacy::GPUMatrixDynamic<T>{rgb_network_input_width, batch_size, stream, layout.dir_layout};
-            if (layout.pos_param_count > 0u) scratch.dL_ddensity_input = ngp::legacy::GPUMatrixDynamic<T>{layout.pos_output_width, batch_size, stream, layout.pos_layout};
-            else scratch.dL_ddensity_input = {};
+            scratch.dL_drgb                = ngp::legacy::GPUMatrixDynamic<T>{layout.rgb_output_width, batch_size, stream, output_layout};
+            scratch.dL_drgb_input          = ngp::legacy::GPUMatrixDynamic<T>{rgb_network_input_width, batch_size, stream, layout.dir_layout};
+            if (layout.pos_param_count > 0u)
+                scratch.dL_ddensity_input = ngp::legacy::GPUMatrixDynamic<T>{layout.pos_output_width, batch_size, stream, layout.pos_layout};
+            else
+                scratch.dL_ddensity_input = {};
 
             density_network.prepare_scratch(stream, batch_size, output_layout, scratch.density_network);
             rgb_network.prepare_scratch(stream, batch_size, output_layout, scratch.rgb_network);
@@ -2310,7 +2325,7 @@ namespace ngp::network {
 
             if (batch_size > 0u) {
                 const std::uint32_t rgb_elements = batch_size * 3u;
-                const std::uint32_t blocks = (rgb_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
+                const std::uint32_t blocks       = (rgb_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
                 extract_rgb<T><<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(rgb_elements, scratch.dL_drgb.m(), dL_doutput.m(), dL_doutput.data(), scratch.dL_drgb.data());
             }
 
@@ -2346,7 +2361,7 @@ namespace ngp::network {
         ngp::mlp::FullyFusedMLP<T, ngp::rgb_network_width> rgb_network;
         Layout layout;
         std::uint32_t rgb_network_input_width = 0u;
-        std::uint32_t dir_offset = 0u;
+        std::uint32_t dir_offset              = 0u;
         ParamLayout params;
     };
 
@@ -2355,8 +2370,8 @@ namespace ngp::network {
         struct ParamState {
             ngp::legacy::GpuBuffer<char> buffer;
             float* full_precision = nullptr;
-            T* values = nullptr;
-            T* gradients = nullptr;
+            T* values             = nullptr;
+            T* gradients          = nullptr;
         };
 
         TrainerState() = default;
@@ -2368,8 +2383,8 @@ namespace ngp::network {
             params.buffer.resize(sizeof(float) * param_count + sizeof(T) * param_count * 2u);
             params.buffer.memset(0);
             params.full_precision = (float*) params.buffer.data();
-            params.values = (T*) (params.buffer.data() + sizeof(float) * param_count);
-            params.gradients = (T*) (params.buffer.data() + sizeof(float) * param_count + sizeof(T) * param_count);
+            params.values         = (T*) (params.buffer.data() + sizeof(float) * param_count);
+            params.gradients      = (T*) (params.buffer.data() + sizeof(float) * param_count + sizeof(T) * param_count);
             model.set_params(params.values, params.gradients);
 
             ngp::legacy::math::pcg32 init_rng{seed};

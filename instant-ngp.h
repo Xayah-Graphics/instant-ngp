@@ -52,8 +52,29 @@ namespace ngp {
             legacy::math::mat4x3 camera    = {};
         };
 
+        struct TrainStats final {
+            float loss                                          = 0.0f;
+            float train_ms                                      = 0.0f;
+            float prep_ms                                       = 0.0f;
+            std::uint32_t training_step                         = 0u;
+            std::uint32_t batch_size                            = 0u;
+            std::uint32_t rays_per_batch                        = 0u;
+            std::uint32_t measured_batch_size                   = 0u;
+            std::uint32_t measured_batch_size_before_compaction = 0u;
+        };
+
+        struct ValidationResult final {
+            std::uint32_t width      = 0u;
+            std::uint32_t height     = 0u;
+            float mse                = 0.0f;
+            float psnr               = 0.0f;
+            std::int32_t image_index = -1;
+        };
+
         void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
         void train(std::int32_t iters);
+        [[nodiscard]] auto read_train_stats() const -> TrainStats;
+        [[nodiscard]] auto render_validation_image(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidationResult;
 
         struct NetworkConfig {
             struct HashGridConfig {
@@ -188,25 +209,25 @@ namespace ngp {
         };
 
         struct TrainingStepWorkspace final {
-            legacy::GpuAllocation alloc                         = {};
-            std::uint32_t* ray_indices                          = nullptr;
-            void* rays_unnormalized                             = nullptr;
-            std::uint32_t* numsteps                             = nullptr;
-            float* coords                                       = nullptr;
-            __half* mlp_out                                     = nullptr;
-            __half* dloss_dmlp_out                              = nullptr;
-            float* coords_compacted                             = nullptr;
-            std::uint32_t* ray_counter                          = nullptr;
-            std::uint32_t max_samples                           = 0u;
-            std::uint32_t max_inference                         = 0u;
-            std::uint32_t floats_per_coord                      = 0u;
-            std::uint32_t padded_output_width                   = 0u;
-            std::uint32_t n_rays_total                          = 0u;
-            legacy::GPUMatrixDynamic<float> coords_matrix       = {};
-            legacy::GPUMatrixDynamic<__half> rgbsigma_matrix    = {};
+            legacy::GpuAllocation alloc                             = {};
+            std::uint32_t* ray_indices                              = nullptr;
+            void* rays_unnormalized                                 = nullptr;
+            std::uint32_t* numsteps                                 = nullptr;
+            float* coords                                           = nullptr;
+            __half* mlp_out                                         = nullptr;
+            __half* dloss_dmlp_out                                  = nullptr;
+            float* coords_compacted                                 = nullptr;
+            std::uint32_t* ray_counter                              = nullptr;
+            std::uint32_t max_samples                               = 0u;
+            std::uint32_t max_inference                             = 0u;
+            std::uint32_t floats_per_coord                          = 0u;
+            std::uint32_t padded_output_width                       = 0u;
+            std::uint32_t n_rays_total                              = 0u;
+            legacy::GPUMatrixDynamic<float> coords_matrix           = {};
+            legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
             legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
-            legacy::GPUMatrixDynamic<__half> gradient_matrix    = {};
-            legacy::GPUMatrixDynamic<__half> compacted_output   = {};
+            legacy::GPUMatrixDynamic<__half> gradient_matrix        = {};
+            legacy::GPUMatrixDynamic<__half> compacted_output       = {};
         };
 
         NetworkConfig network_config         = {};
@@ -214,9 +235,9 @@ namespace ngp {
         legacy::math::pcg32 rng              = legacy::math::pcg32{seed};
         legacy::math::pcg32 density_grid_rng = {};
 
-        NerfCounters counters_rgb = {};
+        NerfCounters counters_rgb  = {};
         bool snap_to_pixel_centers = true;
-        float near_distance = 0.1f;
+        float near_distance        = 0.1f;
 
         legacy::GpuBuffer<float> density_grid                 = {};
         legacy::GpuBuffer<std::uint8_t> density_grid_bitfield = {};
