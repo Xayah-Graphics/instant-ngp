@@ -763,7 +763,9 @@ namespace ngp {
     InstantNGP::~InstantNGP() = default;
 
     void InstantNGP::run_training_prep() {
-        const std::uint32_t n_prep_to_skip = std::clamp(training_step / plan.prep.skip_growth_interval, 1u, plan.prep.max_skip);
+        std::uint32_t n_prep_to_skip = training_step / plan.prep.skip_growth_interval;
+        if (n_prep_to_skip < 1u) n_prep_to_skip = 1u;
+        if (n_prep_to_skip > plan.prep.max_skip) n_prep_to_skip = plan.prep.max_skip;
         if (training_step % n_prep_to_skip != 0u) return;
 
         const auto start = std::chrono::steady_clock::now();
