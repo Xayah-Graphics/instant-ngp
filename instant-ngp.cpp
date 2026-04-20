@@ -87,9 +87,6 @@ namespace ngp {
         update_density_grid();
         legacy::cuda_check(cudaStreamSynchronize(stream.stream));
     }
-    void InstantNGP::update_density_grid() {
-        std::print("Updating density grid at training step {}.\n", training_step);
-    }
 
     void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type) {
         if (dataset_path.empty()) {
