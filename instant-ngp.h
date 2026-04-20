@@ -9,12 +9,30 @@
 
 namespace ngp {
 
-    struct Runtime final {
-        struct Dataset final {
-            enum class Type {
-                NerfSynthetic,
-            };
+    struct StreamState {
+        StreamState();
+        ~StreamState();
+        StreamState& operator=(const StreamState&) = delete;
+        StreamState(const StreamState&)            = delete;
+        StreamState& operator=(StreamState&& other) noexcept;
+        StreamState(StreamState&& other) noexcept;
 
+        cudaStream_t stream = {};
+        cudaEvent_t event   = {};
+    };
+
+    class InstantNGP final {
+    public:
+        enum class DatasetType { NerfSynthetic };
+        InstantNGP();
+        ~InstantNGP();
+        InstantNGP(const InstantNGP&)                = delete;
+        InstantNGP& operator=(const InstantNGP&)     = delete;
+        InstantNGP(InstantNGP&&) noexcept            = default;
+        InstantNGP& operator=(InstantNGP&&) noexcept = default;
+
+    private:
+        struct Dataset final {
             struct CPU final {
                 struct Frame final {
                     std::vector<std::uint8_t> rgba             = {};
@@ -32,10 +50,10 @@ namespace ngp {
 
             struct GPU final {
                 struct Frame final {
-                    const std::uint8_t* pixels               = nullptr;
-                    legacy::math::ivec2 resolution      = {};
-                    float focal_length                       = 0.0f;
-                    legacy::math::mat4x3 camera         = {};
+                    const std::uint8_t* pixels     = nullptr;
+                    legacy::math::ivec2 resolution = {};
+                    float focal_length             = 0.0f;
+                    legacy::math::mat4x3 camera    = {};
                 };
 
                 struct Train final {
@@ -48,25 +66,12 @@ namespace ngp {
 
             CPU cpu = {};
             GPU gpu = {};
-        };
+        } dataset = {};
+        StreamState stream;
 
-        Dataset dataset = {};
-    };
-
-    class InstantNGP final {
     public:
-        InstantNGP();
-        ~InstantNGP();
-        InstantNGP(const InstantNGP&)                = delete;
-        InstantNGP& operator=(const InstantNGP&)     = delete;
-        InstantNGP(InstantNGP&&) noexcept            = default;
-        InstantNGP& operator=(InstantNGP&&) noexcept = default;
-
-        void load_dataset(const std::filesystem::path& dataset_path, Runtime::Dataset::Type dataset_type);
+        void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
         void train();
-
-    private:
-        Runtime runtime_ = {};
     };
 
 } // namespace ngp

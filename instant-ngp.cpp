@@ -9,11 +9,44 @@ import std;
 
 namespace ngp {
 
+    inline std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<StreamState>>>& stream_pools() {
+        static auto* stream_pools = new std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<StreamState>>>{};
+        return *stream_pools;
+    }
+
+    inline void free_aux_stream_pool(cudaStream_t parent_stream) {
+        legacy::check_or_throw(parent_stream != nullptr);
+        stream_pools().erase(parent_stream);
+    }
+
+    StreamState::StreamState() {
+        legacy::cuda_check(cudaStreamCreate(&stream));
+        legacy::cuda_check(cudaEventCreate(&event));
+    }
+    StreamState::~StreamState() {
+        if (stream) {
+            free_aux_stream_pool(stream);
+            cudaStreamDestroy(stream);
+        }
+
+        if (event) {
+            cudaEventDestroy(event);
+        }
+    }
+    StreamState& StreamState::operator=(StreamState&& other) noexcept {
+        std::swap(stream, other.stream);
+        std::swap(event, other.event);
+        return *this;
+    }
+    StreamState::StreamState(StreamState&& other) noexcept {
+        *this = std::move(other);
+    }
+
     InstantNGP::InstantNGP() = default;
 
     InstantNGP::~InstantNGP() = default;
 
-    void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, Runtime::Dataset::Type dataset_type) {
+    void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type) {
         if (dataset_path.empty()) {
             throw std::invalid_argument{"dataset_path must not be empty."};
         }
@@ -25,10 +58,10 @@ namespace ngp {
         }
 
         switch (dataset_type) {
-        case Runtime::Dataset::Type::NerfSynthetic:
+        case DatasetType::NerfSynthetic:
             {
-                Runtime::Dataset loaded_dataset{};
-                const std::array<std::pair<std::string_view, std::vector<Runtime::Dataset::CPU::Frame>*>, 3> splits{
+                Dataset loaded_dataset{};
+                const std::array<std::pair<std::string_view, std::vector<Dataset::CPU::Frame>*>, 3> splits{
                     std::pair{"transforms_train.json", &loaded_dataset.cpu.train},
                     std::pair{"transforms_val.json", &loaded_dataset.cpu.validation},
                     std::pair{"transforms_test.json", &loaded_dataset.cpu.test},
@@ -101,7 +134,7 @@ namespace ngp {
                             throw std::runtime_error{std::format("Invalid 'transform_matrix' in '{}', frame {}.", json_path.string(), frame_index)};
                         }
 
-                        Runtime::Dataset::CPU::Frame& frame = (*frames)[frame_index];
+                        Dataset::CPU::Frame& frame = (*frames)[frame_index];
                         frame.rgba.assign(raw_pixels.get(), raw_pixels.get() + rgba_size);
                         frame.width          = static_cast<std::uint32_t>(width);
                         frame.height         = static_cast<std::uint32_t>(height);
@@ -130,10 +163,10 @@ namespace ngp {
                 }
 
                 loaded_dataset.gpu.train.pixels.resize(loaded_dataset.cpu.train.size());
-                std::vector<Runtime::Dataset::GPU::Frame> uploaded_frames(loaded_dataset.cpu.train.size());
+                std::vector<Dataset::GPU::Frame> uploaded_frames(loaded_dataset.cpu.train.size());
 
                 for (std::size_t frame_index = 0; frame_index < loaded_dataset.cpu.train.size(); ++frame_index) {
-                    const Runtime::Dataset::CPU::Frame& source_frame = loaded_dataset.cpu.train[frame_index];
+                    const Dataset::CPU::Frame& source_frame = loaded_dataset.cpu.train[frame_index];
                     if (source_frame.width == 0 || source_frame.height == 0) {
                         throw std::runtime_error{"load_dataset encountered a training frame with zero resolution during upload staging."};
                     }
@@ -159,9 +192,9 @@ namespace ngp {
                     pixel_buffer.resize(source_frame.rgba.size());
                     pixel_buffer.copy_from_host(source_frame.rgba);
 
-                    Runtime::Dataset::GPU::Frame& target_frame = uploaded_frames[frame_index];
-                    target_frame.pixels                        = pixel_buffer.data();
-                    target_frame.resolution                    = legacy::math::ivec2{
+                    Dataset::GPU::Frame& target_frame = uploaded_frames[frame_index];
+                    target_frame.pixels               = pixel_buffer.data();
+                    target_frame.resolution           = legacy::math::ivec2{
                         static_cast<int>(source_frame.width),
                         static_cast<int>(source_frame.height),
                     };
@@ -182,8 +215,8 @@ namespace ngp {
 
                 loaded_dataset.gpu.train.frames.resize(uploaded_frames.size());
                 loaded_dataset.gpu.train.frames.copy_from_host(uploaded_frames);
-                runtime_.dataset = std::move(loaded_dataset);
-                std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", runtime_.dataset.cpu.train.size(), runtime_.dataset.cpu.validation.size(), runtime_.dataset.cpu.test.size());
+                dataset = std::move(loaded_dataset);
+                std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", dataset.cpu.train.size(), dataset.cpu.validation.size(), dataset.cpu.test.size());
                 return;
             }
         default: throw std::runtime_error{std::format("Unsupported dataset type: {}.", static_cast<int>(dataset_type))};
