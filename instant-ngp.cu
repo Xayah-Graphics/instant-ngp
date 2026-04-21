@@ -7,6 +7,7 @@
 #include <limits>
 #include <sstream>
 #include <type_traits>
+#include <utility>
 
 namespace ngp {
 
@@ -40,11 +41,11 @@ namespace ngp {
         legacy::math::vec3 o = {};
         legacy::math::vec3 d = {};
 
-        __host__ __device__ legacy::math::vec3 operator()(const float t) const {
+        __device__ legacy::math::vec3 operator()(const float t) const {
             return o + t * d;
         }
 
-        __host__ __device__ bool is_valid() const {
+        __device__ bool is_valid() const {
             return d != legacy::math::vec3(0.0f);
         }
     };
@@ -62,7 +63,7 @@ namespace ngp {
         legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
     };
 
-    inline __host__ __device__ Ray uv_to_ray(const std::uint32_t spp, const legacy::math::vec2& uv, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
+    inline __device__ Ray uv_to_ray(const std::uint32_t spp, const legacy::math::vec2& uv, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
         static_cast<void>(spp);
         legacy::math::vec3 dir    = {(uv.x - 0.5f) * static_cast<float>(resolution.x) / focal_length, (uv.y - 0.5f) * static_cast<float>(resolution.y) / focal_length, 1.0f};
         dir                       = legacy::math::mat3(camera_matrix) * dir;
@@ -71,33 +72,33 @@ namespace ngp {
         return {origin, dir};
     }
 
-    inline __host__ __device__ legacy::math::vec2 pos_to_uv(const legacy::math::vec3& pos, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix) {
+    inline __device__ legacy::math::vec2 pos_to_uv(const legacy::math::vec3& pos, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix) {
         legacy::math::vec3 dir = ngp::legacy::math::inverse(legacy::math::mat3(camera_matrix)) * (pos - camera_matrix[3]);
         dir /= dir.z;
         return dir.xy() * focal_length / legacy::math::vec2(resolution) + legacy::math::vec2(0.5f);
     }
 
-    inline __host__ __device__ float network_to_density(const float val) {
+    inline __device__ float network_to_density(const float val) {
         return expf(val);
     }
 
-    constexpr __host__ __device__ float SQRT3() {
+    constexpr __device__ float SQRT3() {
         return 1.73205080757f;
     }
 
-    constexpr __host__ __device__ std::uint32_t NERF_STEPS() {
+    constexpr __device__ std::uint32_t NERF_STEPS() {
         return 1024u;
     }
 
-    constexpr __host__ __device__ float STEPSIZE() {
+    constexpr __device__ float STEPSIZE() {
         return SQRT3() / static_cast<float>(NERF_STEPS());
     }
 
-    constexpr __host__ __device__ float MIN_CONE_STEPSIZE() {
+    constexpr __device__ float MIN_CONE_STEPSIZE() {
         return STEPSIZE();
     }
 
-    constexpr __host__ __device__ std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() {
+    constexpr __device__ std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() {
         return 16u;
     }
 
@@ -119,32 +120,32 @@ namespace ngp {
         }
     };
 
-    inline __host__ __device__ legacy::math::vec3 warp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
+    inline __device__ legacy::math::vec3 warp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
         return aabb.relative_pos(pos);
     }
 
-    inline __host__ __device__ legacy::math::vec3 warp_direction(const legacy::math::vec3& dir) {
+    inline __device__ legacy::math::vec3 warp_direction(const legacy::math::vec3& dir) {
         return (dir + 1.0f) * 0.5f;
     }
 
-    inline __host__ __device__ float warp_dt(const float dt) {
+    inline __device__ float warp_dt(const float dt) {
         static_cast<void>(dt);
         return 0.0f;
     }
 
-    inline __host__ __device__ std::uint32_t density_grid_idx_at(const legacy::math::vec3& pos) {
+    inline __device__ std::uint32_t density_grid_idx_at(const legacy::math::vec3& pos) {
         const legacy::math::ivec3 i = pos * static_cast<float>(legacy::NERF_GRIDSIZE());
         if (i.x < 0 || i.x >= static_cast<int>(legacy::NERF_GRIDSIZE()) || i.y < 0 || i.y >= static_cast<int>(legacy::NERF_GRIDSIZE()) || i.z < 0 || i.z >= static_cast<int>(legacy::NERF_GRIDSIZE())) return 0xFFFFFFFFu;
         return network::detail::morton3D(i.x, i.y, i.z);
     }
 
-    inline __host__ __device__ bool density_grid_occupied_at(const legacy::math::vec3& pos, const std::uint8_t* density_grid_bitfield) {
+    inline __device__ bool density_grid_occupied_at(const legacy::math::vec3& pos, const std::uint8_t* density_grid_bitfield) {
         const std::uint32_t idx = density_grid_idx_at(pos);
         if (idx == 0xFFFFFFFFu) return false;
         return density_grid_bitfield[idx / 8u] & (1u << (idx % 8u));
     }
 
-    inline __host__ __device__ float distance_to_next_voxel(const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
+    inline __device__ float distance_to_next_voxel(const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
         const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE()) * (pos - 0.5f);
         const float tx             = (floorf(p.x + 0.5f + 0.5f * legacy::math::sign(dir.x)) - p.x) * idir.x;
         const float ty             = (floorf(p.y + 0.5f + 0.5f * legacy::math::sign(dir.y)) - p.y) * idir.y;
@@ -153,15 +154,15 @@ namespace ngp {
         return fmaxf(t / static_cast<float>(legacy::NERF_GRIDSIZE()), 0.0f);
     }
 
-    inline __host__ __device__ float advance_n_steps(const float t, const float n) {
+    inline __device__ float advance_n_steps(const float t, const float n) {
         return t + n * MIN_CONE_STEPSIZE();
     }
 
-    inline __host__ __device__ float calc_dt() {
+    inline __device__ float calc_dt() {
         return MIN_CONE_STEPSIZE();
     }
 
-    inline __host__ __device__ float advance_to_next_voxel(const float t, const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
+    inline __device__ float advance_to_next_voxel(const float t, const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
         const float t_target = t + distance_to_next_voxel(pos, dir, idir);
         return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE(), 0.5f)) * MIN_CONE_STEPSIZE();
     }
@@ -172,7 +173,7 @@ namespace ngp {
         return uv;
     }
 
-    inline __host__ __device__ std::uint32_t image_idx(const std::uint32_t base_idx, const std::uint32_t n_rays, const std::uint32_t n_rays_total, const std::uint32_t n_training_images) {
+    inline __device__ std::uint32_t image_idx(const std::uint32_t base_idx, const std::uint32_t n_rays, const std::uint32_t n_rays_total, const std::uint32_t n_training_images) {
         static_cast<void>(n_rays_total);
         return ((base_idx * n_training_images) / n_rays) % n_training_images;
     }
@@ -224,26 +225,26 @@ namespace ngp {
         legacy::math::vec3 gradient = {};
     };
 
-    inline __host__ __device__ LossAndGradient l2_loss(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
+    inline __device__ LossAndGradient l2_loss(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
         const legacy::math::vec3 difference = prediction - target;
         return {difference * difference, 2.0f * difference};
     }
 
-    inline __host__ __device__ LossAndGradient loss_and_gradient(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
+    inline __device__ LossAndGradient loss_and_gradient(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
         return l2_loss(target, prediction);
     }
 
-    inline __host__ __device__ float network_to_rgb(const float val) {
+    inline __device__ float network_to_rgb(const float val) {
         return network::detail::logistic(val);
     }
 
-    inline __host__ __device__ float network_to_rgb_derivative(const float val) {
+    inline __device__ float network_to_rgb_derivative(const float val) {
         const float rgb = network::detail::logistic(val);
         return rgb * (1.0f - rgb);
     }
 
     template <typename T>
-    __host__ __device__ legacy::math::vec3 network_to_rgb_vec(const T& val) {
+    __device__ legacy::math::vec3 network_to_rgb_vec(const T& val) {
         return {
             network_to_rgb(static_cast<float>(val[0])),
             network_to_rgb(static_cast<float>(val[1])),
@@ -251,15 +252,15 @@ namespace ngp {
         };
     }
 
-    inline __host__ __device__ float network_to_density_derivative(const float val) {
+    inline __device__ float network_to_density_derivative(const float val) {
         return expf(legacy::math::clamp(val, -15.0f, 15.0f));
     }
 
-    inline __host__ __device__ legacy::math::vec3 unwarp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
+    inline __device__ legacy::math::vec3 unwarp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
         return aabb.min + pos * aabb.diag();
     }
 
-    inline __host__ __device__ float unwarp_dt(const float dt) {
+    inline __device__ float unwarp_dt(const float dt) {
         static_cast<void>(dt);
         return MIN_CONE_STEPSIZE();
     }
@@ -790,8 +791,13 @@ namespace ngp {
         cudaStreamDestroy(device.stream);
     }
 
-    InstantNGP::InstantNGP(InstantNGP&& other) noexcept {
-        *this = std::move(other);
+    InstantNGP::InstantNGP(InstantNGP&& other) noexcept
+        : spec{std::move(other.spec)},
+          dataset{std::move(other.dataset)},
+          sampler{std::move(other.sampler)},
+          training{std::move(other.training)} {
+        device.trainer = std::move(other.device.trainer);
+        device.stream  = std::exchange(other.device.stream, nullptr);
     }
 
     InstantNGP& InstantNGP::operator=(InstantNGP&& other) noexcept {
@@ -803,12 +809,12 @@ namespace ngp {
             cudaStreamDestroy(device.stream);
         }
 
-        spec                = other.spec;
+        spec                = std::move(other.spec);
         dataset             = std::move(other.dataset);
         sampler             = std::move(other.sampler);
         training            = std::move(other.training);
-        device              = std::move(other.device);
-        other.device.stream = nullptr;
+        device.trainer      = std::move(other.device.trainer);
+        device.stream       = std::exchange(other.device.stream, nullptr);
         return *this;
     }
 

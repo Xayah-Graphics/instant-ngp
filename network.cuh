@@ -92,16 +92,16 @@ namespace ngp::network::detail {
     }
 
     template <typename T>
-    constexpr __host__ __device__ float default_loss_scale();
+    constexpr float default_loss_scale();
 
     template <>
-    constexpr __host__ __device__ float default_loss_scale<float>() {
+    constexpr float default_loss_scale<float>() {
         return 1.0f;
     }
 
 #ifdef __CUDACC__
     template <>
-    constexpr __host__ __device__ float default_loss_scale<__half>() {
+    constexpr float default_loss_scale<__half>() {
         return 128.0f;
     }
 #endif
@@ -172,7 +172,7 @@ namespace ngp::network::detail {
         return static_cast<std::uint32_t>(ceilf(scale)) + 1u;
     }
 
-    __host__ __device__ inline std::uint32_t expand_bits(std::uint32_t value) {
+    __device__ inline std::uint32_t expand_bits(std::uint32_t value) {
         value = (value * 0x00010001u) & 0xFF0000FFu;
         value = (value * 0x00000101u) & 0x0F00F00Fu;
         value = (value * 0x00000011u) & 0xC30C30C3u;
@@ -180,14 +180,14 @@ namespace ngp::network::detail {
         return value;
     }
 
-    __host__ __device__ inline std::uint32_t morton3D(const std::uint32_t x, const std::uint32_t y, const std::uint32_t z) {
+    __device__ inline std::uint32_t morton3D(const std::uint32_t x, const std::uint32_t y, const std::uint32_t z) {
         const std::uint32_t xx = expand_bits(x);
         const std::uint32_t yy = expand_bits(y);
         const std::uint32_t zz = expand_bits(z);
         return xx | (yy << 1u) | (zz << 2u);
     }
 
-    __host__ __device__ inline std::uint32_t morton3D_invert(std::uint32_t value) {
+    __device__ inline std::uint32_t morton3D_invert(std::uint32_t value) {
         value = value & 0x49249249u;
         value = (value | (value >> 2u)) & 0xC30C30C3u;
         value = (value | (value >> 4u)) & 0x0F00F00Fu;
@@ -230,17 +230,17 @@ namespace ngp::network::detail {
     }
 
     template <typename RNG>
-    __host__ __device__ float random_val(RNG& rng) {
+    __device__ float random_val(RNG& rng) {
         return rng.next_float();
     }
 
     template <typename RNG>
-    __host__ __device__ legacy::math::vec2 random_val_2d(RNG& rng) {
+    __device__ legacy::math::vec2 random_val_2d(RNG& rng) {
         return {rng.next_float(), rng.next_float()};
     }
 
     template <typename RNG>
-    __host__ __device__ legacy::math::vec3 random_val_3d(RNG& rng) {
+    __device__ legacy::math::vec3 random_val_3d(RNG& rng) {
         return {rng.next_float(), rng.next_float(), rng.next_float()};
     }
 
@@ -264,7 +264,7 @@ namespace ngp::network::detail {
         }
     }
 
-    __host__ __device__ inline float logistic(const float x) {
+    __device__ inline float logistic(const float x) {
         return 1.0f / (1.0f + expf(-x));
     }
 
@@ -275,12 +275,12 @@ namespace ngp::network::detail {
     };
 
     template <typename T>
-    __host__ __device__ T relu(T value) {
+    __device__ T relu(T value) {
         return static_cast<T>(legacy::math::max(static_cast<float>(value), 0.0f));
     }
 
     template <>
-    inline __host__ __device__ half relu(half value) {
+    inline __device__ half relu(half value) {
 #if defined(__CUDA_ARCH__)
         return __hmax(value, static_cast<half>(0.0f));
 #else
@@ -292,41 +292,41 @@ namespace ngp::network::detail {
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::None)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         result = frag;
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::ReLU)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = relu(static_cast<T>(frag.x[t]));
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::LeakyReLU)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(static_cast<T>(frag.x[t]) > static_cast<T>(0.0f) ? 1.0f : 0.01f);
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::Exponential)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(expf(static_cast<float>(frag.x[t])));
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::Sigmoid)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logistic(static_cast<float>(frag.x[t])));
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::Squareplus)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) {
             const float x = static_cast<float>(frag.x[t]) * k_act;
@@ -336,20 +336,20 @@ namespace ngp::network::detail {
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::Softplus)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logf(expf(static_cast<float>(frag.x[t]) * k_act) + 1.0f) / k_act);
     }
 
     template <typename T, typename Fragment, Activation activation>
         requires (activation == Activation::Tanh)
-    __host__ __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
         TCNN_PRAGMA_UNROLL
         for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(tanhf(static_cast<float>(frag.x[t])));
     }
 
     template <typename T, typename Fragment>
-    __host__ __device__ void warp_activation(const Activation activation, const Fragment& frag, Fragment& result) {
+    __device__ void warp_activation(const Activation activation, const Fragment& frag, Fragment& result) {
         switch (activation) {
         case Activation::ReLU: warp_activation<T, Fragment, Activation::ReLU>(frag, result); return;
         case Activation::LeakyReLU: warp_activation<T, Fragment, Activation::LeakyReLU>(frag, result); return;
@@ -364,14 +364,14 @@ namespace ngp::network::detail {
     }
 
     template <typename T, typename Fragment>
-    __host__ __device__ Fragment warp_activation(const Activation activation, const Fragment& frag) {
+    __device__ Fragment warp_activation(const Activation activation, const Fragment& frag) {
         Fragment result = {};
         warp_activation<T>(activation, frag, result);
         return result;
     }
 
     template <typename T, typename Fragment, typename ForwardFragment>
-    __host__ __device__ void warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag, Fragment& result) {
+    __device__ void warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag, Fragment& result) {
         switch (activation) {
         case Activation::ReLU:
             TCNN_PRAGMA_UNROLL
@@ -410,7 +410,7 @@ namespace ngp::network::detail {
     }
 
     template <typename T, typename Fragment, typename ForwardFragment>
-    __host__ __device__ Fragment warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag) {
+    __device__ Fragment warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag) {
         Fragment result = {};
         warp_activation_backward<T>(activation, frag, forward_frag, result);
         return result;

@@ -893,7 +893,7 @@ namespace ngp::legacy {
         };
 
         template <typename T, uint32_t N, uint32_t M>
-        __host__ __device__ inline tvec<T, N> row(const tmat<T, N, M>& matrix, int row_index) {
+        inline tvec<T, N> row(const tmat<T, N, M>& matrix, int row_index) {
             tvec<T, N> result;
             TCNN_PRAGMA_UNROLL
             for (uint32_t col = 0; col < N; ++col) {
@@ -903,7 +903,7 @@ namespace ngp::legacy {
         }
 
         template <typename T, uint32_t N, uint32_t M, typename U, size_t ALIGNMENT>
-        __host__ __device__ inline tmat<T, N, M> row(const tmat<T, N, M>& matrix, int row_index, const tvec<U, N, ALIGNMENT>& value) {
+        inline tmat<T, N, M> row(const tmat<T, N, M>& matrix, int row_index, const tvec<U, N, ALIGNMENT>& value) {
             tmat<T, N, M> result = matrix;
             TCNN_PRAGMA_UNROLL
             for (uint32_t col = 0; col < N; ++col) {
@@ -913,12 +913,12 @@ namespace ngp::legacy {
         }
 
         template <typename T>
-        __host__ __device__ inline T determinant(const tmat<T, 3, 3>& matrix) {
+        __device__ inline T determinant(const tmat<T, 3, 3>& matrix) {
             return matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[2][1] * matrix[1][2]) - matrix[1][0] * (matrix[0][1] * matrix[2][2] - matrix[2][1] * matrix[0][2]) + matrix[2][0] * (matrix[0][1] * matrix[1][2] - matrix[1][1] * matrix[0][2]);
         }
 
         template <typename T>
-        __host__ __device__ inline tmat<T, 3, 3> inverse(const tmat<T, 3, 3>& matrix) {
+        __device__ inline tmat<T, 3, 3> inverse(const tmat<T, 3, 3>& matrix) {
             const T inv_det = (T) 1 / determinant(matrix);
             return {
                 (matrix[1][1] * matrix[2][2] - matrix[2][1] * matrix[1][2]) * inv_det,
@@ -945,7 +945,7 @@ namespace ngp::legacy {
     }
 
     template <typename T>
-    __host__ __device__ T gcd(T a, T b) {
+    T gcd(T a, T b) {
         while (a != 0) {
             b %= a;
             host_device_swap(a, b);
@@ -954,18 +954,18 @@ namespace ngp::legacy {
     }
 
     template <typename T>
-    __host__ __device__ T lcm(T a, T b) {
+    T lcm(T a, T b) {
         T tmp = gcd(a, b);
         return tmp ? (a / tmp) * b : 0;
     }
 
     template <typename T>
-    __host__ __device__ T next_multiple(T val, T divisor) {
+    T next_multiple(T val, T divisor) {
         return ((val + divisor - 1) / divisor) * divisor;
     }
 
     template <typename T>
-    __host__ __device__ T previous_multiple(T val, T divisor) {
+    T previous_multiple(T val, T divisor) {
         return (val / divisor) * divisor;
     }
 
@@ -1172,27 +1172,27 @@ namespace ngp::legacy {
     struct Interval {
         T start, end;
 
-        __host__ __device__ bool operator<(const Interval& other) const {
+        bool operator<(const Interval& other) const {
             return end < other.end || (end == other.end && start < other.start);
         }
 
-        __host__ __device__ [[nodiscard]] bool overlaps(const Interval& other) const {
+        [[nodiscard]] bool overlaps(const Interval& other) const {
             return !intersect(other).empty();
         }
 
-        __host__ __device__ [[nodiscard]] Interval intersect(const Interval& other) const {
+        [[nodiscard]] Interval intersect(const Interval& other) const {
             return {std::max(start, other.start), std::min(end, other.end)};
         }
 
-        __host__ __device__ [[nodiscard]] bool valid() const {
+        [[nodiscard]] bool valid() const {
             return end >= start;
         }
 
-        __host__ __device__ [[nodiscard]] bool empty() const {
+        [[nodiscard]] bool empty() const {
             return end <= start;
         }
 
-        __host__ __device__ [[nodiscard]] T size() const {
+        [[nodiscard]] T size() const {
             return end - start;
         }
     };
@@ -2007,15 +2007,15 @@ namespace ngp::legacy {
             max += math::vec3(amount);
         }
 
-        __host__ __device__ math::vec3 diag() const {
+        __device__ math::vec3 diag() const {
             return max - min;
         }
 
-        __host__ __device__ math::vec3 relative_pos(const math::vec3& pos) const {
+        __device__ math::vec3 relative_pos(const math::vec3& pos) const {
             return (pos - min) / diag();
         }
 
-        __host__ __device__ math::vec2 ray_intersect(const math::vec3& pos, const math::vec3& dir) const {
+        __device__ math::vec2 ray_intersect(const math::vec3& pos, const math::vec3& dir) const {
             float tmin = (min.x - pos.x) / dir.x;
             float tmax = (max.x - pos.x) / dir.x;
 
@@ -2068,7 +2068,7 @@ namespace ngp::legacy {
             return max.x < min.x || max.y < min.y || max.z < min.z;
         }
 
-        __host__ __device__ bool contains(const math::vec3& p) const {
+        __device__ bool contains(const math::vec3& p) const {
             return p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y && p.z >= min.z && p.z <= max.z;
         }
 
@@ -2077,19 +2077,19 @@ namespace ngp::legacy {
     };
 
     struct NerfPosition {
-        __host__ __device__ NerfPosition(const math::vec3& pos, float dt) : p{pos} {}
+        __device__ NerfPosition(const math::vec3& pos, float dt) : p{pos} {}
         math::vec3 p;
     };
 
     struct NerfDirection {
-        __host__ __device__ NerfDirection(const math::vec3& dir, float dt) : d{dir} {}
+        __device__ NerfDirection(const math::vec3& dir, float dt) : d{dir} {}
         math::vec3 d;
     };
 
     struct NerfCoordinate {
-        __host__ __device__ NerfCoordinate(const math::vec3& pos, const math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
+        __device__ NerfCoordinate(const math::vec3& pos, const math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
 
-        __host__ __device__ void set(const math::vec3& pos, const math::vec3& dir, float dt) {
+        __device__ void set(const math::vec3& pos, const math::vec3& dir, float dt) {
             this->dt  = dt;
             this->pos = NerfPosition(pos, dt);
             this->dir = NerfDirection(dir, dt);
