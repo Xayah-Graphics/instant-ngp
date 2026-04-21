@@ -305,7 +305,7 @@ namespace ngp {
     }
 
     template <typename T>
-    inline __device__ T warp_reduce(T val) {
+    __device__ T warp_reduce(T val) {
         TCNN_PRAGMA_UNROLL
         for (int offset = warpSize / 2; offset > 0; offset /= 2) val += __shfl_xor_sync(0xffffffff, val, offset);
         return val;
@@ -359,7 +359,7 @@ namespace ngp {
 
     template <typename T, typename T_OUT, typename F>
     void reduce_sum(T* device_pointer, F fun, T_OUT* workspace, std::uint32_t n_elements, cudaStream_t stream, const std::uint32_t n_sums = 1u) {
-        const std::uint32_t threads          = 1024u;
+        constexpr std::uint32_t threads          = 1024u;
         const std::uint32_t n_elems_per_load = 16u / sizeof(T);
 
         if (n_elements % n_elems_per_load != 0u) throw std::runtime_error{"Number of bytes to reduce_sum must be a multiple of 16."};
@@ -382,7 +382,7 @@ namespace ngp {
         const std::uint32_t y = network::detail::morton3D_invert(i >> 1u);
         const std::uint32_t z = network::detail::morton3D_invert(i >> 2u);
 
-        const float voxel_size       = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE());
+        constexpr float voxel_size       = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE());
         const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(legacy::NERF_GRIDSIZE());
 
         legacy::math::vec3 corners[8] = {
@@ -396,7 +396,7 @@ namespace ngp {
             pos + legacy::math::vec3{voxel_size, voxel_size, voxel_size},
         };
 
-        const std::uint32_t min_count = 1u;
+        constexpr std::uint32_t min_count = 1u;
         std::uint32_t count           = 0u;
 
         for (std::uint32_t j = 0u; j < n_training_images && count < min_count; ++j) {
@@ -444,7 +444,7 @@ namespace ngp {
         if (i >= n_elements) return;
 
         const std::uint32_t idx = indices[i];
-        const float mlp         = network_to_density(static_cast<float>(network_output[i]));
+        const float mlp         = network_to_density(network_output[i]);
         const float thickness   = mlp * MIN_CONE_STEPSIZE();
         atomicMax(reinterpret_cast<std::uint32_t*>(&grid_out[idx]), __float_as_uint(thickness));
     }
@@ -563,7 +563,7 @@ namespace ngp {
             const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
             const legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
             const float dt                                            = unwarp_dt(coords_in.ptr->dt);
-            const float density                                       = network_to_density(static_cast<float>(local_network_output[3]));
+            const float density                                       = network_to_density(local_network_output[3]);
 
             const float alpha  = 1.0f - __expf(-density * dt);
             const float weight = alpha * T;
@@ -620,7 +620,7 @@ namespace ngp {
             const float dt                                            = unwarp_dt(coord_in->dt);
             const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
             const legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
-            const float density                                       = network_to_density(static_cast<float>(local_network_output[3]));
+            const float density                                       = network_to_density(local_network_output[3]);
             const float alpha                                         = 1.0f - __expf(-density * dt);
             const float weight                                        = alpha * T;
             rgb_ray2 += weight * rgb;
@@ -634,7 +634,7 @@ namespace ngp {
             local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y * network_to_rgb_derivative(local_network_output[1]));
             local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z * network_to_rgb_derivative(local_network_output[2]));
 
-            const float density_derivative = network_to_density_derivative(static_cast<float>(local_network_output[3]));
+            const float density_derivative = network_to_density_derivative(local_network_output[3]);
             const float dloss_by_dmlp      = density_derivative * (dt * ngp::legacy::math::dot(lg.gradient, T * rgb - suffix));
             local_dL_doutput[3]            = loss_scale * dloss_by_dmlp + (static_cast<float>(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) + (static_cast<float>(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
@@ -709,7 +709,7 @@ namespace ngp {
         }
     }
 
-    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const legacy::NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
+    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const legacy::NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, const legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_pixels) return;
 
@@ -727,7 +727,7 @@ namespace ngp {
                 const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
                 const legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
                 const float dt                                            = unwarp_dt(coords_in.ptr->dt);
-                const float density                                       = network_to_density(static_cast<float>(local_network_output[3]));
+                const float density                                       = network_to_density(local_network_output[3]);
                 const float alpha                                         = 1.0f - __expf(-density * dt);
                 const float weight                                        = alpha * T;
 
@@ -743,8 +743,8 @@ namespace ngp {
         image_out[global_pixel] = clamp_rgb01(rgb_ray + T * background_color);
     }
 
-    InstantNGP::InstantNGP(const NetworkConfig& network_config_) {
-        spec.network_config = network_config_;
+    InstantNGP::InstantNGP(const NetworkConfig& network_config) {
+        spec.network_config = network_config;
         std::printf("Making training plan at training step %u.\n", training.step);
 
         spec.plan                             = {};
@@ -871,7 +871,7 @@ namespace ngp {
         frame.camera                         = ngp::legacy::math::row(frame.camera, 2, camera_row0);
 
         const legacy::math::ivec2 resolution = frame.resolution;
-        const legacy::math::vec3 background  = legacy::math::vec3(1.0f);
+        const auto background  = legacy::math::vec3(1.0f);
 
         ValidationRenderWorkspace workspace{};
         workspace.total_pixels        = static_cast<std::uint32_t>(ngp::legacy::math::product(resolution));
@@ -913,7 +913,7 @@ namespace ngp {
                 const std::uint32_t coord_elements      = padded_used_samples * workspace.floats_per_coord;
                 fill_rollover<float><<<((coord_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, device.stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
 
-                legacy::GPUMatrixDynamic<float> coords_matrix(reinterpret_cast<float*>(workspace.tile_coords.data()), workspace.floats_per_coord, padded_used_samples, legacy::CM);
+                legacy::GPUMatrixDynamic<float> coords_matrix((workspace.tile_coords.data()), workspace.floats_per_coord, padded_used_samples, legacy::CM);
                 legacy::GPUMatrixDynamic<__half> rgbsigma_matrix(workspace.tile_mlp_out.data(), workspace.padded_output_width, padded_used_samples, legacy::CM);
                 device.trainer->model.inference(device.stream, coords_matrix, rgbsigma_matrix);
             }
@@ -955,7 +955,7 @@ namespace ngp {
         validation.height      = static_cast<std::uint32_t>(resolution.y);
         validation.mse         = static_cast<float>(total_squared_error / static_cast<double>(workspace.total_pixels));
         validation.psnr        = validation.mse > 0.0f ? -10.0f * std::log10(validation.mse) : std::numeric_limits<float>::infinity();
-        validation.image_index = (std::int32_t) validation_image_index;
+        validation.image_index = static_cast<std::int32_t>(validation_image_index);
         return validation;
     }
 
@@ -1008,7 +1008,7 @@ namespace ngp {
             frame.camera                         = ngp::legacy::math::row(frame.camera, 2, camera_row0);
 
             const legacy::math::ivec2 resolution = frame.resolution;
-            const legacy::math::vec3 background  = legacy::math::vec3(1.0f);
+            const auto background  = legacy::math::vec3(1.0f);
 
             ValidationRenderWorkspace workspace{};
             workspace.total_pixels        = static_cast<std::uint32_t>(ngp::legacy::math::product(resolution));
@@ -1050,7 +1050,7 @@ namespace ngp {
                     const std::uint32_t coord_elements      = padded_used_samples * workspace.floats_per_coord;
                     fill_rollover<float><<<((coord_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, device.stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
 
-                    legacy::GPUMatrixDynamic<float> coords_matrix(reinterpret_cast<float*>(workspace.tile_coords.data()), workspace.floats_per_coord, padded_used_samples, legacy::CM);
+                    legacy::GPUMatrixDynamic<float> coords_matrix((workspace.tile_coords.data()), workspace.floats_per_coord, padded_used_samples, legacy::CM);
                     legacy::GPUMatrixDynamic<__half> rgbsigma_matrix(workspace.tile_mlp_out.data(), workspace.padded_output_width, padded_used_samples, legacy::CM);
                     device.trainer->model.inference(device.stream, coords_matrix, rgbsigma_matrix);
                 }
@@ -1175,7 +1175,7 @@ namespace ngp {
                 }
                 ++sampler.density.ema_step;
 
-                const std::uint32_t base_grid_elements = legacy::NERF_GRID_N_CELLS();
+                constexpr std::uint32_t base_grid_elements = legacy::NERF_GRID_N_CELLS();
                 sampler.density.occupancy_bits.enlarge(base_grid_elements / 8u);
                 sampler.density.reduction_workspace.enlarge(reduce_sum_workspace_size(base_grid_elements));
 
@@ -1183,7 +1183,7 @@ namespace ngp {
                 reduce_sum(sampler.density.values.data(), DensityGridReduceOp{base_grid_elements}, sampler.density.reduction_workspace.data(), base_grid_elements, device.stream);
 
                 if (base_grid_elements / 8u > 0u) {
-                    const std::uint32_t blocks = ((base_grid_elements / 8u) + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
+                    constexpr std::uint32_t blocks = ((base_grid_elements / 8u) + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
                     grid_to_bitfield<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(base_grid_elements / 8u, sampler.density.values.data(), sampler.density.occupancy_bits.data(), sampler.density.reduction_workspace.data());
                 }
 
@@ -1259,7 +1259,7 @@ namespace ngp {
             legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), device.stream));
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(counters.rays_per_batch, sampler.aabb, workspace.max_inference, workspace.n_rays_total, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, reinterpret_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u},
+                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(counters.rays_per_batch, sampler.aabb, workspace.max_inference, workspace.n_rays_total, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, static_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u},
                     static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), sampler.density.occupancy_bits.data(), sampler.snap_to_pixel_centers);
             }
             device.trainer->model.inference(device.stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
@@ -1268,7 +1268,7 @@ namespace ngp {
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
                 compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(counters.rays_per_batch, sampler.aabb, workspace.n_rays_total, training.rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>(), static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
-                    reinterpret_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampler.snap_to_pixel_centers, sampler.density.reduction_workspace.data(), sampler.near_distance);
+                    static_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampler.snap_to_pixel_centers, sampler.density.reduction_workspace.data(), sampler.near_distance);
             }
 
             const std::uint32_t dloss_elements  = batch_size * workspace.padded_output_width;
