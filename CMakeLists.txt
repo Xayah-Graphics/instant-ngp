@@ -46,12 +46,9 @@ endif ()
 # ============================================================================
 find_package(CUDAToolkit 13.2 REQUIRED)
 
-set(NGP_CUTLASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../instant-ngp/dependencies/cutlass" CACHE PATH "Pinned CUTLASS root for the network module.")
+set(NGP_CUTLASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/cutlass" CACHE PATH "Pinned CUTLASS root for the network module." FORCE)
 if (NOT EXISTS "${NGP_CUTLASS_ROOT}/include/cutlass/cutlass.h")
     message(FATAL_ERROR "CUTLASS headers are missing at '${NGP_CUTLASS_ROOT}'.")
-endif ()
-if (NOT EXISTS "${NGP_CUTLASS_ROOT}/tools/util/include")
-    message(FATAL_ERROR "CUTLASS utility headers are missing at '${NGP_CUTLASS_ROOT}/tools/util/include'.")
 endif ()
 
 function(download_if_needed url out_path)
@@ -122,7 +119,6 @@ target_include_directories(
         instant-ngp
         PRIVATE
         "${NGP_CUTLASS_ROOT}/include"
-        "${NGP_CUTLASS_ROOT}/tools/util/include"
         "${CMAKE_CURRENT_BINARY_DIR}/vendor"
 )
 set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)

@@ -6,4 +6,3 @@ build-*
 build*
 data/
 AGENTS.md
-dependencies/
