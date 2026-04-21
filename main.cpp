@@ -5,9 +5,9 @@ int main(int argc, char* argv[]) {
     try {
         struct CliOptions final {
             std::filesystem::path scene               = "../data/nerf-synthetic/chair";
-            std::uint32_t steps                       = 10u;
-            std::uint32_t log_interval                = 0u;
-            std::uint32_t validation_interval         = 0u;
+            std::uint32_t steps                       = 50000u;
+            std::uint32_t log_interval                = 1000u;
+            std::uint32_t validation_interval         = 10000u;
             std::filesystem::path validation_dir      = "validation";
             std::uint32_t validation_image_index      = 0u;
             ngp::InstantNGP::NetworkConfig network    = {};
