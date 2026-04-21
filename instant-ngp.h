@@ -90,19 +90,10 @@ namespace ngp {
 
         explicit InstantNGP(const NetworkConfig& network_config);
         ~InstantNGP() noexcept;
-        InstantNGP(const InstantNGP&)                = delete;
-        InstantNGP& operator=(const InstantNGP&)     = delete;
+        InstantNGP(const InstantNGP&)            = delete;
+        InstantNGP& operator=(const InstantNGP&) = delete;
         InstantNGP(InstantNGP&& other) noexcept;
         InstantNGP& operator=(InstantNGP&& other) noexcept;
-
-    protected:
-        void run_training_prep();
-        void update_density_grid();
-        [[nodiscard]] auto begin_training_step() -> TrainingStepWorkspace;
-        void generate_training_batch(TrainingStepWorkspace& workspace);
-        void compact_training_batch(TrainingStepWorkspace& workspace);
-        void optimize_training_batch(TrainingStepWorkspace& workspace);
-        void finish_training_step(TrainingStepWorkspace& workspace, bool get_loss_scalar);
 
     private:
         struct Dataset final {
@@ -230,10 +221,10 @@ namespace ngp {
         float density_grid_decay = 0.95f;
 
         std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, delete_trainer_state};
-        uint32_t training_step                                                      = 0;
-        float training_prep_ms                                                      = 0.0f;
-        float training_ms                                                           = 0.0f;
-        float loss_scalar                                                           = 0.0f;
+        uint32_t training_step                                                                           = 0;
+        float training_prep_ms                                                                           = 0.0f;
+        float training_ms                                                                                = 0.0f;
+        float loss_scalar                                                                                = 0.0f;
 
         cudaStream_t stream = {};
     };
