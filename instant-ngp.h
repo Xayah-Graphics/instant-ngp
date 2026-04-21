@@ -90,111 +90,131 @@ namespace ngp {
         InstantNGP& operator=(InstantNGP&& other) noexcept;
 
     private:
+        // These markers describe steady-state runtime behavior, not C++ constness.
+        // runtime-* covers train/validation/stats execution after setup is complete.
+        // setup-only covers constructor/load_dataset staging that steady-state runtime does not touch.
+        // Owning handles are classified by the mutability of the state they own.
         struct Dataset final {
             struct CPU final {
                 struct Frame final {
-                    std::vector<std::uint8_t> rgba             = {};
-                    std::uint32_t width                        = 0;
-                    std::uint32_t height                       = 0;
-                    float focal_length_x                       = 0.0f;
-                    float focal_length_y                       = 0.0f;
-                    std::array<float, 16> transform_matrix_4x4 = {};
+                    std::vector<std::uint8_t> rgba             = {}; // runtime-immutable
+                    std::uint32_t width                        = 0; // runtime-immutable
+                    std::uint32_t height                       = 0; // runtime-immutable
+                    float focal_length_x                       = 0.0f; // runtime-immutable
+                    float focal_length_y                       = 0.0f; // runtime-immutable
+                    std::array<float, 16> transform_matrix_4x4 = {}; // runtime-immutable
                 };
 
-                std::vector<Frame> train      = {};
-                std::vector<Frame> validation = {};
-                std::vector<Frame> test       = {};
+                std::vector<Frame> train      = {}; // setup-only
+                std::vector<Frame> validation = {}; // runtime-immutable
+                std::vector<Frame> test       = {}; // setup-only
             };
 
             struct GPU final {
-                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
-                legacy::GpuBuffer<GpuFrame> frames                  = {};
+                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {}; // runtime-immutable
+                legacy::GpuBuffer<GpuFrame> frames                  = {}; // runtime-immutable
             };
 
-            CPU cpu = {};
-            GPU gpu = {};
-        } dataset = {};
-
-        struct TrainPlan {
-            struct NetworkStage {
-                uint32_t n_pos_dims               = 0;
-                uint32_t n_dir_dims               = 0;
-                uint32_t dir_offset               = 0;
-                uint32_t density_alignment        = 0;
-                uint32_t density_input_dims       = 0;
-                uint32_t density_output_dims      = 0;
-                uint32_t dir_encoding_output_dims = 0;
-                uint32_t rgb_alignment            = 0;
-                uint32_t rgb_input_dims           = 0;
-                uint32_t rgb_output_dims          = 3;
-            } network;
-
-            struct TrainingStage {
-                uint32_t batch_size          = 0;
-                uint32_t floats_per_coord    = 0;
-                uint32_t padded_output_width = 0;
-                uint32_t max_samples         = 0;
-            } training;
-
-            struct TrainingPrepStage {
-                uint32_t warmup_steps              = 256;
-                uint32_t skip_growth_interval      = 16;
-                uint32_t max_skip                  = 16;
-                uint32_t uniform_samples_warmup    = 0;
-                uint32_t uniform_samples_steady    = 0;
-                uint32_t nonuniform_samples_steady = 0;
-            } prep;
-
-            struct DensityGridStage {
-                uint32_t padded_output_width = 0;
-                uint32_t query_batch_size    = 0;
-                uint32_t n_elements          = 0;
-            } density_grid;
-
-            struct ValidationStage {
-                uint32_t tile_rays           = 4096;
-                uint32_t max_samples_per_ray = 96;
-                uint32_t floats_per_coord    = 0;
-                uint32_t padded_output_width = 0;
-                uint32_t max_samples         = 0;
-            } validation;
-        } plan;
-
-        struct NerfCounters final {
-            legacy::GpuBuffer<std::uint32_t> numsteps_counter           = {};
-            legacy::GpuBuffer<std::uint32_t> numsteps_counter_compacted = {};
-            legacy::GpuBuffer<float> loss                               = {};
-
-            std::uint32_t rays_per_batch                        = 1u << 12;
-            std::uint32_t n_rays_total                          = 0u;
-            std::uint32_t measured_batch_size                   = 0u;
-            std::uint32_t measured_batch_size_before_compaction = 0u;
+            CPU cpu = {}; // runtime-immutable
+            GPU gpu = {}; // runtime-immutable
         };
 
-        NetworkConfig network_config         = {};
-        std::uint32_t seed                   = 1337;
-        legacy::math::pcg32 rng              = legacy::math::pcg32{seed};
-        legacy::math::pcg32 density_grid_rng = {};
+        struct TrainPlan final {
+            struct NetworkStage {
+                uint32_t n_pos_dims               = 0; // runtime-immutable
+                uint32_t n_dir_dims               = 0; // runtime-immutable
+                uint32_t dir_offset               = 0; // runtime-immutable
+                uint32_t density_alignment        = 0; // runtime-immutable
+                uint32_t density_input_dims       = 0; // runtime-immutable
+                uint32_t density_output_dims      = 0; // runtime-immutable
+                uint32_t dir_encoding_output_dims = 0; // runtime-immutable
+                uint32_t rgb_alignment            = 0; // runtime-immutable
+                uint32_t rgb_input_dims           = 0; // runtime-immutable
+                uint32_t rgb_output_dims          = 3; // runtime-immutable
+            } network = {}; // runtime-immutable
 
-        NerfCounters counters_rgb  = {};
-        bool snap_to_pixel_centers = true;
-        float near_distance        = 0.1f;
+            struct TrainingStage {
+                uint32_t batch_size          = 0; // runtime-immutable
+                uint32_t floats_per_coord    = 0; // runtime-immutable
+                uint32_t padded_output_width = 0; // runtime-immutable
+                uint32_t max_samples         = 0; // runtime-immutable
+            } training = {}; // runtime-immutable
 
-        legacy::GpuBuffer<float> density_grid                 = {};
-        legacy::GpuBuffer<std::uint8_t> density_grid_bitfield = {};
-        legacy::GpuBuffer<float> density_grid_mean            = {};
-        std::uint32_t density_grid_ema_step                   = 0;
+            struct TrainingPrepStage {
+                uint32_t warmup_steps              = 256; // runtime-immutable
+                uint32_t skip_growth_interval      = 16; // runtime-immutable
+                uint32_t max_skip                  = 16; // runtime-immutable
+                uint32_t uniform_samples_warmup    = 0; // runtime-immutable
+                uint32_t uniform_samples_steady    = 0; // runtime-immutable
+                uint32_t nonuniform_samples_steady = 0; // runtime-immutable
+            } prep = {}; // runtime-immutable
 
-        legacy::BoundingBox aabb = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
-        float density_grid_decay = 0.95f;
+            struct DensityGridStage {
+                uint32_t padded_output_width = 0; // runtime-immutable
+                uint32_t query_batch_size    = 0; // runtime-immutable
+                uint32_t n_elements          = 0; // runtime-immutable
+            } density_grid = {}; // runtime-immutable
 
-        std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, nullptr};
-        uint32_t training_step                                                                           = 0;
-        float training_prep_ms                                                                           = 0.0f;
-        float training_ms                                                                                = 0.0f;
-        float loss_scalar                                                                                = 0.0f;
+            struct ValidationStage {
+                uint32_t tile_rays           = 4096; // runtime-immutable
+                uint32_t max_samples_per_ray = 96; // runtime-immutable
+                uint32_t floats_per_coord    = 0; // runtime-immutable
+                uint32_t padded_output_width = 0; // runtime-immutable
+                uint32_t max_samples         = 0; // runtime-immutable
+            } validation = {}; // runtime-immutable
+        };
 
-        cudaStream_t stream = {};
+        struct TrainCounters final {
+            legacy::GpuBuffer<std::uint32_t> numsteps_counter           = {}; // runtime-mutable
+            legacy::GpuBuffer<std::uint32_t> numsteps_counter_compacted = {}; // runtime-mutable
+            legacy::GpuBuffer<float> loss                               = {}; // runtime-mutable
+
+            std::uint32_t rays_per_batch                        = 1u << 12; // runtime-mutable
+            std::uint32_t n_rays_total                          = 0u; // runtime-mutable
+            std::uint32_t measured_batch_size                   = 0u; // runtime-mutable
+            std::uint32_t measured_batch_size_before_compaction = 0u; // runtime-mutable
+        };
+
+        struct Spec final {
+            NetworkConfig network_config = {}; // runtime-immutable
+            TrainPlan plan               = {}; // runtime-immutable
+            std::uint32_t seed           = 1337u; // setup-only
+        };
+
+        struct SamplerState final {
+            struct DensityGrid final {
+                legacy::GpuBuffer<float> values                = {}; // runtime-mutable
+                legacy::GpuBuffer<std::uint8_t> occupancy_bits = {}; // runtime-mutable
+                legacy::GpuBuffer<float> reduction_workspace   = {}; // runtime-mutable
+                std::uint32_t ema_step                         = 0u; // runtime-mutable
+                float ema_decay                                = 0.95f; // runtime-immutable
+            } density = {}; // runtime-mutable
+
+            legacy::BoundingBox aabb        = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)}; // runtime-immutable
+            bool snap_to_pixel_centers      = true; // runtime-immutable
+            float near_distance             = 0.1f; // runtime-immutable
+            legacy::math::pcg32 density_rng = {}; // runtime-mutable
+        };
+
+        struct TrainingState final {
+            TrainCounters counters  = {}; // runtime-mutable
+            legacy::math::pcg32 rng = {}; // runtime-mutable
+            std::uint32_t step      = 0u; // runtime-mutable
+            float last_prep_ms      = 0.0f; // runtime-mutable
+            float last_train_ms     = 0.0f; // runtime-mutable
+            float last_loss         = 0.0f; // runtime-mutable
+        };
+
+        struct DeviceState final {
+            std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, nullptr}; // runtime-mutable
+            cudaStream_t stream                                                                              = {}; // runtime-immutable
+        };
+
+        Spec spec              = {}; // runtime-immutable
+        Dataset dataset        = {}; // runtime-immutable
+        SamplerState sampler   = {}; // runtime-mutable
+        TrainingState training = {}; // runtime-mutable
+        DeviceState device     = {}; // runtime-mutable
     };
 
 } // namespace ngp
