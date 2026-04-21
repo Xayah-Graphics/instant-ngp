@@ -20,24 +20,6 @@ namespace ngp::network::detail {
         cudaEvent_t event   = {};
     };
 
-    void delete_aux_stream_slot(AuxStreamSlot* aux_stream) {
-        delete aux_stream;
-    }
-
-    void wait_aux_stream_for_event(AuxStreamSlot& aux_stream, const cudaEvent_t event) {
-        ngp::legacy::cuda_check(cudaStreamWaitEvent(aux_stream.stream, event, 0));
-    }
-
-    void wait_aux_stream_for_stream(AuxStreamSlot& aux_stream, const cudaStream_t stream) {
-        ngp::legacy::cuda_check(cudaEventRecord(aux_stream.event, stream));
-        wait_aux_stream_for_event(aux_stream, aux_stream.event);
-    }
-
-    void signal_aux_stream(AuxStreamSlot& aux_stream, const cudaStream_t stream) {
-        ngp::legacy::cuda_check(cudaEventRecord(aux_stream.event, aux_stream.stream));
-        ngp::legacy::cuda_check(cudaStreamWaitEvent(stream, aux_stream.event, 0));
-    }
-
     std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>& aux_stream_pools() {
         static auto* pools = new std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>{};
         return *pools;
@@ -48,38 +30,29 @@ namespace ngp::network::detail {
         aux_stream_pools().erase(parent_stream);
     }
 
-    std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> acquire_aux_stream(const cudaStream_t parent_stream) {
-        ngp::legacy::check_or_throw(parent_stream != nullptr);
-        auto& pool = aux_stream_pools()[parent_stream];
-        if (pool.empty()) pool.push(std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>{new AuxStreamSlot{}, delete_aux_stream_slot});
-
-        auto result = std::move(pool.top());
-        pool.pop();
-        return result;
-    }
-
-    void release_aux_stream(const cudaStream_t parent_stream, std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream) {
-        if (!aux_stream_pools().contains(parent_stream)) throw std::runtime_error{"Attempted to return stream group to the wrong parent stream."};
-
-        auto& pool = aux_stream_pools()[parent_stream];
-        pool.push(std::move(aux_stream));
-    }
-
     SyncedStreamReservation::SyncedStreamReservation(const cudaStream_t stream, const std::size_t n_streams) : main_stream{stream} {
         if (n_streams == 0u) throw std::runtime_error{"SyncedStreamReservation: must request at least one stream"};
         if (n_streams == 1u) return;
         if (n_streams != 2u) throw std::runtime_error{"SyncedStreamReservation: this repository only supports a single auxiliary stream"};
 
-        aux_stream_slot = acquire_aux_stream(main_stream);
+        ngp::legacy::check_or_throw(main_stream != nullptr);
+        auto& pool = aux_stream_pools()[main_stream];
+        if (pool.empty()) pool.push(std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>{new AuxStreamSlot{}, +[](AuxStreamSlot* aux_stream) { delete aux_stream; }});
+        aux_stream_slot = std::move(pool.top());
+        pool.pop();
         aux_stream      = aux_stream_slot->stream;
-        wait_aux_stream_for_stream(*aux_stream_slot, main_stream);
+        ngp::legacy::cuda_check(cudaEventRecord(aux_stream_slot->event, main_stream));
+        ngp::legacy::cuda_check(cudaStreamWaitEvent(aux_stream_slot->stream, aux_stream_slot->event, 0));
     }
 
     SyncedStreamReservation::~SyncedStreamReservation() {
         if (!aux_stream_slot) return;
 
-        signal_aux_stream(*aux_stream_slot, main_stream);
-        release_aux_stream(main_stream, std::move(aux_stream_slot));
+        ngp::legacy::cuda_check(cudaEventRecord(aux_stream_slot->event, aux_stream_slot->stream));
+        ngp::legacy::cuda_check(cudaStreamWaitEvent(main_stream, aux_stream_slot->event, 0));
+        auto& pools = aux_stream_pools();
+        if (!pools.contains(main_stream)) std::terminate();
+        pools[main_stream].push(std::move(aux_stream_slot));
         aux_stream = nullptr;
     }
 

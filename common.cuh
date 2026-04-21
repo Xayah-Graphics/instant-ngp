@@ -912,27 +912,6 @@ namespace ngp::legacy {
             return result;
         }
 
-        template <typename T>
-        __device__ inline T determinant(const tmat<T, 3, 3>& matrix) {
-            return matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[2][1] * matrix[1][2]) - matrix[1][0] * (matrix[0][1] * matrix[2][2] - matrix[2][1] * matrix[0][2]) + matrix[2][0] * (matrix[0][1] * matrix[1][2] - matrix[1][1] * matrix[0][2]);
-        }
-
-        template <typename T>
-        __device__ inline tmat<T, 3, 3> inverse(const tmat<T, 3, 3>& matrix) {
-            const T inv_det = (T) 1 / determinant(matrix);
-            return {
-                (matrix[1][1] * matrix[2][2] - matrix[2][1] * matrix[1][2]) * inv_det,
-                -(matrix[0][1] * matrix[2][2] - matrix[2][1] * matrix[0][2]) * inv_det,
-                (matrix[0][1] * matrix[1][2] - matrix[1][1] * matrix[0][2]) * inv_det,
-                -(matrix[1][0] * matrix[2][2] - matrix[2][0] * matrix[1][2]) * inv_det,
-                (matrix[0][0] * matrix[2][2] - matrix[2][0] * matrix[0][2]) * inv_det,
-                -(matrix[0][0] * matrix[1][2] - matrix[1][0] * matrix[0][2]) * inv_det,
-                (matrix[1][0] * matrix[2][1] - matrix[2][0] * matrix[1][1]) * inv_det,
-                -(matrix[0][0] * matrix[2][1] - matrix[2][0] * matrix[0][1]) * inv_det,
-                (matrix[0][0] * matrix[1][1] - matrix[1][0] * matrix[0][1]) * inv_det,
-            };
-        }
-
         using mat3x3 = tmat<float, 3, 3>;
         using mat4x3 = tmat<float, 4, 3>;
         using mat3   = mat3x3;
@@ -945,28 +924,20 @@ namespace ngp::legacy {
     }
 
     template <typename T>
-    T gcd(T a, T b) {
-        while (a != 0) {
-            b %= a;
-            host_device_swap(a, b);
-        }
-        return b;
-    }
-
-    template <typename T>
     T lcm(T a, T b) {
-        T tmp = gcd(a, b);
+        T lhs = a;
+        T rhs = b;
+        while (lhs != 0) {
+            rhs %= lhs;
+            host_device_swap(lhs, rhs);
+        }
+        T tmp = rhs;
         return tmp ? (a / tmp) * b : 0;
     }
 
     template <typename T>
     T next_multiple(T val, T divisor) {
         return ((val + divisor - 1) / divisor) * divisor;
-    }
-
-    template <typename T>
-    T previous_multiple(T val, T divisor) {
-        return (val / divisor) * divisor;
     }
 
     [[noreturn]] inline void throw_runtime_error(std::string_view message, const std::source_location& location = std::source_location::current()) {
@@ -1015,127 +986,6 @@ namespace ngp::legacy {
         static thread_local std::deque<GraphCaptureState*> s_current_captures;
         return s_current_captures;
     }
-
-    inline GraphCaptureState* current_graph_capture() {
-        return current_graph_captures().empty() ? nullptr : current_graph_captures().front();
-    }
-
-    inline void reset_graph_capture(GraphCaptureState& graph_state) {
-        if (graph_state.graph) {
-            cuda_check(cudaGraphDestroy(graph_state.graph));
-            graph_state.graph = nullptr;
-        }
-
-        if (graph_state.graph_instance) {
-            cuda_check(cudaGraphExecDestroy(graph_state.graph_instance));
-            graph_state.graph_instance = nullptr;
-        }
-    }
-
-    inline void destroy_graph_capture(GraphCaptureState& graph_state) {
-        try {
-            reset_graph_capture(graph_state);
-        } catch (const std::runtime_error& error) {
-            if (std::string{error.what()}.find("driver shutting down") == std::string::npos) {
-                std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
-            }
-        }
-    }
-
-    inline void schedule_graph_capture_synchronize(GraphCaptureState& graph_state) {
-        graph_state.synchronize_when_capture_done = true;
-    }
-
-    template <typename CaptureFn>
-    void run_graph_capture(GraphCaptureState& graph_state, cudaStream_t stream, CaptureFn&& capture_fn) {
-        if (stream == nullptr || stream == cudaStreamLegacy) {
-            capture_fn();
-            return;
-        }
-
-        cudaStreamCaptureStatus capture_status;
-        cuda_check(cudaStreamIsCapturing(stream, &capture_status));
-        if (capture_status != cudaStreamCaptureStatusNone) {
-            capture_fn();
-            return;
-        }
-
-        cudaError_t capture_result = cudaStreamIsCapturing(cudaStreamLegacy, &capture_status);
-        if (capture_result == cudaErrorStreamCaptureImplicit) {
-            capture_fn();
-            return;
-        }
-
-        cuda_check(capture_result);
-        if (capture_status != cudaStreamCaptureStatusNone) {
-            capture_fn();
-            return;
-        }
-
-        if (graph_state.graph) {
-            cuda_check(cudaGraphDestroy(graph_state.graph));
-            graph_state.graph = nullptr;
-        }
-
-        cuda_check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
-        current_graph_captures().push_back(&graph_state);
-        try {
-            capture_fn();
-            cuda_check(cudaStreamEndCapture(stream, &graph_state.graph));
-
-            if (current_graph_captures().back() != &graph_state) {
-                throw std::runtime_error{"Graph capture must end in reverse order of creation."};
-            }
-            current_graph_captures().pop_back();
-        } catch (...) {
-            if (!current_graph_captures().empty() && current_graph_captures().back() == &graph_state) {
-                current_graph_captures().pop_back();
-            }
-
-            cudaGraph_t aborted_graph      = nullptr;
-            cudaError_t end_capture_result = cudaStreamEndCapture(stream, &aborted_graph);
-            if (end_capture_result == cudaSuccess && aborted_graph) {
-                cudaGraphDestroy(aborted_graph);
-            } else {
-                cudaGetLastError();
-            }
-
-            graph_state.graph = nullptr;
-            throw;
-        }
-
-        if (graph_state.synchronize_when_capture_done) {
-            cuda_check(cudaDeviceSynchronize());
-            graph_state.synchronize_when_capture_done = false;
-        }
-
-        if (!graph_state.graph) {
-            if (graph_state.graph_instance) {
-                cuda_check(cudaGraphExecDestroy(graph_state.graph_instance));
-            }
-
-            graph_state.graph          = nullptr;
-            graph_state.graph_instance = nullptr;
-            return;
-        }
-
-        if (graph_state.graph_instance) {
-            cudaGraphExecUpdateResultInfo update_result;
-            cuda_check(cudaGraphExecUpdate(graph_state.graph_instance, graph_state.graph, &update_result));
-
-            if (update_result.result != cudaGraphExecUpdateSuccess) {
-                cuda_check(cudaGraphExecDestroy(graph_state.graph_instance));
-                graph_state.graph_instance = nullptr;
-            }
-        }
-
-        if (!graph_state.graph_instance) {
-            cuda_check(cudaGraphInstantiate(&graph_state.graph_instance, graph_state.graph, nullptr, nullptr, 0));
-        }
-
-        cuda_check(cudaGraphLaunch(graph_state.graph_instance, stream));
-    }
-
 
     inline std::atomic<size_t>& total_n_bytes_allocated() {
         static std::atomic<size_t> s_total_n_bytes_allocated{0};
@@ -1219,7 +1069,7 @@ namespace ngp::legacy {
             size_t free_bytes;
             size_t total_bytes;
             cuda_check(cudaMemGetInfo(&free_bytes, &total_bytes));
-            m_max_size              = previous_multiple(total_bytes, m_granularity);
+            m_max_size              = (total_bytes / m_granularity) * m_granularity;
             m_global_free_intervals = {{0, m_max_size}};
 
             cu_check(cuMemAddressReserve(&m_base_address, m_max_size, 0, 0, 0));
@@ -1385,8 +1235,8 @@ namespace ngp::legacy {
             m_mapped_bytes += n_bytes_to_allocate;
             total_n_bytes_allocated() += n_bytes_to_allocate;
 
-            if (current_graph_capture()) {
-                schedule_graph_capture_synchronize(*current_graph_capture());
+            if (!current_graph_captures().empty()) {
+                current_graph_captures().front()->synchronize_when_capture_done = true;
             } else {
                 cuda_check(cudaDeviceSynchronize());
             }

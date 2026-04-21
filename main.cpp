@@ -16,33 +16,6 @@ int main(int argc, char* argv[]) {
         CliOptions options{};
         options.network.rgb_network.n_hidden_layers = 2u;
 
-        const auto print_usage = [&] {
-            std::println("Usage: {} [training options]\n", argc > 0 ? argv[0] : "instant-ngp-app");
-            std::println("Options:");
-            std::println("  --scene <path>                  Dataset directory. Default: {}", options.scene.string());
-            std::println("  --steps <count>                 Training steps. Default: {}", options.steps);
-            std::println("  --log-interval <count>          Print a train log every N steps. Default: final step only");
-            std::println("  --validation-interval <count>   Benchmark the whole validation split every N steps. Default: {}", options.validation_interval);
-            std::println("  --validation-dir <path>         Validation report directory. Default: {}", options.validation_dir.string());
-            std::println("  --test-report <path>            Run one final whole-split test after training and write the CSV report here");
-            std::println("  --grid-storage <hash|dense|tiled>");
-            std::println("  --hash-levels <count>");
-            std::println("  --hash-features <count>");
-            std::println("  --hash-log2-size <count>");
-            std::println("  --hash-base-res <count>");
-            std::println("  --hash-scale <float>");
-            std::println("  --stochastic-interp");
-            std::println("  --sh-degree <count>");
-            std::println("  --density-layers <count>        Default: {}", options.network.density_network.n_hidden_layers);
-            std::println("  --rgb-layers <count>            Default: {}", options.network.rgb_network.n_hidden_layers);
-            std::println("  --learning-rate <float>");
-            std::println("  --beta1 <float>");
-            std::println("  --beta2 <float>");
-            std::println("  --epsilon <float>");
-            std::println("  --l2-reg <float>");
-            std::println("  --help");
-        };
-
         const auto parse_u32 = [](const std::string_view name, const std::string_view value) {
             std::uint32_t parsed = 0u;
             const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
@@ -65,7 +38,30 @@ int main(int argc, char* argv[]) {
         for (int i = 1; i < argc; ++i) {
             const std::string_view arg = argv[i];
             if (arg == "--help" || arg == "-h") {
-                print_usage();
+                std::println("Usage: {} [training options]\n", argc > 0 ? argv[0] : "instant-ngp-app");
+                std::println("Options:");
+                std::println("  --scene <path>                  Dataset directory. Default: {}", options.scene.string());
+                std::println("  --steps <count>                 Training steps. Default: {}", options.steps);
+                std::println("  --log-interval <count>          Print a train log every N steps. Default: final step only");
+                std::println("  --validation-interval <count>   Benchmark the whole validation split every N steps. Default: {}", options.validation_interval);
+                std::println("  --validation-dir <path>         Validation report directory. Default: {}", options.validation_dir.string());
+                std::println("  --test-report <path>            Run one final whole-split test after training and write the CSV report here");
+                std::println("  --grid-storage <hash|dense|tiled>");
+                std::println("  --hash-levels <count>");
+                std::println("  --hash-features <count>");
+                std::println("  --hash-log2-size <count>");
+                std::println("  --hash-base-res <count>");
+                std::println("  --hash-scale <float>");
+                std::println("  --stochastic-interp");
+                std::println("  --sh-degree <count>");
+                std::println("  --density-layers <count>        Default: {}", options.network.density_network.n_hidden_layers);
+                std::println("  --rgb-layers <count>            Default: {}", options.network.rgb_network.n_hidden_layers);
+                std::println("  --learning-rate <float>");
+                std::println("  --beta1 <float>");
+                std::println("  --beta2 <float>");
+                std::println("  --epsilon <float>");
+                std::println("  --l2-reg <float>");
+                std::println("  --help");
                 return 0;
             }
 

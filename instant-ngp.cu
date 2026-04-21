@@ -11,10 +11,6 @@
 
 namespace ngp {
 
-    void delete_trainer_state(network::TrainerState<__half>* trainer) {
-        delete trainer;
-    }
-
     struct TrainingStepWorkspace final {
         legacy::GpuAllocation alloc                             = {};
         std::uint32_t* ray_indices                              = nullptr;
@@ -40,10 +36,6 @@ namespace ngp {
     struct Ray final {
         legacy::math::vec3 o = {};
         legacy::math::vec3 d = {};
-
-        __device__ legacy::math::vec3 operator()(const float t) const {
-            return o + t * d;
-        }
 
         __device__ bool is_valid() const {
             return d != legacy::math::vec3(0.0f);
@@ -72,30 +64,16 @@ namespace ngp {
         return {origin, dir};
     }
 
-    inline __device__ legacy::math::vec2 pos_to_uv(const legacy::math::vec3& pos, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix) {
-        legacy::math::vec3 dir = ngp::legacy::math::inverse(legacy::math::mat3(camera_matrix)) * (pos - camera_matrix[3]);
-        dir /= dir.z;
-        return dir.xy() * focal_length / legacy::math::vec2(resolution) + legacy::math::vec2(0.5f);
-    }
-
     inline __device__ float network_to_density(const float val) {
         return expf(val);
-    }
-
-    constexpr __device__ float SQRT3() {
-        return 1.73205080757f;
     }
 
     constexpr __device__ std::uint32_t NERF_STEPS() {
         return 1024u;
     }
 
-    constexpr __device__ float STEPSIZE() {
-        return SQRT3() / static_cast<float>(NERF_STEPS());
-    }
-
     constexpr __device__ float MIN_CONE_STEPSIZE() {
-        return STEPSIZE();
+        return 1.73205080757f / static_cast<float>(NERF_STEPS());
     }
 
     constexpr __device__ std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() {
@@ -145,15 +123,6 @@ namespace ngp {
         return density_grid_bitfield[idx / 8u] & (1u << (idx % 8u));
     }
 
-    inline __device__ float distance_to_next_voxel(const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
-        const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE()) * (pos - 0.5f);
-        const float tx             = (floorf(p.x + 0.5f + 0.5f * legacy::math::sign(dir.x)) - p.x) * idir.x;
-        const float ty             = (floorf(p.y + 0.5f + 0.5f * legacy::math::sign(dir.y)) - p.y) * idir.y;
-        const float tz             = (floorf(p.z + 0.5f + 0.5f * legacy::math::sign(dir.z)) - p.z) * idir.z;
-        const float t              = fminf(fminf(tx, ty), tz);
-        return fmaxf(t / static_cast<float>(legacy::NERF_GRIDSIZE()), 0.0f);
-    }
-
     inline __device__ float advance_n_steps(const float t, const float n) {
         return t + n * MIN_CONE_STEPSIZE();
     }
@@ -163,12 +132,16 @@ namespace ngp {
     }
 
     inline __device__ float advance_to_next_voxel(const float t, const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
-        const float t_target = t + distance_to_next_voxel(pos, dir, idir);
+        const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE()) * (pos - 0.5f);
+        const float tx             = (floorf(p.x + 0.5f + 0.5f * legacy::math::sign(dir.x)) - p.x) * idir.x;
+        const float ty             = (floorf(p.y + 0.5f + 0.5f * legacy::math::sign(dir.y)) - p.y) * idir.y;
+        const float tz             = (floorf(p.z + 0.5f + 0.5f * legacy::math::sign(dir.z)) - p.z) * idir.z;
+        const float t_target       = t + fmaxf(fminf(fminf(tx, ty), tz) / static_cast<float>(legacy::NERF_GRIDSIZE()), 0.0f);
         return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE(), 0.5f)) * MIN_CONE_STEPSIZE();
     }
 
     inline __device__ legacy::math::vec2 nerf_random_image_pos_training(legacy::math::pcg32& rng, const legacy::math::ivec2& resolution, const bool snap_to_pixel_centers) {
-        legacy::math::vec2 uv = network::detail::random_val_2d(rng);
+        legacy::math::vec2 uv = {rng.next_float(), rng.next_float()};
         if (snap_to_pixel_centers) uv = (legacy::math::vec2(ngp::legacy::math::clamp(legacy::math::ivec2(uv * legacy::math::vec2(resolution)), 0, resolution - 1)) + 0.5f) / legacy::math::vec2(resolution);
         return uv;
     }
@@ -178,34 +151,24 @@ namespace ngp {
         return ((base_idx * n_training_images) / n_rays) % n_training_images;
     }
 
-    inline __host__ __device__ float srgb_to_linear(const float srgb) {
-        if (srgb <= 0.04045f) return srgb / 12.92f;
-        return powf((srgb + 0.055f) / 1.055f, 2.4f);
-    }
-
     inline __host__ __device__ legacy::math::vec3 srgb_to_linear(const legacy::math::vec3& x) {
-        return {srgb_to_linear(x.x), srgb_to_linear(x.y), srgb_to_linear(x.z)};
-    }
-
-    inline __host__ __device__ float linear_to_srgb(const float linear) {
-        if (linear < 0.0031308f) return 12.92f * linear;
-        return 1.055f * powf(linear, 0.41666f) - 0.055f;
+        return {
+            x.x <= 0.04045f ? x.x / 12.92f : powf((x.x + 0.055f) / 1.055f, 2.4f),
+            x.y <= 0.04045f ? x.y / 12.92f : powf((x.y + 0.055f) / 1.055f, 2.4f),
+            x.z <= 0.04045f ? x.z / 12.92f : powf((x.z + 0.055f) / 1.055f, 2.4f),
+        };
     }
 
     inline __host__ __device__ legacy::math::vec3 linear_to_srgb(const legacy::math::vec3& x) {
-        return {linear_to_srgb(x.x), linear_to_srgb(x.y), linear_to_srgb(x.z)};
-    }
-
-    inline __host__ __device__ legacy::math::ivec2 image_pos(const legacy::math::vec2& pos, const legacy::math::ivec2& resolution) {
-        return ngp::legacy::math::clamp(legacy::math::ivec2(pos * legacy::math::vec2(resolution)), 0, resolution - 1);
-    }
-
-    inline __host__ __device__ std::uint64_t pixel_idx(const legacy::math::ivec2& px, const legacy::math::ivec2& resolution, const std::uint32_t img) {
-        return px.x + px.y * resolution.x + img * static_cast<std::uint64_t>(resolution.x) * resolution.y;
+        return {
+            x.x < 0.0031308f ? 12.92f * x.x : 1.055f * powf(x.x, 0.41666f) - 0.055f,
+            x.y < 0.0031308f ? 12.92f * x.y : 1.055f * powf(x.y, 0.41666f) - 0.055f,
+            x.z < 0.0031308f ? 12.92f * x.z : 1.055f * powf(x.z, 0.41666f) - 0.055f,
+        };
     }
 
     inline __host__ __device__ legacy::math::vec4 read_rgba(const legacy::math::ivec2& px, const legacy::math::ivec2& resolution, const std::uint8_t* pixels, const std::uint32_t img = 0u) {
-        const std::uint32_t rgba32 = reinterpret_cast<const std::uint32_t*>(pixels)[pixel_idx(px, resolution, img)];
+        const std::uint32_t rgba32 = reinterpret_cast<const std::uint32_t*>(pixels)[px.x + px.y * resolution.x + img * static_cast<std::uint64_t>(resolution.x) * resolution.y];
         legacy::math::vec4 result  = {
             static_cast<float>((rgba32 & 0x000000FFu) >> 0u) * (1.0f / 255.0f),
             static_cast<float>((rgba32 & 0x0000FF00u) >> 8u) * (1.0f / 255.0f),
@@ -216,28 +179,6 @@ namespace ngp {
         return result;
     }
 
-    inline __host__ __device__ legacy::math::vec4 read_rgba(const legacy::math::vec2& pos, const legacy::math::ivec2& resolution, const std::uint8_t* pixels, const std::uint32_t img = 0u) {
-        return read_rgba(image_pos(pos, resolution), resolution, pixels, img);
-    }
-
-    struct LossAndGradient final {
-        legacy::math::vec3 loss     = {};
-        legacy::math::vec3 gradient = {};
-    };
-
-    inline __device__ LossAndGradient l2_loss(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
-        const legacy::math::vec3 difference = prediction - target;
-        return {difference * difference, 2.0f * difference};
-    }
-
-    inline __device__ LossAndGradient loss_and_gradient(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
-        return l2_loss(target, prediction);
-    }
-
-    inline __device__ float network_to_rgb(const float val) {
-        return network::detail::logistic(val);
-    }
-
     inline __device__ float network_to_rgb_derivative(const float val) {
         const float rgb = network::detail::logistic(val);
         return rgb * (1.0f - rgb);
@@ -246,18 +187,10 @@ namespace ngp {
     template <typename T>
     __device__ legacy::math::vec3 network_to_rgb_vec(const T& val) {
         return {
-            network_to_rgb(static_cast<float>(val[0])),
-            network_to_rgb(static_cast<float>(val[1])),
-            network_to_rgb(static_cast<float>(val[2])),
+            network::detail::logistic(static_cast<float>(val[0])),
+            network::detail::logistic(static_cast<float>(val[1])),
+            network::detail::logistic(static_cast<float>(val[2])),
         };
-    }
-
-    inline __device__ float network_to_density_derivative(const float val) {
-        return expf(legacy::math::clamp(val, -15.0f, 15.0f));
-    }
-
-    inline __device__ legacy::math::vec3 unwarp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
-        return aabb.min + pos * aabb.diag();
     }
 
     inline __device__ float unwarp_dt(const float dt) {
@@ -395,7 +328,14 @@ namespace ngp {
                 const legacy::math::vec3 dir = ngp::legacy::math::normalize(corner - xform[3]);
                 if (ngp::legacy::math::dot(dir, xform[2]) < 1e-4f) continue;
 
-                const legacy::math::vec2 uv = pos_to_uv(corner, frame.resolution, frame.focal_length, xform);
+                const legacy::math::vec3 offset = corner - xform[3];
+                legacy::math::vec3 camera_dir   = {
+                    ngp::legacy::math::dot(xform[0], offset),
+                    ngp::legacy::math::dot(xform[1], offset),
+                    ngp::legacy::math::dot(xform[2], offset),
+                };
+                camera_dir /= camera_dir.z;
+                const legacy::math::vec2 uv = camera_dir.xy() * frame.focal_length / legacy::math::vec2(frame.resolution) + legacy::math::vec2(0.5f);
                 const Ray ray               = uv_to_ray(0u, uv, frame.resolution, frame.focal_length, xform);
                 if (ngp::legacy::math::distance(ngp::legacy::math::normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
                     ++count;
@@ -483,7 +423,7 @@ namespace ngp {
         legacy::math::vec2 tminmax                = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
         tminmax.x                                 = fmaxf(tminmax.x, 0.0f);
 
-        const float startt            = advance_n_steps(tminmax.x, network::detail::random_val(rng));
+        const float startt            = advance_n_steps(tminmax.x, rng.next_float());
         const legacy::math::vec3 idir = legacy::math::vec3(1.0f) / ray_d_normalized;
 
         std::uint32_t j = 0u;
@@ -571,7 +511,8 @@ namespace ngp {
 
         const legacy::math::vec2 uv               = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
         const legacy::math::vec3 background_color = network::detail::random_val_3d(rng);
-        const legacy::math::vec4 texsamp          = read_rgba(uv, resolution, frame.pixels);
+        const legacy::math::ivec2 texel           = ngp::legacy::math::clamp(legacy::math::ivec2(uv * legacy::math::vec2(resolution)), 0, resolution - 1);
+        const legacy::math::vec4 texsamp          = read_rgba(texel, resolution, frame.pixels);
         const legacy::math::vec3 rgbtarget        = linear_to_srgb(texsamp.rgb() + (1.0f - texsamp.a) * srgb_to_linear(background_color));
 
         if (compacted_numsteps == numsteps) rgb_ray += T * background_color;
@@ -588,8 +529,10 @@ namespace ngp {
         coords_out += compacted_base;
         dloss_doutput += compacted_base * padded_output_width;
 
-        LossAndGradient lg    = loss_and_gradient(rgbtarget, rgb_ray);
-        const float mean_loss = ngp::legacy::math::mean(lg.loss);
+        const legacy::math::vec3 difference = rgb_ray - rgbtarget;
+        const legacy::math::vec3 loss       = difference * difference;
+        const legacy::math::vec3 gradient   = 2.0f * difference;
+        const float mean_loss               = ngp::legacy::math::mean(loss);
         if (loss_output) loss_output[i] = mean_loss / static_cast<float>(n_rays);
 
         loss_scale /= static_cast<float>(n_rays);
@@ -603,7 +546,7 @@ namespace ngp {
             const legacy::NerfCoordinate* coord_in = coords_in(j);
             *coord_out                             = *coord_in;
 
-            const legacy::math::vec3 pos                              = unwarp_position(coord_in->pos.p, aabb);
+            const legacy::math::vec3 pos                              = aabb.min + coord_in->pos.p * aabb.diag();
             const float depth                                         = ngp::legacy::math::distance(pos, ray_o);
             const float dt                                            = unwarp_dt(coord_in->dt);
             const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
@@ -615,15 +558,15 @@ namespace ngp {
             T *= (1.0f - alpha);
 
             const legacy::math::vec3 suffix        = rgb_ray - rgb_ray2;
-            const legacy::math::vec3 dloss_by_drgb = weight * lg.gradient;
+            const legacy::math::vec3 dloss_by_drgb = weight * gradient;
 
             legacy::math::tvec<__half, 4u> local_dL_doutput{};
             local_dL_doutput[0] = loss_scale * (dloss_by_drgb.x * network_to_rgb_derivative(local_network_output[0]));
             local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y * network_to_rgb_derivative(local_network_output[1]));
             local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z * network_to_rgb_derivative(local_network_output[2]));
 
-            const float density_derivative = network_to_density_derivative(local_network_output[3]);
-            const float dloss_by_dmlp      = density_derivative * (dt * ngp::legacy::math::dot(lg.gradient, T * rgb - suffix));
+            const float density_derivative = expf(legacy::math::clamp(static_cast<float>(local_network_output[3]), -15.0f, 15.0f));
+            const float dloss_by_dmlp      = density_derivative * (dt * ngp::legacy::math::dot(gradient, T * rgb - suffix));
             local_dL_doutput[3]            = loss_scale * dloss_by_dmlp + (static_cast<float>(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) + (static_cast<float>(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
             *reinterpret_cast<legacy::math::tvec<__half, 4u>*>(dloss_doutput) = local_dL_doutput;
@@ -774,7 +717,7 @@ namespace ngp {
             sampler.density_rng = legacy::math::pcg32{training.rng.next_uint()};
             device.trainer      = std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)>{
                 new network::TrainerState<__half>(spec.network_config, spec.plan, spec.seed, device.stream),
-                delete_trainer_state,
+                +[](network::TrainerState<__half>* trainer) { delete trainer; },
             };
         } catch (...) {
             cudaStreamDestroy(created_stream);
@@ -998,10 +941,81 @@ namespace ngp {
             fill_rollover<float><<<((coords_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, device.stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
 
             // Backward and optimizer.
-            legacy::run_graph_capture(device.trainer->graph, device.stream, [&]() {
+            auto& graph_capture = device.trainer->graph;
+            if (device.stream == nullptr || device.stream == cudaStreamLegacy) {
                 device.trainer->model.forward(device.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, device.trainer->scratch);
                 device.trainer->model.backward(device.stream, device.trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, network::detail::GradientMode::Overwrite);
-            });
+            } else {
+                cudaStreamCaptureStatus capture_status;
+                legacy::cuda_check(cudaStreamIsCapturing(device.stream, &capture_status));
+                if (capture_status != cudaStreamCaptureStatusNone) {
+                    device.trainer->model.forward(device.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, device.trainer->scratch);
+                    device.trainer->model.backward(device.stream, device.trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, network::detail::GradientMode::Overwrite);
+                } else {
+                    cudaError_t capture_result = cudaStreamIsCapturing(cudaStreamLegacy, &capture_status);
+                    if (capture_result == cudaErrorStreamCaptureImplicit) {
+                        device.trainer->model.forward(device.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, device.trainer->scratch);
+                        device.trainer->model.backward(device.stream, device.trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, network::detail::GradientMode::Overwrite);
+                    } else {
+                        legacy::cuda_check(capture_result);
+                        if (capture_status != cudaStreamCaptureStatusNone) {
+                            device.trainer->model.forward(device.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, device.trainer->scratch);
+                            device.trainer->model.backward(device.stream, device.trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, network::detail::GradientMode::Overwrite);
+                        } else {
+                            if (graph_capture.graph) {
+                                legacy::cuda_check(cudaGraphDestroy(graph_capture.graph));
+                                graph_capture.graph = nullptr;
+                            }
+
+                            legacy::cuda_check(cudaStreamBeginCapture(device.stream, cudaStreamCaptureModeRelaxed));
+                            legacy::current_graph_captures().push_back(&graph_capture);
+                            try {
+                                device.trainer->model.forward(device.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, device.trainer->scratch);
+                                device.trainer->model.backward(device.stream, device.trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, network::detail::GradientMode::Overwrite);
+                                legacy::cuda_check(cudaStreamEndCapture(device.stream, &graph_capture.graph));
+                                if (legacy::current_graph_captures().back() != &graph_capture) throw std::runtime_error{"Graph capture must end in reverse order of creation."};
+                                legacy::current_graph_captures().pop_back();
+                            } catch (...) {
+                                if (!legacy::current_graph_captures().empty() && legacy::current_graph_captures().back() == &graph_capture) legacy::current_graph_captures().pop_back();
+
+                                cudaGraph_t aborted_graph      = nullptr;
+                                cudaError_t end_capture_result = cudaStreamEndCapture(device.stream, &aborted_graph);
+                                if (end_capture_result == cudaSuccess && aborted_graph) {
+                                    cudaGraphDestroy(aborted_graph);
+                                } else {
+                                    cudaGetLastError();
+                                }
+
+                                graph_capture.graph = nullptr;
+                                throw;
+                            }
+
+                            if (graph_capture.synchronize_when_capture_done) {
+                                legacy::cuda_check(cudaDeviceSynchronize());
+                                graph_capture.synchronize_when_capture_done = false;
+                            }
+
+                            if (!graph_capture.graph) {
+                                if (graph_capture.graph_instance) legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
+                                graph_capture.graph          = nullptr;
+                                graph_capture.graph_instance = nullptr;
+                            } else {
+                                if (graph_capture.graph_instance) {
+                                    cudaGraphExecUpdateResultInfo update_result;
+                                    legacy::cuda_check(cudaGraphExecUpdate(graph_capture.graph_instance, graph_capture.graph, &update_result));
+                                    if (update_result.result != cudaGraphExecUpdateSuccess) {
+                                        legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
+                                        graph_capture.graph_instance = nullptr;
+                                    }
+                                }
+
+                                if (!graph_capture.graph_instance) legacy::cuda_check(cudaGraphInstantiate(&graph_capture.graph_instance, graph_capture.graph, nullptr, nullptr, 0));
+                                legacy::cuda_check(cudaGraphLaunch(graph_capture.graph_instance, device.stream));
+                            }
+                        }
+                    }
+                }
+            }
             device.trainer->optimizer.step(device.stream, network::detail::default_loss_scale<__half>(), device.trainer->params.full_precision, device.trainer->params.values, device.trainer->params.gradients);
             ++training.step;
 

@@ -172,18 +172,22 @@ namespace ngp::network::detail {
         return static_cast<std::uint32_t>(ceilf(scale)) + 1u;
     }
 
-    __device__ inline std::uint32_t expand_bits(std::uint32_t value) {
-        value = (value * 0x00010001u) & 0xFF0000FFu;
-        value = (value * 0x00000101u) & 0x0F00F00Fu;
-        value = (value * 0x00000011u) & 0xC30C30C3u;
-        value = (value * 0x00000005u) & 0x49249249u;
-        return value;
-    }
-
     __device__ inline std::uint32_t morton3D(const std::uint32_t x, const std::uint32_t y, const std::uint32_t z) {
-        const std::uint32_t xx = expand_bits(x);
-        const std::uint32_t yy = expand_bits(y);
-        const std::uint32_t zz = expand_bits(z);
+        std::uint32_t xx = x;
+        std::uint32_t yy = y;
+        std::uint32_t zz = z;
+        xx = (xx * 0x00010001u) & 0xFF0000FFu;
+        xx = (xx * 0x00000101u) & 0x0F00F00Fu;
+        xx = (xx * 0x00000011u) & 0xC30C30C3u;
+        xx = (xx * 0x00000005u) & 0x49249249u;
+        yy = (yy * 0x00010001u) & 0xFF0000FFu;
+        yy = (yy * 0x00000101u) & 0x0F00F00Fu;
+        yy = (yy * 0x00000011u) & 0xC30C30C3u;
+        yy = (yy * 0x00000005u) & 0x49249249u;
+        zz = (zz * 0x00010001u) & 0xFF0000FFu;
+        zz = (zz * 0x00000101u) & 0x0F00F00Fu;
+        zz = (zz * 0x00000011u) & 0xC30C30C3u;
+        zz = (zz * 0x00000005u) & 0x49249249u;
         return xx | (yy << 1u) | (zz << 2u);
     }
 
@@ -227,16 +231,6 @@ namespace ngp::network::detail {
         const std::size_t blocks    = (n_threads + n_threads_linear - 1u) / n_threads_linear;
         generate_random_uniform_kernel<T, RNG, n_to_generate><<<blocks, n_threads_linear>>>(n_elements, rng, out, lower, upper);
         rng.advance(n_elements);
-    }
-
-    template <typename RNG>
-    __device__ float random_val(RNG& rng) {
-        return rng.next_float();
-    }
-
-    template <typename RNG>
-    __device__ legacy::math::vec2 random_val_2d(RNG& rng) {
-        return {rng.next_float(), rng.next_float()};
     }
 
     template <typename RNG>
@@ -516,15 +510,8 @@ namespace ngp::network::detail {
     }
 
     struct AuxStreamSlot;
-    void delete_aux_stream_slot(AuxStreamSlot* aux_stream);
-
-    void wait_aux_stream_for_event(AuxStreamSlot& aux_stream, cudaEvent_t event);
-    void wait_aux_stream_for_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
-    void signal_aux_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
     std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>& aux_stream_pools();
     void free_aux_stream_pool(cudaStream_t parent_stream);
-    std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> acquire_aux_stream(cudaStream_t parent_stream);
-    void release_aux_stream(cudaStream_t parent_stream, std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream);
 
     struct SyncedStreamReservation final {
         SyncedStreamReservation() = default;
@@ -931,18 +918,29 @@ namespace ngp::encoding {
         if (config.base_resolution == 0u) throw std::runtime_error{"HashGrid encoding base_resolution must be greater than zero."};
         if (n_dims_to_encode != 3u) throw std::runtime_error{"HashGrid encoding in this repository only supports 3D positions."};
 
-        auto result = [&]() -> std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> {
-            switch (config.n_features_per_level) {
-            case 1u: return make_hash_grid_encoding<T, 3u, 1u>(config);
-            case 2u: return make_hash_grid_encoding<T, 3u, 2u>(config);
-            case 4u: return make_hash_grid_encoding<T, 3u, 4u>(config);
-            case 8u: return make_hash_grid_encoding<T, 3u, 8u>(config);
-            default: throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
-            }
-        }();
-
-        if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
-        return result;
+        switch (config.n_features_per_level) {
+        case 1u: {
+            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 1u>(config)};
+            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+            return result;
+        }
+        case 2u: {
+            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 2u>(config)};
+            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+            return result;
+        }
+        case 4u: {
+            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 4u>(config)};
+            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+            return result;
+        }
+        case 8u: {
+            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 8u>(config)};
+            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+            return result;
+        }
+        default: throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
+        }
     }
 
     template <typename T>
@@ -2371,7 +2369,20 @@ namespace ngp::network {
         }
 
         ~TrainerState() {
-            ngp::legacy::destroy_graph_capture(graph);
+            try {
+                if (graph.graph) {
+                    ngp::legacy::cuda_check(cudaGraphDestroy(graph.graph));
+                    graph.graph = nullptr;
+                }
+                if (graph.graph_instance) {
+                    ngp::legacy::cuda_check(cudaGraphExecDestroy(graph.graph_instance));
+                    graph.graph_instance = nullptr;
+                }
+            } catch (const std::runtime_error& error) {
+                if (std::string{error.what()}.find("driver shutting down") == std::string::npos) {
+                    std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
+                }
+            }
         }
 
         ModelState<T> model;
