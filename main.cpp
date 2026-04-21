@@ -150,56 +150,53 @@ int main(int argc, char* argv[]) {
         ngp::InstantNGP ngp{options.network};
         ngp.load_dataset(options.scene);
 
-        const auto total_start                      = std::chrono::steady_clock::now();
-        auto interval_start                        = total_start;
-        const std::uint32_t initial_training_step  = ngp.read_train_stats().training_step;
-        std::uint32_t interval_training_step       = initial_training_step;
-        const std::uint32_t target_training_step   = initial_training_step + options.steps;
+        const auto total_start                     = std::chrono::steady_clock::now();
+        auto interval_start                       = total_start;
+        ngp::InstantNGP::TrainResult last_train   = ngp.train(0);
+        const std::uint32_t initial_training_step = last_train.step;
+        std::uint32_t interval_training_step      = initial_training_step;
+        const std::uint32_t target_training_step  = initial_training_step + options.steps;
 
-        while (true) {
-            const ngp::InstantNGP::TrainStats before = ngp.read_train_stats();
-            if (before.training_step >= target_training_step) break;
-
-            std::uint32_t chunk = target_training_step - before.training_step;
+        while (last_train.step < target_training_step) {
+            std::uint32_t chunk = target_training_step - last_train.step;
             if (options.log_interval > 0u) {
-                const std::uint32_t progressed = before.training_step - initial_training_step;
+                const std::uint32_t progressed = last_train.step - initial_training_step;
                 const std::uint32_t until_log  = progressed % options.log_interval == 0u ? options.log_interval : options.log_interval - (progressed % options.log_interval);
                 if (until_log < chunk) chunk = until_log;
             }
             if (options.validation_interval > 0u) {
-                const std::uint32_t progressed         = before.training_step - initial_training_step;
+                const std::uint32_t progressed         = last_train.step - initial_training_step;
                 const std::uint32_t until_validation   = progressed % options.validation_interval == 0u ? options.validation_interval : options.validation_interval - (progressed % options.validation_interval);
                 if (until_validation < chunk) chunk = until_validation;
             }
 
-            ngp.train(static_cast<std::int32_t>(chunk));
-            const ngp::InstantNGP::TrainStats after = ngp.read_train_stats();
-            const std::uint32_t progressed          = after.training_step - initial_training_step;
+            last_train = ngp.train(static_cast<std::int32_t>(chunk));
+            const std::uint32_t progressed = last_train.step - initial_training_step;
 
-            const bool should_log = after.training_step == target_training_step || (options.log_interval > 0u && progressed % options.log_interval == 0u);
+            const bool should_log = last_train.step == target_training_step || (options.log_interval > 0u && progressed % options.log_interval == 0u);
             if (should_log) {
                 const auto now                       = std::chrono::steady_clock::now();
                 const float interval_seconds         = std::chrono::duration<float>(now - interval_start).count();
-                const std::uint32_t interval_steps   = after.training_step - interval_training_step;
+                const std::uint32_t interval_steps   = last_train.step - interval_training_step;
                 const float steps_per_second         = interval_seconds > 0.0f ? static_cast<float>(interval_steps) / interval_seconds : 0.0f;
                 const float elapsed_seconds          = std::chrono::duration<float>(now - total_start).count();
                 std::println("step={} loss={} steps_per_second={} train_ms={} prep_ms={} elapsed_s={}",
-                    after.training_step,
-                    after.loss,
+                    last_train.step,
+                    last_train.loss,
                     steps_per_second,
-                    after.train_ms,
-                    after.prep_ms,
+                    last_train.train_ms,
+                    last_train.prep_ms,
                     elapsed_seconds);
                 interval_start         = now;
-                interval_training_step = after.training_step;
+                interval_training_step = last_train.step;
             }
 
             const bool should_validate = options.validation_interval > 0u && progressed % options.validation_interval == 0u;
             if (should_validate) {
-                const std::filesystem::path output_path = options.validation_dir / std::format("step_{}.png", after.training_step);
-                const ngp::InstantNGP::ValidationResult validation = ngp.render_validation_image(output_path, options.validation_image_index);
+                const std::filesystem::path output_path = options.validation_dir / std::format("step_{}.png", last_train.step);
+                const ngp::InstantNGP::ValidateResult validation = ngp.validate(output_path, options.validation_image_index);
                 std::println("validation step={} image_index={} resolution={}x{} mse={} psnr={} path={}",
-                    after.training_step,
+                    last_train.step,
                     validation.image_index,
                     validation.width,
                     validation.height,
@@ -210,10 +207,10 @@ int main(int argc, char* argv[]) {
         }
 
         if (!options.test_report.empty()) {
-            const ngp::InstantNGP::TestBenchmarkResult test = ngp.benchmark_test_dataset(options.test_report);
+            const ngp::InstantNGP::TestResult test = ngp.test(options.test_report);
             const float images_per_second = test.benchmark_ms > 0.0f ? 1000.0f * static_cast<float>(test.image_count) / test.benchmark_ms : 0.0f;
             std::println("test step={} images={} total_pixels={} mean_mse={} mean_psnr={} split_psnr={} min_psnr={} max_psnr={} benchmark_ms={} images_per_second={} report={}",
-                ngp.read_train_stats().training_step,
+                last_train.step,
                 test.image_count,
                 test.total_pixels,
                 test.mean_mse,

@@ -28,18 +28,18 @@ namespace ngp {
             legacy::math::mat4x3 camera    = {};
         };
 
-        struct TrainStats final {
+        struct TrainResult final {
             float loss                                          = 0.0f;
             float train_ms                                      = 0.0f;
             float prep_ms                                       = 0.0f;
-            std::uint32_t training_step                         = 0u;
+            std::uint32_t step                                  = 0u;
             std::uint32_t batch_size                            = 0u;
             std::uint32_t rays_per_batch                        = 0u;
             std::uint32_t measured_batch_size                   = 0u;
             std::uint32_t measured_batch_size_before_compaction = 0u;
         };
 
-        struct ValidationResult final {
+        struct ValidateResult final {
             std::uint32_t width      = 0u;
             std::uint32_t height     = 0u;
             float mse                = 0.0f;
@@ -47,22 +47,21 @@ namespace ngp {
             std::int32_t image_index = -1;
         };
 
-        struct TestBenchmarkResult final {
-            std::uint32_t image_count = 0u;
+        struct TestResult final {
+            std::uint32_t image_count  = 0u;
             std::uint64_t total_pixels = 0u;
-            float mean_mse = 0.0f;
-            float mean_psnr = 0.0f;
-            float split_psnr = 0.0f;
-            float min_psnr = 0.0f;
-            float max_psnr = 0.0f;
-            float benchmark_ms = 0.0f;
+            float mean_mse             = 0.0f;
+            float mean_psnr            = 0.0f;
+            float split_psnr           = 0.0f;
+            float min_psnr             = 0.0f;
+            float max_psnr             = 0.0f;
+            float benchmark_ms         = 0.0f;
         };
 
         void load_dataset(const std::filesystem::path& dataset_path);
-        void train(std::int32_t iters);
-        [[nodiscard]] auto read_train_stats() const -> TrainStats;
-        [[nodiscard]] auto render_validation_image(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidationResult;
-        [[nodiscard]] auto benchmark_test_dataset(const std::filesystem::path& report_path) -> TestBenchmarkResult;
+        [[nodiscard]] auto train(std::int32_t iters) -> TrainResult;
+        [[nodiscard]] auto validate(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidateResult;
+        [[nodiscard]] auto test(const std::filesystem::path& report_path) -> TestResult;
 
         struct NetworkConfig {
             struct HashGridConfig {
