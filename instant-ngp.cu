@@ -2,7 +2,6 @@
 #include "stb/stb_image_write.h"
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -43,10 +42,6 @@ namespace ngp {
 
         __host__ __device__ legacy::math::vec3 operator()(const float t) const {
             return o + t * d;
-        }
-
-        [[maybe_unused]] __host__ __device__ void advance(const float t) {
-            o += d * t;
         }
 
         __host__ __device__ bool is_valid() const {
@@ -227,14 +222,6 @@ namespace ngp {
     struct LossAndGradient final {
         legacy::math::vec3 loss     = {};
         legacy::math::vec3 gradient = {};
-
-        __host__ __device__ LossAndGradient operator*(const float scalar) const {
-            return {loss * scalar, gradient * scalar};
-        }
-
-        __host__ __device__ LossAndGradient operator/(const float scalar) const {
-            return {loss / scalar, gradient / scalar};
-        }
     };
 
     inline __host__ __device__ LossAndGradient l2_loss(const legacy::math::vec3& target, const legacy::math::vec3& prediction) {
@@ -745,7 +732,6 @@ namespace ngp {
 
     InstantNGP::InstantNGP(const NetworkConfig& network_config) {
         spec.network_config = network_config;
-        std::printf("Making training plan at training step %u.\n", training.step);
 
         spec.plan                             = {};
         spec.plan.training.batch_size         = 1u << 18;
@@ -1046,7 +1032,6 @@ namespace ngp {
 
             if (counters.measured_batch_size == 0u) {
                 training.last_loss = 0.0f;
-                std::fprintf(stderr, "Nerf training generated 0 samples. Aborting training.\n");
                 throw std::runtime_error{"Training stopped unexpectedly."};
             }
 

@@ -120,36 +120,6 @@ namespace ngp::network::detail {
         target[i] = static_cast<T>(full_precision[i]);
     }
 
-    template <typename T>
-    T xorshift(T n, const int i) {
-        return n ^ (n >> i);
-    }
-
-    inline std::uint32_t distribute(const std::uint32_t n) {
-        constexpr std::uint32_t p = 0x55555555u;
-        constexpr std::uint32_t c = 3423571495u;
-        return c * xorshift(p * xorshift(n, 16), 16);
-    }
-
-    inline std::uint64_t distribute(const std::uint64_t n) {
-        constexpr std::uint64_t p = 0x5555555555555555ull;
-        constexpr std::uint64_t c = 17316035218449499591ull;
-        return c * xorshift(p * xorshift(n, 32), 32);
-    }
-
-    template <typename T, typename S>
-        requires std::unsigned_integral<T>
-    constexpr T rotl(const T n, const S i) {
-        const T m = std::numeric_limits<T>::digits - 1;
-        const T c = i & m;
-        return (n << c) | (n >> (static_cast<T>(0) - c & m));
-    }
-
-    template <typename T>
-    std::size_t hash_combine(const std::size_t seed, const T& value) {
-        return rotl(seed, std::numeric_limits<std::size_t>::digits / 3) ^ distribute(std::hash<T>{}(value));
-    }
-
     inline std::uint32_t powi(const std::uint32_t base, const std::uint32_t exponent) {
         std::uint32_t result = 1u;
         for (std::uint32_t i = 0; i < exponent; ++i) result *= base;
