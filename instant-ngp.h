@@ -77,7 +77,7 @@ namespace ngp {
         [[nodiscard]] auto train(std::int32_t iters) -> TrainResult;
         [[nodiscard]] auto validate(const std::filesystem::path& report_path) -> ValidateResult;
         [[nodiscard]] auto test(const std::filesystem::path& report_path) -> TestResult;
-        [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) -> InferenceResult;
+        [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult;
 
         struct NetworkConfig {
             struct HashGridConfig {

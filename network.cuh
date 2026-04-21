@@ -44,6 +44,14 @@ namespace ngp {
 
 namespace ngp::network::detail {
 
+    template <typename T>
+    inline constexpr float default_loss_scale = 1.0f;
+
+#ifdef __CUDACC__
+    template <>
+    inline constexpr float default_loss_scale<__half> = 128.0f;
+#endif
+
 #if defined(TCNN_PARAMS_UNALIGNED)
     inline constexpr bool params_aligned = false;
 #else
@@ -90,21 +98,6 @@ namespace ngp::network::detail {
             return fn(std::forward<Module>(module));
         }
     }
-
-    template <typename T>
-    constexpr float default_loss_scale();
-
-    template <>
-    constexpr float default_loss_scale<float>() {
-        return 1.0f;
-    }
-
-#ifdef __CUDACC__
-    template <>
-    constexpr float default_loss_scale<__half>() {
-        return 128.0f;
-    }
-#endif
 
     inline constexpr std::uint32_t batch_size_granularity = 256u;
     inline constexpr std::uint32_t n_threads_linear       = 128u;

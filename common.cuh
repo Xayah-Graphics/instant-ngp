@@ -30,6 +30,10 @@
 #endif
 
 namespace ngp::legacy {
+
+    inline constexpr std::uint32_t NERF_GRIDSIZE      = 128u;
+    inline constexpr std::uint32_t NERF_GRID_N_CELLS  = NERF_GRIDSIZE * NERF_GRIDSIZE * NERF_GRIDSIZE;
+
     namespace math {
 #define PCG32_DEFAULT_STATE  0x853c49e6748fea9bULL
 #define PCG32_DEFAULT_STREAM 0xda3e39cb94b95bdbULL
@@ -1805,13 +1809,6 @@ namespace ngp::legacy {
         NerfDirection dir;
     };
 
-    inline constexpr __host__ __device__ uint32_t NERF_GRIDSIZE() {
-        return 128;
-    }
-
-    inline constexpr __host__ __device__ uint32_t NERF_GRID_N_CELLS() {
-        return NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE();
-    }
 } // namespace ngp::legacy
 
 #endif // NGP_LEGACY_CUH

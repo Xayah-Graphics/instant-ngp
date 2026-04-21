@@ -11,6 +11,11 @@
 
 namespace ngp {
 
+    inline constexpr std::uint32_t NERF_STEPS                  = 1024u;
+    inline constexpr float MIN_CONE_STEPSIZE                   = 1.73205080757f / static_cast<float>(NERF_STEPS);
+    inline constexpr std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY = 16u;
+    inline constexpr float NERF_MIN_OPTICAL_THICKNESS          = 0.01f;
+
     struct TrainingStepWorkspace final {
         legacy::GpuAllocation alloc                             = {};
         std::uint32_t* ray_indices                              = nullptr;
@@ -68,22 +73,6 @@ namespace ngp {
         return expf(val);
     }
 
-    constexpr __device__ std::uint32_t NERF_STEPS() {
-        return 1024u;
-    }
-
-    constexpr __device__ float MIN_CONE_STEPSIZE() {
-        return 1.73205080757f / static_cast<float>(NERF_STEPS());
-    }
-
-    constexpr __device__ std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() {
-        return 16u;
-    }
-
-    constexpr __host__ __device__ float NERF_MIN_OPTICAL_THICKNESS() {
-        return 0.01f;
-    }
-
     struct DensityGridReduceOp final {
         std::uint32_t base_grid_elements = 0u;
 
@@ -112,8 +101,8 @@ namespace ngp {
     }
 
     inline __device__ std::uint32_t density_grid_idx_at(const legacy::math::vec3& pos) {
-        const legacy::math::ivec3 i = pos * static_cast<float>(legacy::NERF_GRIDSIZE());
-        if (i.x < 0 || i.x >= static_cast<int>(legacy::NERF_GRIDSIZE()) || i.y < 0 || i.y >= static_cast<int>(legacy::NERF_GRIDSIZE()) || i.z < 0 || i.z >= static_cast<int>(legacy::NERF_GRIDSIZE())) return 0xFFFFFFFFu;
+        const legacy::math::ivec3 i = pos * static_cast<float>(legacy::NERF_GRIDSIZE);
+        if (i.x < 0 || i.x >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.y < 0 || i.y >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.z < 0 || i.z >= static_cast<int>(legacy::NERF_GRIDSIZE)) return 0xFFFFFFFFu;
         return network::detail::morton3D(i.x, i.y, i.z);
     }
 
@@ -124,20 +113,20 @@ namespace ngp {
     }
 
     inline __device__ float advance_n_steps(const float t, const float n) {
-        return t + n * MIN_CONE_STEPSIZE();
+        return t + n * MIN_CONE_STEPSIZE;
     }
 
     inline __device__ float calc_dt() {
-        return MIN_CONE_STEPSIZE();
+        return MIN_CONE_STEPSIZE;
     }
 
     inline __device__ float advance_to_next_voxel(const float t, const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
-        const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE()) * (pos - 0.5f);
+        const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE) * (pos - 0.5f);
         const float tx             = (floorf(p.x + 0.5f + 0.5f * legacy::math::sign(dir.x)) - p.x) * idir.x;
         const float ty             = (floorf(p.y + 0.5f + 0.5f * legacy::math::sign(dir.y)) - p.y) * idir.y;
         const float tz             = (floorf(p.z + 0.5f + 0.5f * legacy::math::sign(dir.z)) - p.z) * idir.z;
-        const float t_target       = t + fmaxf(fminf(fminf(tx, ty), tz) / static_cast<float>(legacy::NERF_GRIDSIZE()), 0.0f);
-        return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE(), 0.5f)) * MIN_CONE_STEPSIZE();
+        const float t_target       = t + fmaxf(fminf(fminf(tx, ty), tz) / static_cast<float>(legacy::NERF_GRIDSIZE), 0.0f);
+        return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE, 0.5f)) * MIN_CONE_STEPSIZE;
     }
 
     inline __device__ legacy::math::vec2 nerf_random_image_pos_training(legacy::math::pcg32& rng, const legacy::math::ivec2& resolution, const bool snap_to_pixel_centers) {
@@ -195,7 +184,7 @@ namespace ngp {
 
     inline __device__ float unwarp_dt(const float dt) {
         static_cast<void>(dt);
-        return MIN_CONE_STEPSIZE();
+        return MIN_CONE_STEPSIZE;
     }
 
     inline __host__ __device__ legacy::math::vec3 clamp_rgb01(const legacy::math::vec3& value) {
@@ -303,8 +292,8 @@ namespace ngp {
         const std::uint32_t y = network::detail::morton3D_invert(i >> 1u);
         const std::uint32_t z = network::detail::morton3D_invert(i >> 2u);
 
-        constexpr float voxel_size   = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE());
-        const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(legacy::NERF_GRIDSIZE());
+        constexpr float voxel_size   = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE);
+        const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(legacy::NERF_GRIDSIZE);
 
         legacy::math::vec3 corners[8] = {
             pos + legacy::math::vec3{0.0f, 0.0f, 0.0f},
@@ -354,16 +343,16 @@ namespace ngp {
         rng.advance(i * 4u);
         std::uint32_t idx = 0u;
         for (std::uint32_t j = 0u; j < 10u; ++j) {
-            idx = ((i + step * n_elements) * 56924617u + j * 19349663u + 96925573u) % legacy::NERF_GRID_N_CELLS();
+            idx = ((i + step * n_elements) * 56924617u + j * 19349663u + 96925573u) % legacy::NERF_GRID_N_CELLS;
             if (grid_in[idx] > thresh) break;
         }
 
         const std::uint32_t x        = network::detail::morton3D_invert(idx >> 0u);
         const std::uint32_t y        = network::detail::morton3D_invert(idx >> 1u);
         const std::uint32_t z        = network::detail::morton3D_invert(idx >> 2u);
-        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + network::detail::random_val_3d(rng)) / static_cast<float>(legacy::NERF_GRIDSIZE());
+        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + network::detail::random_val_3d(rng)) / static_cast<float>(legacy::NERF_GRIDSIZE);
 
-        out[i]     = {warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE())};
+        out[i]     = {warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE)};
         indices[i] = idx;
     }
 
@@ -373,7 +362,7 @@ namespace ngp {
 
         const std::uint32_t idx = indices[i];
         const float mlp         = network_to_density(network_output[i]);
-        const float thickness   = mlp * MIN_CONE_STEPSIZE();
+        const float thickness   = mlp * MIN_CONE_STEPSIZE;
         atomicMax(reinterpret_cast<std::uint32_t*>(&grid_out[idx]), __float_as_uint(thickness));
     }
 
@@ -393,7 +382,7 @@ namespace ngp {
         if (i >= n_elements) return;
 
         std::uint8_t bits  = 0u;
-        const float thresh = fminf(NERF_MIN_OPTICAL_THICKNESS(), *mean_density_ptr);
+        const float thresh = fminf(NERF_MIN_OPTICAL_THICKNESS, *mean_density_ptr);
 
         TCNN_PRAGMA_UNROLL
         for (std::uint8_t j = 0u; j < 8u; ++j) bits |= grid[i * 8u + j] > thresh ? (static_cast<std::uint8_t>(1u) << j) : 0u;
@@ -410,7 +399,7 @@ namespace ngp {
         const auto& frame                    = frames[img];
         const legacy::math::ivec2 resolution = frame.resolution;
 
-        rng.advance(i * N_MAX_RANDOM_SAMPLES_PER_RAY());
+        rng.advance(i * N_MAX_RANDOM_SAMPLES_PER_RAY);
         const legacy::math::vec2 uv = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
 
         const float focal_length         = frame.focal_length;
@@ -430,7 +419,7 @@ namespace ngp {
         float t         = startt;
         legacy::math::vec3 pos;
 
-        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
+        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS) {
             const float dt = calc_dt();
             if (density_grid_occupied_at(pos, density_grid)) {
                 ++j;
@@ -503,7 +492,7 @@ namespace ngp {
         }
 
         const std::uint32_t ray_idx = ray_indices_in[i];
-        rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
+        rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY);
 
         const std::uint32_t img              = image_idx(ray_idx, n_rays, n_rays_total, n_training_images);
         const auto& frame                    = frames[img];
@@ -537,7 +526,7 @@ namespace ngp {
 
         loss_scale /= static_cast<float>(n_rays);
 
-        const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS() ? 1e-4f : 0.0f;
+        const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS ? 1e-4f : 0.0f;
 
         legacy::math::vec3 rgb_ray2 = {0.0f, 0.0f, 0.0f};
         T                           = 1.0f;
@@ -602,7 +591,7 @@ namespace ngp {
 
         std::uint32_t numsteps = 0u;
         legacy::math::vec3 pos;
-        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && numsteps < NERF_STEPS()) {
+        while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && numsteps < NERF_STEPS) {
             const float dt = calc_dt();
             if (density_grid_occupied_at(pos, density_grid)) {
                 ++numsteps;
@@ -700,12 +689,12 @@ namespace ngp {
 
         spec.plan.training.padded_output_width     = std::max(legacy::next_multiple(spec.plan.network.rgb_output_dims, 16u), 4u);
         spec.plan.training.max_samples             = spec.plan.training.batch_size * 16u;
-        spec.plan.prep.uniform_samples_warmup      = legacy::NERF_GRID_N_CELLS();
-        spec.plan.prep.uniform_samples_steady      = legacy::NERF_GRID_N_CELLS() / 4u;
-        spec.plan.prep.nonuniform_samples_steady   = legacy::NERF_GRID_N_CELLS() / 4u;
+        spec.plan.prep.uniform_samples_warmup      = legacy::NERF_GRID_N_CELLS;
+        spec.plan.prep.uniform_samples_steady      = legacy::NERF_GRID_N_CELLS / 4u;
+        spec.plan.prep.nonuniform_samples_steady   = legacy::NERF_GRID_N_CELLS / 4u;
         spec.plan.density_grid.padded_output_width = spec.plan.network.density_output_dims;
-        spec.plan.density_grid.query_batch_size    = legacy::NERF_GRID_N_CELLS() * 2u;
-        spec.plan.density_grid.n_elements          = legacy::NERF_GRID_N_CELLS();
+        spec.plan.density_grid.query_batch_size    = legacy::NERF_GRID_N_CELLS * 2u;
+        spec.plan.density_grid.n_elements          = legacy::NERF_GRID_N_CELLS;
         spec.plan.validation.padded_output_width   = spec.plan.training.padded_output_width;
 
         cudaStream_t created_stream = {};
@@ -734,7 +723,7 @@ namespace ngp {
         cudaStreamDestroy(device.stream);
     }
 
-    InstantNGP::InstantNGP(InstantNGP&& other) noexcept : spec{std::move(other.spec)}, dataset{std::move(other.dataset)}, sampler{std::move(other.sampler)}, training{std::move(other.training)} {
+    InstantNGP::InstantNGP(InstantNGP&& other) noexcept : spec{other.spec}, dataset{std::move(other.dataset)}, sampler{std::move(other.sampler)}, training{std::move(other.training)} {
         device.trainer = std::move(other.device.trainer);
         device.stream  = std::exchange(other.device.stream, nullptr);
     }
@@ -748,7 +737,7 @@ namespace ngp {
             cudaStreamDestroy(device.stream);
         }
 
-        spec           = std::move(other.spec);
+        spec           = other.spec;
         dataset        = std::move(other.dataset);
         sampler        = std::move(other.sampler);
         training       = std::move(other.training);
@@ -811,7 +800,7 @@ namespace ngp {
 
                 if (n_nonuniform_density_grid_samples > 0u) {
                     const std::uint32_t blocks = (n_nonuniform_density_grid_samples + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(n_nonuniform_density_grid_samples, sampler.density_rng, sampler.density.ema_step, sampler.aabb, sampler.density.values.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS());
+                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(n_nonuniform_density_grid_samples, sampler.density_rng, sampler.density.ema_step, sampler.aabb, sampler.density.values.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS);
                 }
                 sampler.density_rng.advance();
 
@@ -834,7 +823,7 @@ namespace ngp {
                 }
                 ++sampler.density.ema_step;
 
-                constexpr std::uint32_t base_grid_elements = legacy::NERF_GRID_N_CELLS();
+                constexpr std::uint32_t base_grid_elements = legacy::NERF_GRID_N_CELLS;
                 sampler.density.occupancy_bits.enlarge(base_grid_elements / 8u);
                 sampler.density.reduction_workspace.enlarge(reduce_sum_workspace_size(base_grid_elements));
 
@@ -926,7 +915,7 @@ namespace ngp {
             // Loss compaction.
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(counters.rays_per_batch, sampler.aabb, workspace.n_rays_total, training.rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>(), static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(),
+                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(counters.rays_per_batch, sampler.aabb, workspace.n_rays_total, training.rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(),
                     workspace.ray_indices, static_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampler.snap_to_pixel_centers, sampler.density.reduction_workspace.data(),
                     sampler.near_distance);
             }
@@ -1011,7 +1000,7 @@ namespace ngp {
                     }
                 }
             }
-            device.trainer->optimizer.step(device.stream, network::detail::default_loss_scale<__half>(), device.trainer->params.full_precision, device.trainer->params.values, device.trainer->params.gradients);
+            device.trainer->optimizer.step(device.stream, network::detail::default_loss_scale<__half>, device.trainer->params.full_precision, device.trainer->params.values, device.trainer->params.gradients);
             ++training.step;
 
             // Host-visible step finalization.
@@ -1204,7 +1193,7 @@ namespace ngp {
         return result;
     }
 
-    auto InstantNGP::inference(const std::filesystem::path& output_path, const InferenceCamera& camera) -> InferenceResult {
+    auto InstantNGP::inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult {
         if (output_path.empty()) throw std::invalid_argument{"inference output path must not be empty."};
         if (!device.trainer) throw std::runtime_error{"Inference requires an initialized network."};
         if (camera.resolution.x <= 0 || camera.resolution.y <= 0) throw std::runtime_error{"Inference camera has an invalid resolution."};
