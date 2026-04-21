@@ -16,14 +16,8 @@ namespace ngp {
         struct TrainerState;
     } // namespace network
 
-    void delete_trainer_state(network::TrainerState<__half>* trainer);
-
     class InstantNGP final {
-    private:
-        struct TrainingStepWorkspace;
-
     public:
-        enum class DatasetType { NerfSynthetic };
         enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
         enum class GridStorage { Hash, Dense, Tiled };
 
@@ -53,7 +47,7 @@ namespace ngp {
             std::int32_t image_index = -1;
         };
 
-        void load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type);
+        void load_dataset(const std::filesystem::path& dataset_path);
         void train(std::int32_t iters);
         [[nodiscard]] auto read_train_stats() const -> TrainStats;
         [[nodiscard]] auto render_validation_image(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidationResult;
@@ -113,12 +107,8 @@ namespace ngp {
             };
 
             struct GPU final {
-                struct Train final {
-                    std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
-                    legacy::GpuBuffer<GpuFrame> frames                  = {};
-                };
-
-                Train train = {};
+                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
+                legacy::GpuBuffer<GpuFrame> frames                  = {};
             };
 
             CPU cpu = {};
@@ -181,28 +171,6 @@ namespace ngp {
             std::uint32_t measured_batch_size_before_compaction = 0u;
         };
 
-        struct TrainingStepWorkspace final {
-            legacy::GpuAllocation alloc                             = {};
-            std::uint32_t* ray_indices                              = nullptr;
-            void* rays_unnormalized                                 = nullptr;
-            std::uint32_t* numsteps                                 = nullptr;
-            float* coords                                           = nullptr;
-            __half* mlp_out                                         = nullptr;
-            __half* dloss_dmlp_out                                  = nullptr;
-            float* coords_compacted                                 = nullptr;
-            std::uint32_t* ray_counter                              = nullptr;
-            std::uint32_t max_samples                               = 0u;
-            std::uint32_t max_inference                             = 0u;
-            std::uint32_t floats_per_coord                          = 0u;
-            std::uint32_t padded_output_width                       = 0u;
-            std::uint32_t n_rays_total                              = 0u;
-            legacy::GPUMatrixDynamic<float> coords_matrix           = {};
-            legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
-            legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
-            legacy::GPUMatrixDynamic<__half> gradient_matrix        = {};
-            legacy::GPUMatrixDynamic<__half> compacted_output       = {};
-        };
-
         NetworkConfig network_config         = {};
         std::uint32_t seed                   = 1337;
         legacy::math::pcg32 rng              = legacy::math::pcg32{seed};
@@ -220,7 +188,7 @@ namespace ngp {
         legacy::BoundingBox aabb = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
         float density_grid_decay = 0.95f;
 
-        std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, delete_trainer_state};
+        std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, nullptr};
         uint32_t training_step                                                                           = 0;
         float training_prep_ms                                                                           = 0.0f;
         float training_ms                                                                                = 0.0f;

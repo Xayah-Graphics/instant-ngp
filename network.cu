@@ -20,6 +20,10 @@ namespace ngp::network::detail {
         cudaEvent_t event   = {};
     };
 
+    void delete_aux_stream_slot(AuxStreamSlot* aux_stream) {
+        delete aux_stream;
+    }
+
     void wait_aux_stream_for_event(AuxStreamSlot& aux_stream, const cudaEvent_t event) {
         ngp::legacy::cuda_check(cudaStreamWaitEvent(aux_stream.stream, event, 0));
     }
@@ -34,8 +38,8 @@ namespace ngp::network::detail {
         ngp::legacy::cuda_check(cudaStreamWaitEvent(stream, aux_stream.event, 0));
     }
 
-    std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<AuxStreamSlot>>>& aux_stream_pools() {
-        static auto* pools = new std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<AuxStreamSlot>>>{};
+    std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>& aux_stream_pools() {
+        static auto* pools = new std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>{};
         return *pools;
     }
 
@@ -44,17 +48,17 @@ namespace ngp::network::detail {
         aux_stream_pools().erase(parent_stream);
     }
 
-    std::shared_ptr<AuxStreamSlot> acquire_aux_stream(const cudaStream_t parent_stream) {
+    std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> acquire_aux_stream(const cudaStream_t parent_stream) {
         ngp::legacy::check_or_throw(parent_stream != nullptr);
         auto& pool = aux_stream_pools()[parent_stream];
-        if (pool.empty()) pool.push(std::make_shared<AuxStreamSlot>());
+        if (pool.empty()) pool.push(std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>{new AuxStreamSlot{}, delete_aux_stream_slot});
 
-        auto result = pool.top();
+        auto result = std::move(pool.top());
         pool.pop();
         return result;
     }
 
-    void release_aux_stream(const cudaStream_t parent_stream, std::shared_ptr<AuxStreamSlot> aux_stream) {
+    void release_aux_stream(const cudaStream_t parent_stream, std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream) {
         if (!aux_stream_pools().contains(parent_stream)) throw std::runtime_error{"Attempted to return stream group to the wrong parent stream."};
 
         auto& pool = aux_stream_pools()[parent_stream];

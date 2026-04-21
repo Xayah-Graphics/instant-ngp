@@ -13,6 +13,28 @@ namespace ngp {
         delete trainer;
     }
 
+    struct TrainingStepWorkspace final {
+        legacy::GpuAllocation alloc                             = {};
+        std::uint32_t* ray_indices                              = nullptr;
+        void* rays_unnormalized                                 = nullptr;
+        std::uint32_t* numsteps                                 = nullptr;
+        float* coords                                           = nullptr;
+        __half* mlp_out                                         = nullptr;
+        __half* dloss_dmlp_out                                  = nullptr;
+        float* coords_compacted                                 = nullptr;
+        std::uint32_t* ray_counter                              = nullptr;
+        std::uint32_t max_samples                               = 0u;
+        std::uint32_t max_inference                             = 0u;
+        std::uint32_t floats_per_coord                          = 0u;
+        std::uint32_t padded_output_width                       = 0u;
+        std::uint32_t n_rays_total                              = 0u;
+        legacy::GPUMatrixDynamic<float> coords_matrix           = {};
+        legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
+        legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
+        legacy::GPUMatrixDynamic<__half> gradient_matrix        = {};
+        legacy::GPUMatrixDynamic<__half> compacted_output       = {};
+    };
+
     struct Ray final {
         legacy::math::vec3 o = {};
         legacy::math::vec3 d = {};
@@ -952,7 +974,7 @@ namespace ngp {
     }
 
     void InstantNGP::train(const std::int32_t iters) {
-        if (!trainer || dataset.gpu.train.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
+        if (!trainer || dataset.gpu.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
 
         for (std::int32_t i = 0; i < iters; ++i) {
             // Training prep.
@@ -991,7 +1013,7 @@ namespace ngp {
                     density_grid_ema_step = 0u;
                     if (n_elements > 0u) {
                         const std::uint32_t blocks = (n_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                        mark_untrained_density_grid<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_elements, density_grid.data(), static_cast<std::uint32_t>(dataset.gpu.train.frames.size()), dataset.gpu.train.frames.data());
+                        mark_untrained_density_grid<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_elements, density_grid.data(), static_cast<std::uint32_t>(dataset.gpu.frames.size()), dataset.gpu.frames.data());
                     }
                 }
 
@@ -1113,14 +1135,14 @@ namespace ngp {
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
                 generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, workspace.n_rays_total, rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, reinterpret_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u},
-                    static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), density_grid_bitfield.data(), snap_to_pixel_centers);
+                    static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), density_grid_bitfield.data(), snap_to_pixel_centers);
             }
             trainer->model.inference(stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
 
             // Loss compaction.
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.n_rays_total, rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>(), workspace.padded_output_width, static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
+                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.n_rays_total, rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>(), workspace.padded_output_width, static_cast<std::uint32_t>(dataset.gpu.pixels.size()), dataset.gpu.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
                     reinterpret_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), snap_to_pixel_centers, density_grid_mean.data(), near_distance);
             }
 

@@ -143,7 +143,7 @@ int main(int argc, char* argv[]) {
             options.network.optimizer.l2_reg);
 
         ngp::InstantNGP ngp{options.network};
-        ngp.load_dataset(options.scene, ngp::InstantNGP::DatasetType::NerfSynthetic);
+        ngp.load_dataset(options.scene);
 
         const auto total_start                      = std::chrono::steady_clock::now();
         auto interval_start                        = total_start;

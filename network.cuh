@@ -546,14 +546,15 @@ namespace ngp::network::detail {
     }
 
     struct AuxStreamSlot;
+    void delete_aux_stream_slot(AuxStreamSlot* aux_stream);
 
     void wait_aux_stream_for_event(AuxStreamSlot& aux_stream, cudaEvent_t event);
     void wait_aux_stream_for_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
     void signal_aux_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
-    std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<AuxStreamSlot>>>& aux_stream_pools();
+    std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)>>>& aux_stream_pools();
     void free_aux_stream_pool(cudaStream_t parent_stream);
-    std::shared_ptr<AuxStreamSlot> acquire_aux_stream(cudaStream_t parent_stream);
-    void release_aux_stream(cudaStream_t parent_stream, std::shared_ptr<AuxStreamSlot> aux_stream);
+    std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> acquire_aux_stream(cudaStream_t parent_stream);
+    void release_aux_stream(cudaStream_t parent_stream, std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream);
 
     struct SyncedStreamReservation final {
         SyncedStreamReservation() = default;
@@ -564,7 +565,7 @@ namespace ngp::network::detail {
         SyncedStreamReservation& operator=(SyncedStreamReservation&& other);
         SyncedStreamReservation(SyncedStreamReservation&& other);
 
-        std::shared_ptr<AuxStreamSlot> aux_stream_slot = nullptr;
+        std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream_slot = {nullptr, nullptr};
         cudaStream_t aux_stream                        = nullptr;
         cudaStream_t main_stream                       = nullptr;
     };
