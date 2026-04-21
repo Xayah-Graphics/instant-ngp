@@ -60,9 +60,7 @@ namespace ngp::legacy {
 
                 for (;;) {
                     uint32_t r = next_uint();
-                    if (r >= threshold) {
-                        return r % bound;
-                    }
+                    if (r >= threshold) return r % bound;
                 }
             }
 
@@ -635,9 +633,7 @@ namespace ngp::legacy {
         __host__ __device__ inline bool operator==(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
             TCNN_PRAGMA_UNROLL
             for (uint32_t i = 0; i < N; ++i) {
-                if (a[i] != b[i]) {
-                    return false;
-                }
+                if (a[i] != b[i]) return false;
             }
             return true;
         }
@@ -947,15 +943,11 @@ namespace ngp::legacy {
     }
 
     inline void check_or_throw(bool condition, std::string_view message = "check failed", const std::source_location& location = std::source_location::current()) {
-        if (!condition) {
-            throw_runtime_error(message, location);
-        }
+        if (!condition) throw_runtime_error(message, location);
     }
 
     inline void cu_check(CUresult result, const std::source_location& location = std::source_location::current()) {
-        if (result == CUDA_SUCCESS) {
-            return;
-        }
+        if (result == CUDA_SUCCESS) return;
 
         const char* message = nullptr;
         cuGetErrorName(result, &message);
@@ -965,9 +957,7 @@ namespace ngp::legacy {
     }
 
     inline void cuda_check(cudaError_t result, const std::source_location& location = std::source_location::current()) {
-        if (result == cudaSuccess) {
-            return;
-        }
+        if (result == cudaSuccess) return;
 
         std::ostringstream stream;
         stream << "CUDA runtime call failed: " << cudaGetErrorString(result);
@@ -1009,9 +999,7 @@ namespace ngp::legacy {
             *this = std::move(other);
         }
         ~ScopeGuard() {
-            if (m_callback) {
-                m_callback();
-            }
+            if (m_callback) m_callback();
         }
 
     private:
@@ -1060,11 +1048,10 @@ namespace ngp::legacy {
             prop.location.id         = m_device;
 
             CUresult granularity_result = cuMemGetAllocationGranularity(&m_granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
-            if (granularity_result == CUDA_ERROR_NOT_SUPPORTED) {
+            if (granularity_result == CUDA_ERROR_NOT_SUPPORTED)
                 m_granularity = 1;
-            } else {
+            else
                 cu_check(granularity_result);
-            }
 
             size_t free_bytes;
             size_t total_bytes;
@@ -1097,9 +1084,7 @@ namespace ngp::legacy {
                     cu_check(cuMemAddressFree(m_base_address, m_max_size));
                 }
             } catch (const std::runtime_error& error) {
-                if (std::string{error.what()}.find("driver shutting down") == std::string::npos) {
-                    std::fprintf(stderr, "Could not free gpu heap: %s\n", error.what());
-                }
+                if (std::string{error.what()}.find("driver shutting down") == std::string::npos) std::fprintf(stderr, "Could not free gpu heap: %s\n", error.what());
             }
         }
 
@@ -1108,9 +1093,7 @@ namespace ngp::legacy {
         }
 
         size_t allocate(size_t n_bytes, cudaStream_t stream) {
-            if (n_bytes == 0) {
-                return 0;
-            }
+            if (n_bytes == 0) return 0;
 
             n_bytes = align_to_cacheline(n_bytes);
 
@@ -1118,26 +1101,20 @@ namespace ngp::legacy {
                 auto& free_intervals             = m_stream_free_intervals[stream];
                 Interval<size_t>* best_candidate = nullptr;
                 for (auto& interval : free_intervals) {
-                    if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) {
-                        best_candidate = &interval;
-                    }
+                    if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) best_candidate = &interval;
                 }
 
                 if (best_candidate) {
                     const size_t offset = best_candidate->start;
                     best_candidate->start += n_bytes;
-                    if (best_candidate->start == best_candidate->end) {
-                        std::erase_if(free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
-                    }
+                    if (best_candidate->start == best_candidate->end) std::erase_if(free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
                     return offset;
                 }
             }
 
             Interval<size_t>* best_candidate = nullptr;
             for (auto& interval : m_global_free_intervals) {
-                if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) {
-                    best_candidate = &interval;
-                }
+                if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) best_candidate = &interval;
             }
 
             if (!best_candidate) {
@@ -1148,18 +1125,14 @@ namespace ngp::legacy {
 
             const size_t offset = best_candidate->start;
             best_candidate->start += n_bytes;
-            if (best_candidate->start == best_candidate->end) {
-                std::erase_if(m_global_free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
-            }
+            if (best_candidate->start == best_candidate->end) std::erase_if(m_global_free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
 
             grow(offset + n_bytes);
             return offset;
         }
 
         void release(size_t offset, size_t n_bytes, cudaStream_t stream) {
-            if (n_bytes == 0) {
-                return;
-            }
+            if (n_bytes == 0) return;
 
             n_bytes = align_to_cacheline(n_bytes);
 
@@ -1183,17 +1156,15 @@ namespace ngp::legacy {
         }
 
         static void merge_adjacent(std::vector<Interval<size_t>>& intervals) {
-            if (intervals.empty()) {
-                return;
-            }
+            if (intervals.empty()) return;
 
             size_t j = 0;
             for (size_t i = 1; i < intervals.size(); ++i) {
                 Interval<size_t>& prev = intervals[j];
                 Interval<size_t>& cur  = intervals[i];
-                if (prev.end == cur.start) {
+                if (prev.end == cur.start)
                     prev.end = cur.end;
-                } else {
+                else {
                     ++j;
                     intervals[j] = cur;
                 }
@@ -1202,9 +1173,7 @@ namespace ngp::legacy {
         }
 
         void grow(size_t required_bytes) {
-            if (required_bytes <= m_mapped_bytes) {
-                return;
-            }
+            if (required_bytes <= m_mapped_bytes) return;
 
             int current_device;
             cuda_check(cudaGetDevice(&current_device));
@@ -1235,11 +1204,10 @@ namespace ngp::legacy {
             m_mapped_bytes += n_bytes_to_allocate;
             total_n_bytes_allocated() += n_bytes_to_allocate;
 
-            if (!current_graph_captures().empty()) {
+            if (!current_graph_captures().empty())
                 current_graph_captures().front()->synchronize_when_capture_done = true;
-            } else {
+            else
                 cuda_check(cudaDeviceSynchronize());
-            }
         }
 
         int m_device               = 0;
@@ -1262,9 +1230,7 @@ namespace ngp::legacy {
         int device;
         cuda_check(cudaGetDevice(&device));
         auto& heap = gpu_heaps()[device];
-        if (!heap) {
-            heap = std::make_unique<GpuHeap>();
-        }
+        if (!heap) heap = std::make_unique<GpuHeap>();
         return heap.get();
     }
 
@@ -1300,18 +1266,14 @@ namespace ngp::legacy {
         }
 
         GpuAllocation(const GpuAllocation& other) : m_handle{other.m_handle} {
-            if (m_handle) {
-                ++m_handle->refs;
-            }
+            if (m_handle) ++m_handle->refs;
         }
 
         GpuAllocation& operator=(const GpuAllocation& other) {
             if (this != &other) {
                 reset();
                 m_handle = other.m_handle;
-                if (m_handle) {
-                    ++m_handle->refs;
-                }
+                if (m_handle) ++m_handle->refs;
             }
             return *this;
         }
@@ -1393,14 +1355,10 @@ namespace ngp::legacy {
         }
 
         void reset() {
-            if (!m_handle) {
-                return;
-            }
+            if (!m_handle) return;
 
             if (--m_handle->refs == 0) {
-                if (m_handle->heap && m_handle->n_bytes) {
-                    m_handle->heap->release(m_handle->offset, m_handle->n_bytes, m_handle->stream);
-                }
+                if (m_handle->heap && m_handle->n_bytes) m_handle->heap->release(m_handle->offset, m_handle->n_bytes, m_handle->stream);
                 recycle_handle(m_handle);
             }
 
@@ -1428,18 +1386,14 @@ namespace ngp::legacy {
         GpuBuffer& operator=(const GpuBuffer&)     = delete;
 
         void resize(size_t size, cudaStream_t stream = nullptr) {
-            if (m_size == size) {
-                return;
-            }
+            if (m_size == size) return;
 
             m_allocation = size ? GpuAllocation{size * sizeof(T), stream} : GpuAllocation{};
             m_size       = size;
         }
 
         void enlarge(size_t size, cudaStream_t stream = nullptr) {
-            if (size > m_size) {
-                resize(size, stream);
-            }
+            if (size > m_size) resize(size, stream);
         }
 
         void memset(int value, size_t num_elements, size_t offset = 0) {
@@ -1679,11 +1633,10 @@ namespace ngp::legacy {
             m_rows = rows;
             m_cols = cols;
 
-            if (stride == 0) {
+            if (stride == 0)
                 set_stride_contiguous();
-            } else {
+            else
                 m_stride = stride;
-            }
         }
 
         void set(T* data, uint32_t rows, uint32_t cols, uint32_t stride = 0) {
@@ -1869,47 +1822,29 @@ namespace ngp::legacy {
             float tmin = (min.x - pos.x) / dir.x;
             float tmax = (max.x - pos.x) / dir.x;
 
-            if (tmin > tmax) {
-                host_device_swap(tmin, tmax);
-            }
+            if (tmin > tmax) host_device_swap(tmin, tmax);
 
             float tymin = (min.y - pos.y) / dir.y;
             float tymax = (max.y - pos.y) / dir.y;
 
-            if (tymin > tymax) {
-                host_device_swap(tymin, tymax);
-            }
+            if (tymin > tymax) host_device_swap(tymin, tymax);
 
-            if (tmin > tymax || tymin > tmax) {
-                return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-            }
+            if (tmin > tymax || tymin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
 
-            if (tymin > tmin) {
-                tmin = tymin;
-            }
+            if (tymin > tmin) tmin = tymin;
 
-            if (tymax < tmax) {
-                tmax = tymax;
-            }
+            if (tymax < tmax) tmax = tymax;
 
             float tzmin = (min.z - pos.z) / dir.z;
             float tzmax = (max.z - pos.z) / dir.z;
 
-            if (tzmin > tzmax) {
-                host_device_swap(tzmin, tzmax);
-            }
+            if (tzmin > tzmax) host_device_swap(tzmin, tzmax);
 
-            if (tmin > tzmax || tzmin > tmax) {
-                return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-            }
+            if (tmin > tzmax || tzmin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
 
-            if (tzmin > tmin) {
-                tmin = tzmin;
-            }
+            if (tzmin > tmin) tmin = tzmin;
 
-            if (tzmax < tmax) {
-                tmax = tzmax;
-            }
+            if (tzmax < tmax) tmax = tzmax;
 
             return {tmin, tmax};
         }

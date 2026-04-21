@@ -156,9 +156,8 @@ namespace ngp::network::detail {
                 index += pos_grid[dim] * stride;
                 stride *= grid_resolution_value;
             }
-        } else {
+        } else
             stride = 0xFFFFFFFFu;
-        }
 
         if (grid_type == GridType::Hash && hashmap_size < stride) index = coherent_prime_hash<N_DIMS>(pos_grid);
         return index % hashmap_size;
@@ -176,18 +175,18 @@ namespace ngp::network::detail {
         std::uint32_t xx = x;
         std::uint32_t yy = y;
         std::uint32_t zz = z;
-        xx = (xx * 0x00010001u) & 0xFF0000FFu;
-        xx = (xx * 0x00000101u) & 0x0F00F00Fu;
-        xx = (xx * 0x00000011u) & 0xC30C30C3u;
-        xx = (xx * 0x00000005u) & 0x49249249u;
-        yy = (yy * 0x00010001u) & 0xFF0000FFu;
-        yy = (yy * 0x00000101u) & 0x0F00F00Fu;
-        yy = (yy * 0x00000011u) & 0xC30C30C3u;
-        yy = (yy * 0x00000005u) & 0x49249249u;
-        zz = (zz * 0x00010001u) & 0xFF0000FFu;
-        zz = (zz * 0x00000101u) & 0x0F00F00Fu;
-        zz = (zz * 0x00000011u) & 0xC30C30C3u;
-        zz = (zz * 0x00000005u) & 0x49249249u;
+        xx               = (xx * 0x00010001u) & 0xFF0000FFu;
+        xx               = (xx * 0x00000101u) & 0x0F00F00Fu;
+        xx               = (xx * 0x00000011u) & 0xC30C30C3u;
+        xx               = (xx * 0x00000005u) & 0x49249249u;
+        yy               = (yy * 0x00010001u) & 0xFF0000FFu;
+        yy               = (yy * 0x00000101u) & 0x0F00F00Fu;
+        yy               = (yy * 0x00000011u) & 0xC30C30C3u;
+        yy               = (yy * 0x00000005u) & 0x49249249u;
+        zz               = (zz * 0x00010001u) & 0xFF0000FFu;
+        zz               = (zz * 0x00000101u) & 0x0F00F00Fu;
+        zz               = (zz * 0x00000011u) & 0xC30C30C3u;
+        zz               = (zz * 0x00000005u) & 0x49249249u;
         return xx | (yy << 1u) | (zz << 2u);
     }
 
@@ -523,8 +522,8 @@ namespace ngp::network::detail {
         SyncedStreamReservation(SyncedStreamReservation&& other);
 
         std::unique_ptr<AuxStreamSlot, void (*)(AuxStreamSlot*)> aux_stream_slot = {nullptr, nullptr};
-        cudaStream_t aux_stream                        = nullptr;
-        cudaStream_t main_stream                       = nullptr;
+        cudaStream_t aux_stream                                                  = nullptr;
+        cudaStream_t main_stream                                                 = nullptr;
     };
 
 } // namespace ngp::network::detail
@@ -723,13 +722,12 @@ namespace ngp::encoding {
                 params_in_level = legacy::next_multiple(params_in_level, 8u);
 
                 if (grid_type == network::detail::GridType::Dense) {
-                } else if (grid_type == network::detail::GridType::Tiled) {
+                } else if (grid_type == network::detail::GridType::Tiled)
                     params_in_level = std::min(params_in_level, network::detail::powi(base_resolution, N_POS_DIMS));
-                } else if (grid_type == network::detail::GridType::Hash) {
+                else if (grid_type == network::detail::GridType::Hash)
                     params_in_level = std::min(params_in_level, 1u << log2_hashmap_size);
-                } else {
+                else
                     throw std::runtime_error{"GridEncoding: invalid grid type."};
-                }
 
                 m_offset_table.data[i] = offset;
                 offset += params_in_level;
@@ -919,26 +917,30 @@ namespace ngp::encoding {
         if (n_dims_to_encode != 3u) throw std::runtime_error{"HashGrid encoding in this repository only supports 3D positions."};
 
         switch (config.n_features_per_level) {
-        case 1u: {
-            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 1u>(config)};
-            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
-            return result;
-        }
-        case 2u: {
-            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 2u>(config)};
-            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
-            return result;
-        }
-        case 4u: {
-            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 4u>(config)};
-            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
-            return result;
-        }
-        case 8u: {
-            auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 8u>(config)};
-            if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
-            return result;
-        }
+        case 1u:
+            {
+                auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 1u>(config)};
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                return result;
+            }
+        case 2u:
+            {
+                auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 2u>(config)};
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                return result;
+            }
+        case 4u:
+            {
+                auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 4u>(config)};
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                return result;
+            }
+        case 8u:
+            {
+                auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 8u>(config)};
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                return result;
+            }
         default: throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
         }
     }
@@ -2379,9 +2381,7 @@ namespace ngp::network {
                     graph.graph_instance = nullptr;
                 }
             } catch (const std::runtime_error& error) {
-                if (std::string{error.what()}.find("driver shutting down") == std::string::npos) {
-                    std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
-                }
+                if (std::string{error.what()}.find("driver shutting down") == std::string::npos) std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
             }
         }
 

@@ -734,11 +734,7 @@ namespace ngp {
         cudaStreamDestroy(device.stream);
     }
 
-    InstantNGP::InstantNGP(InstantNGP&& other) noexcept
-        : spec{std::move(other.spec)},
-          dataset{std::move(other.dataset)},
-          sampler{std::move(other.sampler)},
-          training{std::move(other.training)} {
+    InstantNGP::InstantNGP(InstantNGP&& other) noexcept : spec{std::move(other.spec)}, dataset{std::move(other.dataset)}, sampler{std::move(other.sampler)}, training{std::move(other.training)} {
         device.trainer = std::move(other.device.trainer);
         device.stream  = std::exchange(other.device.stream, nullptr);
     }
@@ -752,12 +748,12 @@ namespace ngp {
             cudaStreamDestroy(device.stream);
         }
 
-        spec                = std::move(other.spec);
-        dataset             = std::move(other.dataset);
-        sampler             = std::move(other.sampler);
-        training            = std::move(other.training);
-        device.trainer      = std::move(other.device.trainer);
-        device.stream       = std::exchange(other.device.stream, nullptr);
+        spec           = std::move(other.spec);
+        dataset        = std::move(other.dataset);
+        sampler        = std::move(other.sampler);
+        training       = std::move(other.training);
+        device.trainer = std::move(other.device.trainer);
+        device.stream  = std::exchange(other.device.stream, nullptr);
         return *this;
     }
 
@@ -980,11 +976,10 @@ namespace ngp {
 
                                 cudaGraph_t aborted_graph      = nullptr;
                                 cudaError_t end_capture_result = cudaStreamEndCapture(device.stream, &aborted_graph);
-                                if (end_capture_result == cudaSuccess && aborted_graph) {
+                                if (end_capture_result == cudaSuccess && aborted_graph)
                                     cudaGraphDestroy(aborted_graph);
-                                } else {
+                                else
                                     cudaGetLastError();
-                                }
 
                                 graph_capture.graph = nullptr;
                                 throw;
@@ -1220,7 +1215,7 @@ namespace ngp {
             }
         }
 
-        const auto render_start               = std::chrono::steady_clock::now();
+        const auto render_start = std::chrono::steady_clock::now();
         GpuFrame frame{};
         frame.resolution   = camera.resolution;
         frame.focal_length = camera.focal_length;
@@ -1290,9 +1285,9 @@ namespace ngp {
             for (int x = 0; x < resolution.x; ++x) {
                 const std::size_t pixel_index       = static_cast<std::size_t>(x) + static_cast<std::size_t>(y) * static_cast<std::size_t>(resolution.x);
                 const legacy::math::vec3 prediction = clamp_rgb01(rendered_host[pixel_index]);
-                png_rgb[pixel_index * 3u + 0u] = static_cast<std::uint8_t>(lrintf(prediction.x * 255.0f));
-                png_rgb[pixel_index * 3u + 1u] = static_cast<std::uint8_t>(lrintf(prediction.y * 255.0f));
-                png_rgb[pixel_index * 3u + 2u] = static_cast<std::uint8_t>(lrintf(prediction.z * 255.0f));
+                png_rgb[pixel_index * 3u + 0u]      = static_cast<std::uint8_t>(lrintf(prediction.x * 255.0f));
+                png_rgb[pixel_index * 3u + 1u]      = static_cast<std::uint8_t>(lrintf(prediction.y * 255.0f));
+                png_rgb[pixel_index * 3u + 2u]      = static_cast<std::uint8_t>(lrintf(prediction.z * 255.0f));
             }
         }
 
@@ -1301,9 +1296,9 @@ namespace ngp {
         if (stbi_write_png(output_path.string().c_str(), resolution.x, resolution.y, 3, png_rgb.data(), resolution.x * 3) == 0) throw std::runtime_error{"Failed to write PNG image '" + output_path.string() + "'."};
 
         InferenceResult result{};
-        result.width      = static_cast<std::uint32_t>(resolution.x);
-        result.height     = static_cast<std::uint32_t>(resolution.y);
-        result.render_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - render_start).count();
+        result.width     = static_cast<std::uint32_t>(resolution.x);
+        result.height    = static_cast<std::uint32_t>(resolution.y);
+        result.render_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - render_start).count();
         return result;
     }
 
