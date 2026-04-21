@@ -269,7 +269,7 @@ namespace ngp::network::detail {
 
     template <typename T>
     __device__ T relu(T value) {
-        return static_cast<T>(legacy::math::max(static_cast<float>(value), 0.0f));
+        return static_cast<T>(cuda::std::max(static_cast<float>(value), 0.0f));
     }
 
     template <>
@@ -621,7 +621,21 @@ namespace ngp::encoding {
                     }
                 }
 
-                result = legacy::math::fma(static_cast<T>(weight), grid_val(pos_grid_local), result);
+                const auto grid_value = grid_val(pos_grid_local);
+                TCNN_PRAGMA_UNROLL
+                for (std::uint32_t feature_idx = 0; feature_idx < N_FEATURES_PER_LEVEL; ++feature_idx) {
+                    if constexpr (std::is_same_v<T, __half> || std::is_same_v<T, half>) {
+#if defined(__CUDA_ARCH__)
+                        result[feature_idx] = __hfma(static_cast<T>(weight), grid_value[feature_idx], result[feature_idx]);
+#else
+                        result[feature_idx] = static_cast<T>(static_cast<float>(weight) * static_cast<float>(grid_value[feature_idx]) + static_cast<float>(result[feature_idx]));
+#endif
+                    } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+                        result[feature_idx] = cuda::std::fma(static_cast<T>(weight), grid_value[feature_idx], result[feature_idx]);
+                    } else {
+                        result[feature_idx] = static_cast<T>(weight) * grid_value[feature_idx] + result[feature_idx];
+                    }
+                }
             }
 
             TCNN_PRAGMA_UNROLL
@@ -920,25 +934,25 @@ namespace ngp::encoding {
         case 1u:
             {
                 auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 1u>(config)};
-                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), std::lcm(alignment, encoding.required_output_alignment()))); });
                 return result;
             }
         case 2u:
             {
                 auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 2u>(config)};
-                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), std::lcm(alignment, encoding.required_output_alignment()))); });
                 return result;
             }
         case 4u:
             {
                 auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 4u>(config)};
-                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), std::lcm(alignment, encoding.required_output_alignment()))); });
                 return result;
             }
         case 8u:
             {
                 auto result = std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 8u>(config)};
-                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), legacy::lcm(alignment, encoding.required_output_alignment()))); });
+                if (alignment > 0u) network::detail::visit_module(result, [&](auto& encoding) { encoding.set_padded_output_width(legacy::next_multiple(encoding.output_width(), std::lcm(alignment, encoding.required_output_alignment()))); });
                 return result;
             }
         default: throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
@@ -1017,7 +1031,7 @@ namespace ngp::encoding {
     template <typename T>
     SphericalHarmonicsEncoding<T> create_direction_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config, const std::uint32_t alignment) {
         auto result = SphericalHarmonicsEncoding<T>{config.sh_degree, n_dims_to_encode};
-        if (alignment > 0u) result.set_padded_output_width(legacy::next_multiple(result.output_width(), legacy::lcm(alignment, result.required_output_alignment())));
+        if (alignment > 0u) result.set_padded_output_width(legacy::next_multiple(result.output_width(), std::lcm(alignment, result.required_output_alignment())));
         return result;
     }
 

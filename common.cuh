@@ -7,11 +7,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cuda.h>
+#include <cuda/std/algorithm>
+#include <cuda/std/cmath>
+#include <cuda/std/utility>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <numeric>
 #include <source_location>
 #include <sstream>
 #include <stack>
@@ -444,41 +448,6 @@ namespace ngp::legacy {
         };
 
         template <typename T>
-        __host__ __device__ inline T min(T a, T b) {
-            return a < b ? a : b;
-        }
-
-        template <typename T>
-        __host__ __device__ inline T max(T a, T b) {
-            return a > b ? a : b;
-        }
-
-        template <typename T>
-        __host__ __device__ inline T clamp(T value, T low, T high) {
-            return value < low ? low : (high < value ? high : value);
-        }
-
-        template <typename T>
-        __host__ __device__ inline T sqrt(T value) {
-            return (T)::sqrt((double) value);
-        }
-
-        __host__ __device__ inline float fma(float a, float b, float c) {
-            return ::fmaf(a, b, c);
-        }
-
-        template <typename T>
-        __host__ __device__ inline T fma(T a, T b, T c) {
-            return a * b + c;
-        }
-
-#if defined(__CUDACC__)
-        __device__ inline __half fma(__half a, __half b, __half c) {
-            return __hfma(a, b, c);
-        }
-#endif
-
-        template <typename T>
         __host__ __device__ inline T sign(T value) {
             return value >= (T) 0 ? (T) 1 : (T) -1;
         }
@@ -644,41 +613,11 @@ namespace ngp::legacy {
         }
 
         template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> fma(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b, const tvec<T, N, ALIGNMENT>& c) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = fma(a[i], b[i], c[i]);
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> fma(T a, const tvec<T, N, ALIGNMENT>& b, const tvec<T, N, ALIGNMENT>& c) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = fma(a, b[i], c[i]);
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> fma(const tvec<T, N, ALIGNMENT>& a, T b, const tvec<T, N, ALIGNMENT>& c) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = fma(a[i], b, c[i]);
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
         __host__ __device__ inline tvec<T, N, ALIGNMENT> min(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
             tvec<T, N, ALIGNMENT> result;
             TCNN_PRAGMA_UNROLL
             for (uint32_t i = 0; i < N; ++i) {
-                result[i] = min(a[i], b[i]);
+                result[i] = cuda::std::min(a[i], b[i]);
             }
             return result;
         }
@@ -688,7 +627,7 @@ namespace ngp::legacy {
             tvec<T, N, ALIGNMENT> result;
             TCNN_PRAGMA_UNROLL
             for (uint32_t i = 0; i < N; ++i) {
-                result[i] = max(a[i], b[i]);
+                result[i] = cuda::std::max(a[i], b[i]);
             }
             return result;
         }
@@ -698,7 +637,7 @@ namespace ngp::legacy {
             tvec<T, N, ALIGNMENT> result;
             TCNN_PRAGMA_UNROLL
             for (uint32_t i = 0; i < N; ++i) {
-                result[i] = clamp(value[i], low, high);
+                result[i] = cuda::std::clamp(value[i], low, high);
             }
             return result;
         }
@@ -708,7 +647,7 @@ namespace ngp::legacy {
             tvec<T, N, ALIGNMENT> result;
             TCNN_PRAGMA_UNROLL
             for (uint32_t i = 0; i < N; ++i) {
-                result[i] = clamp(value[i], low, high[i]);
+                result[i] = cuda::std::clamp(value[i], low, high[i]);
             }
             return result;
         }
@@ -755,7 +694,7 @@ namespace ngp::legacy {
 
         template <typename T, uint32_t N, size_t ALIGNMENT>
         __host__ __device__ inline T length(const tvec<T, N, ALIGNMENT>& value) {
-            return sqrt(length2(value));
+            return static_cast<T>(cuda::std::sqrt(static_cast<double>(length2(value))));
         }
 
         template <typename T, uint32_t N, size_t ALIGNMENT>
@@ -912,25 +851,6 @@ namespace ngp::legacy {
         using mat4x3 = tmat<float, 4, 3>;
         using mat3   = mat3x3;
     } // namespace math
-    template <typename T>
-    __host__ __device__ void host_device_swap(T& a, T& b) {
-        T c(a);
-        a = b;
-        b = c;
-    }
-
-    template <typename T>
-    T lcm(T a, T b) {
-        T lhs = a;
-        T rhs = b;
-        while (lhs != 0) {
-            rhs %= lhs;
-            host_device_swap(lhs, rhs);
-        }
-        T tmp = rhs;
-        return tmp ? (a / tmp) * b : 0;
-    }
-
     template <typename T>
     T next_multiple(T val, T divisor) {
         return ((val + divisor - 1) / divisor) * divisor;
@@ -1822,12 +1742,12 @@ namespace ngp::legacy {
             float tmin = (min.x - pos.x) / dir.x;
             float tmax = (max.x - pos.x) / dir.x;
 
-            if (tmin > tmax) host_device_swap(tmin, tmax);
+            if (tmin > tmax) cuda::std::swap(tmin, tmax);
 
             float tymin = (min.y - pos.y) / dir.y;
             float tymax = (max.y - pos.y) / dir.y;
 
-            if (tymin > tymax) host_device_swap(tymin, tymax);
+            if (tymin > tymax) cuda::std::swap(tymin, tymax);
 
             if (tmin > tymax || tymin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
 
@@ -1838,7 +1758,7 @@ namespace ngp::legacy {
             float tzmin = (min.z - pos.z) / dir.z;
             float tzmax = (max.z - pos.z) / dir.z;
 
-            if (tzmin > tzmax) host_device_swap(tzmin, tzmax);
+            if (tzmin > tzmax) cuda::std::swap(tzmin, tzmax);
 
             if (tmin > tzmax || tzmin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
 

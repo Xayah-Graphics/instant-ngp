@@ -200,9 +200,9 @@ namespace ngp {
 
     inline __host__ __device__ legacy::math::vec3 clamp_rgb01(const legacy::math::vec3& value) {
         return {
-            legacy::math::clamp(value.x, 0.0f, 1.0f),
-            legacy::math::clamp(value.y, 0.0f, 1.0f),
-            legacy::math::clamp(value.z, 0.0f, 1.0f),
+            cuda::std::clamp(value.x, 0.0f, 1.0f),
+            cuda::std::clamp(value.y, 0.0f, 1.0f),
+            cuda::std::clamp(value.z, 0.0f, 1.0f),
         };
     }
 
@@ -565,7 +565,7 @@ namespace ngp {
             local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y * network_to_rgb_derivative(local_network_output[1]));
             local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z * network_to_rgb_derivative(local_network_output[2]));
 
-            const float density_derivative = expf(legacy::math::clamp(static_cast<float>(local_network_output[3]), -15.0f, 15.0f));
+            const float density_derivative = expf(cuda::std::clamp(static_cast<float>(local_network_output[3]), -15.0f, 15.0f));
             const float dloss_by_dmlp      = density_derivative * (dt * ngp::legacy::math::dot(gradient, T * rgb - suffix));
             local_dL_doutput[3]            = loss_scale * dloss_by_dmlp + (static_cast<float>(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) + (static_cast<float>(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
@@ -693,7 +693,7 @@ namespace ngp {
         spec.plan.network.rgb_output_dims     = 3u;
 
         const std::uint32_t encoding_output_dims   = spec.network_config.encoding.n_levels * spec.network_config.encoding.n_features_per_level;
-        spec.plan.network.density_input_dims       = legacy::next_multiple(encoding_output_dims, legacy::lcm(spec.plan.network.density_alignment, spec.network_config.encoding.n_features_per_level));
+        spec.plan.network.density_input_dims       = legacy::next_multiple(encoding_output_dims, std::lcm(spec.plan.network.density_alignment, spec.network_config.encoding.n_features_per_level));
         const std::uint32_t dir_output_dims        = spec.network_config.direction_encoding.sh_degree * spec.network_config.direction_encoding.sh_degree;
         spec.plan.network.dir_encoding_output_dims = legacy::next_multiple(dir_output_dims, spec.plan.network.rgb_alignment);
         spec.plan.network.rgb_input_dims           = legacy::next_multiple(spec.plan.network.density_output_dims + spec.plan.network.dir_encoding_output_dims, spec.plan.network.rgb_alignment);

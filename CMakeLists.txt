@@ -24,6 +24,13 @@ set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if (MSVC)
+    add_compile_options(
+            $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>
+    )
+endif ()
+
 set(NGP_DENSITY_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the density FullyFusedMLP.")
 set(NGP_RGB_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the RGB FullyFusedMLP.")
 if (NOT NGP_DENSITY_NETWORK_WIDTH MATCHES "^(16|32|64|128)$")
