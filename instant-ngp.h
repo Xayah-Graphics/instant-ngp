@@ -16,9 +16,7 @@ namespace ngp {
         struct TrainerState;
     } // namespace network
 
-    struct TrainerStateDeleter final {
-        void operator()(network::TrainerState<__half>* trainer) const;
-    };
+    void delete_trainer_state(network::TrainerState<__half>* trainer);
 
     class InstantNGP final {
     private:
@@ -91,7 +89,7 @@ namespace ngp {
         };
 
         explicit InstantNGP(const NetworkConfig& network_config);
-        ~InstantNGP();
+        ~InstantNGP() noexcept;
         InstantNGP(const InstantNGP&)                = delete;
         InstantNGP& operator=(const InstantNGP&)     = delete;
         InstantNGP(InstantNGP&& other) noexcept;
@@ -231,7 +229,7 @@ namespace ngp {
         legacy::BoundingBox aabb = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
         float density_grid_decay = 0.95f;
 
-        std::unique_ptr<network::TrainerState<__half>, TrainerStateDeleter> trainer = {};
+        std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, delete_trainer_state};
         uint32_t training_step                                                      = 0;
         float training_prep_ms                                                      = 0.0f;
         float training_ms                                                           = 0.0f;
