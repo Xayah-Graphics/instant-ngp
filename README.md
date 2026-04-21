@@ -10,7 +10,7 @@ On dev...
 
 ## 2. Build Instruction
 
-#### Build C ABI library
+#### Build
 
 - CMake 4.3.0 or higher
 - Ninja build system (for CXX std module support)
@@ -19,13 +19,50 @@ On dev...
 
 ```
 cmake -B build -S . -G Ninja
-cmake --build build --parallel
+cmake --build build -j 30
 ```
 
-#### Build Benchmark Executable
+## 3. CLI
 
+The repository currently builds one headless executable:
+
+```bash
+./build/instant-ngp-app --help
 ```
-cmake -B build -S . -G Ninja -DNERF_BUILD_BENCHMARK=ON
-cmake --build build --parallel
+
+Example:
+
+```bash
+./build/instant-ngp-app \
+  --scene ../data/nerf-synthetic/chair \
+  --steps 50000 \
+  --log-interval 1000 \
+  --validation-interval 10000 \
+  --validation-dir build/validation \
+  --validation-image-index 0
 ```
+
+Supported runtime flags include:
+
+- `--scene`
+- `--steps`
+- `--log-interval`
+- `--validation-interval`
+- `--validation-dir`
+- `--validation-image-index`
+- `--grid-storage`
+- `--hash-levels`
+- `--hash-features`
+- `--hash-log2-size`
+- `--hash-base-res`
+- `--hash-scale`
+- `--stochastic-interp`
+- `--sh-degree`
+- `--density-layers`
+- `--rgb-layers`
+- `--learning-rate`
+- `--beta1`
+- `--beta2`
+- `--epsilon`
+- `--l2-reg`
 

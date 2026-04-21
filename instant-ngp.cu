@@ -1135,7 +1135,6 @@ namespace ngp {
         if (!trainer || dataset.gpu.train.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
 
         for (std::int32_t i = 0; i < iters; ++i) {
-            std::printf("Training iteration %d.\n", i);
             run_training_prep();
             trainer->optimizer.update_hyperparams(network_config.optimizer);
 
