@@ -4,14 +4,19 @@ import std;
 int main(int argc, char* argv[]) {
     try {
         struct CliOptions final {
-            std::filesystem::path scene               = "../data/nerf-synthetic/lego";
-            std::uint32_t steps                       = 50000u;
-            std::uint32_t log_interval                = 1000u;
-            std::uint32_t validation_interval         = 10000u;
-            std::filesystem::path validation_dir      = "validation";
-            std::uint32_t validation_image_index      = 0u;
-            std::filesystem::path test_report         = {"test_metrics.csv"};
-            ngp::InstantNGP::NetworkConfig network    = {};
+            std::filesystem::path scene                            = "../data/nerf-synthetic/lego";
+            std::uint32_t steps                                    = 50000u;
+            std::uint32_t log_interval                             = 1000u;
+            std::uint32_t validation_interval                      = 10000u;
+            std::filesystem::path validation_dir                   = "validation";
+            std::uint32_t inference_interval                       = 0u;
+            std::filesystem::path inference_dir                    = "inference";
+            std::optional<std::uint32_t> inference_width           = {};
+            std::optional<std::uint32_t> inference_height          = {};
+            std::optional<float> inference_focal_length            = {};
+            std::optional<std::array<float, 16>> inference_transform_4x4 = {};
+            std::filesystem::path test_report                      = {"test_metrics.csv"};
+            ngp::InstantNGP::NetworkConfig network                 = {};
         };
 
         CliOptions options{};
@@ -23,10 +28,15 @@ int main(int argc, char* argv[]) {
             std::println("  --scene <path>                  Dataset directory. Default: {}", options.scene.string());
             std::println("  --steps <count>                 Training steps. Default: {}", options.steps);
             std::println("  --log-interval <count>          Print a train log every N steps. Default: final step only");
-            std::println("  --validation-interval <count>   Render a validation image every N steps. Default: disabled");
-            std::println("  --validation-dir <path>         Validation output directory. Default: {}", options.validation_dir.string());
-            std::println("  --validation-image-index <idx>  Validation image index. Default: {}", options.validation_image_index);
-            std::println("  --test-report <path>            Benchmark the whole test split after training and write per-image CSV metrics to this file");
+            std::println("  --validation-interval <count>   Benchmark the whole validation split every N steps. Default: {}", options.validation_interval);
+            std::println("  --validation-dir <path>         Validation report directory. Default: {}", options.validation_dir.string());
+            std::println("  --inference-interval <count>    Render one view every N steps. Default: disabled");
+            std::println("  --inference-dir <path>          Inference image output directory. Default: {}", options.inference_dir.string());
+            std::println("  --inference-width <count>");
+            std::println("  --inference-height <count>");
+            std::println("  --inference-focal-length <float>");
+            std::println("  --inference-transform <16 comma-separated floats>");
+            std::println("  --test-report <path>            Benchmark the whole test split after training and write per-image CSV metrics to this file. Default: {}", options.test_report.string());
             std::println("  --grid-storage <hash|dense|tiled>");
             std::println("  --hash-levels <count>");
             std::println("  --hash-features <count>");
@@ -81,8 +91,30 @@ int main(int argc, char* argv[]) {
                 options.validation_interval = parse_u32(arg, require_value(i, arg));
             } else if (arg == "--validation-dir") {
                 options.validation_dir = std::filesystem::path{std::string{require_value(i, arg)}};
-            } else if (arg == "--validation-image-index") {
-                options.validation_image_index = parse_u32(arg, require_value(i, arg));
+            } else if (arg == "--inference-interval") {
+                options.inference_interval = parse_u32(arg, require_value(i, arg));
+            } else if (arg == "--inference-dir") {
+                options.inference_dir = std::filesystem::path{std::string{require_value(i, arg)}};
+            } else if (arg == "--inference-width") {
+                options.inference_width = parse_u32(arg, require_value(i, arg));
+            } else if (arg == "--inference-height") {
+                options.inference_height = parse_u32(arg, require_value(i, arg));
+            } else if (arg == "--inference-focal-length") {
+                options.inference_focal_length = parse_float(arg, require_value(i, arg));
+            } else if (arg == "--inference-transform") {
+                const std::string value = std::string{require_value(i, arg)};
+                std::array<float, 16> transform = {};
+                std::size_t value_offset = 0u;
+                for (std::size_t element_index = 0u; element_index < transform.size(); ++element_index) {
+                    const std::size_t next_comma = value.find(',', value_offset);
+                    const std::size_t token_end = next_comma == std::string::npos ? value.size() : next_comma;
+                    if (token_end == value_offset) throw std::runtime_error{"--inference-transform contains an empty element."};
+                    transform[element_index] = parse_float(arg, std::string_view{value.data() + value_offset, token_end - value_offset});
+                    value_offset = token_end == value.size() ? value.size() : token_end + 1u;
+                    if (token_end == value.size() && element_index + 1u != transform.size()) throw std::runtime_error{"--inference-transform must provide exactly 16 comma-separated floats."};
+                }
+                if (value_offset != value.size()) throw std::runtime_error{"--inference-transform must provide exactly 16 comma-separated floats."};
+                options.inference_transform_4x4 = transform;
             } else if (arg == "--test-report") {
                 options.test_report = std::filesystem::path{std::string{require_value(i, arg)}};
             } else if (arg == "--grid-storage") {
@@ -127,9 +159,16 @@ int main(int argc, char* argv[]) {
         if (options.scene.empty()) throw std::runtime_error{"--scene must not be empty."};
         if (options.steps == 0u) throw std::runtime_error{"--steps must be greater than 0."};
         if (options.validation_interval > 0u && options.validation_dir.empty()) throw std::runtime_error{"--validation-dir must not be empty when validation is enabled."};
+        if (options.inference_interval > 0u && options.inference_dir.empty()) throw std::runtime_error{"--inference-dir must not be empty when inference is enabled."};
+        if (options.inference_interval > 0u && !options.inference_width.has_value()) throw std::runtime_error{"--inference-width must be provided when inference is enabled."};
+        if (options.inference_interval > 0u && !options.inference_height.has_value()) throw std::runtime_error{"--inference-height must be provided when inference is enabled."};
+        if (options.inference_interval > 0u && !options.inference_focal_length.has_value()) throw std::runtime_error{"--inference-focal-length must be provided when inference is enabled."};
+        if (options.inference_interval > 0u && !options.inference_transform_4x4.has_value()) throw std::runtime_error{"--inference-transform must be provided when inference is enabled."};
 
         std::println("scene={}", options.scene.string());
-        std::println("steps={} log_interval={} validation_interval={}", options.steps, options.log_interval, options.validation_interval);
+        std::println("steps={} log_interval={} validation_interval={} inference_interval={}", options.steps, options.log_interval, options.validation_interval, options.inference_interval);
+        if (options.validation_interval > 0u) std::println("validation_dir={}", options.validation_dir.string());
+        if (options.inference_interval > 0u) std::println("inference_dir={} inference_resolution={}x{} inference_focal_length={}", options.inference_dir.string(), *options.inference_width, *options.inference_height, *options.inference_focal_length);
         if (!options.test_report.empty()) std::println("test_report={}", options.test_report.string());
         std::println("grid={} levels={} features={} hash_log2={} base_res={} sh_degree={}",
             options.network.encoding.storage == ngp::InstantNGP::GridStorage::Hash ? "hash" : (options.network.encoding.storage == ngp::InstantNGP::GridStorage::Dense ? "dense" : "tiled"),
@@ -150,6 +189,23 @@ int main(int argc, char* argv[]) {
         ngp::InstantNGP ngp{options.network};
         ngp.load_dataset(options.scene);
 
+        std::optional<ngp::InstantNGP::InferenceCamera> inference_camera = {};
+        if (options.inference_interval > 0u) {
+            inference_camera = ngp::InstantNGP::InferenceCamera{};
+            inference_camera->resolution   = ngp::legacy::math::ivec2{static_cast<int>(*options.inference_width), static_cast<int>(*options.inference_height)};
+            inference_camera->focal_length = *options.inference_focal_length;
+            for (std::size_t row = 0u; row < 3u; ++row) {
+                for (std::size_t column = 0u; column < 4u; ++column) inference_camera->camera[column][row] = (*options.inference_transform_4x4)[row * 4u + column];
+            }
+            inference_camera->camera[1] *= -1.0f;
+            inference_camera->camera[2] *= -1.0f;
+            inference_camera->camera[3]                      = inference_camera->camera[3] * 0.33f + ngp::legacy::math::vec3(0.5f);
+            const ngp::legacy::math::vec4 camera_row0       = ngp::legacy::math::row(inference_camera->camera, 0);
+            inference_camera->camera                        = ngp::legacy::math::row(inference_camera->camera, 0, ngp::legacy::math::row(inference_camera->camera, 1));
+            inference_camera->camera                        = ngp::legacy::math::row(inference_camera->camera, 1, ngp::legacy::math::row(inference_camera->camera, 2));
+            inference_camera->camera                        = ngp::legacy::math::row(inference_camera->camera, 2, camera_row0);
+        }
+
         const auto total_start                     = std::chrono::steady_clock::now();
         auto interval_start                       = total_start;
         ngp::InstantNGP::TrainResult last_train   = ngp.train(0);
@@ -168,6 +224,11 @@ int main(int argc, char* argv[]) {
                 const std::uint32_t progressed         = last_train.step - initial_training_step;
                 const std::uint32_t until_validation   = progressed % options.validation_interval == 0u ? options.validation_interval : options.validation_interval - (progressed % options.validation_interval);
                 if (until_validation < chunk) chunk = until_validation;
+            }
+            if (options.inference_interval > 0u) {
+                const std::uint32_t progressed        = last_train.step - initial_training_step;
+                const std::uint32_t until_inference   = progressed % options.inference_interval == 0u ? options.inference_interval : options.inference_interval - (progressed % options.inference_interval);
+                if (until_inference < chunk) chunk = until_inference;
             }
 
             last_train = ngp.train(static_cast<std::int32_t>(chunk));
@@ -193,15 +254,32 @@ int main(int argc, char* argv[]) {
 
             const bool should_validate = options.validation_interval > 0u && progressed % options.validation_interval == 0u;
             if (should_validate) {
-                const std::filesystem::path output_path = options.validation_dir / std::format("step_{}.png", last_train.step);
-                const ngp::InstantNGP::ValidateResult validation = ngp.validate(output_path, options.validation_image_index);
-                std::println("validation step={} image_index={} resolution={}x{} mse={} psnr={} path={}",
+                const std::filesystem::path report_path = options.validation_dir / std::format("step_{}.csv", last_train.step);
+                const ngp::InstantNGP::ValidateResult validation = ngp.validate(report_path);
+                const float images_per_second = validation.benchmark_ms > 0.0f ? 1000.0f * static_cast<float>(validation.image_count) / validation.benchmark_ms : 0.0f;
+                std::println("validation step={} images={} total_pixels={} mean_mse={} mean_psnr={} split_psnr={} min_psnr={} max_psnr={} benchmark_ms={} images_per_second={} report={}",
                     last_train.step,
-                    validation.image_index,
-                    validation.width,
-                    validation.height,
-                    validation.mse,
-                    validation.psnr,
+                    validation.image_count,
+                    validation.total_pixels,
+                    validation.mean_mse,
+                    validation.mean_psnr,
+                    validation.split_psnr,
+                    validation.min_psnr,
+                    validation.max_psnr,
+                    validation.benchmark_ms,
+                    images_per_second,
+                    report_path.string());
+            }
+
+            const bool should_infer = options.inference_interval > 0u && progressed % options.inference_interval == 0u;
+            if (should_infer) {
+                const std::filesystem::path output_path = options.inference_dir / std::format("step_{}.png", last_train.step);
+                const ngp::InstantNGP::InferenceResult inference = ngp.inference(output_path, *inference_camera);
+                std::println("inference step={} resolution={}x{} render_ms={} path={}",
+                    last_train.step,
+                    inference.width,
+                    inference.height,
+                    inference.render_ms,
                     output_path.string());
             }
         }

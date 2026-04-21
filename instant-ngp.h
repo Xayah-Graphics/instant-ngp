@@ -28,6 +28,12 @@ namespace ngp {
             legacy::math::mat4x3 camera    = {};
         };
 
+        struct InferenceCamera final {
+            legacy::math::ivec2 resolution = {};
+            float focal_length             = 0.0f;
+            legacy::math::mat4x3 camera    = {};
+        };
+
         struct TrainResult final {
             float loss                                          = 0.0f;
             float train_ms                                      = 0.0f;
@@ -40,11 +46,14 @@ namespace ngp {
         };
 
         struct ValidateResult final {
-            std::uint32_t width      = 0u;
-            std::uint32_t height     = 0u;
-            float mse                = 0.0f;
-            float psnr               = 0.0f;
-            std::int32_t image_index = -1;
+            std::uint32_t image_count  = 0u;
+            std::uint64_t total_pixels = 0u;
+            float mean_mse             = 0.0f;
+            float mean_psnr            = 0.0f;
+            float split_psnr           = 0.0f;
+            float min_psnr             = 0.0f;
+            float max_psnr             = 0.0f;
+            float benchmark_ms         = 0.0f;
         };
 
         struct TestResult final {
@@ -58,10 +67,17 @@ namespace ngp {
             float benchmark_ms         = 0.0f;
         };
 
+        struct InferenceResult final {
+            std::uint32_t width = 0u;
+            std::uint32_t height = 0u;
+            float render_ms = 0.0f;
+        };
+
         void load_dataset(const std::filesystem::path& dataset_path);
         [[nodiscard]] auto train(std::int32_t iters) -> TrainResult;
-        [[nodiscard]] auto validate(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidateResult;
+        [[nodiscard]] auto validate(const std::filesystem::path& report_path) -> ValidateResult;
         [[nodiscard]] auto test(const std::filesystem::path& report_path) -> TestResult;
+        [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) -> InferenceResult;
 
         struct NetworkConfig {
             struct HashGridConfig {
