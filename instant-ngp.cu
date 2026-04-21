@@ -755,12 +755,66 @@ namespace ngp {
         plan.density_grid.n_elements          = ngp::legacy::NERF_GRID_N_CELLS();
         plan.validation.padded_output_width   = plan.training.padded_output_width;
 
-        rng              = ngp::legacy::math::pcg32{seed};
-        density_grid_rng = ngp::legacy::math::pcg32{rng.next_uint()};
-        trainer          = std::unique_ptr<ngp::network::TrainerState<__half>, ngp::TrainerStateDeleter>{new ngp::network::TrainerState<__half>(network_config, plan, seed, stream.stream)};
+        cudaStream_t created_stream = {};
+        ngp::legacy::cuda_check(cudaStreamCreate(&created_stream));
+        stream = created_stream;
+
+        try {
+            rng              = ngp::legacy::math::pcg32{seed};
+            density_grid_rng = ngp::legacy::math::pcg32{rng.next_uint()};
+            trainer          = std::unique_ptr<ngp::network::TrainerState<__half>, ngp::TrainerStateDeleter>{new ngp::network::TrainerState<__half>(network_config, plan, seed, stream)};
+        } catch (...) {
+            cudaStreamDestroy(created_stream);
+            stream = nullptr;
+            throw;
+        }
     }
 
-    InstantNGP::~InstantNGP() = default;
+    InstantNGP::~InstantNGP() {
+        trainer.reset();
+        if (!stream) return;
+
+        ngp::network::detail::free_aux_stream_pool(stream);
+        cudaStreamDestroy(stream);
+    }
+
+    InstantNGP::InstantNGP(InstantNGP&& other) noexcept {
+        *this = std::move(other);
+    }
+
+    InstantNGP& InstantNGP::operator=(InstantNGP&& other) noexcept {
+        if (this == &other) return *this;
+
+        trainer.reset();
+        if (stream) {
+            ngp::network::detail::free_aux_stream_pool(stream);
+            cudaStreamDestroy(stream);
+        }
+
+        dataset            = std::move(other.dataset);
+        plan               = other.plan;
+        network_config     = other.network_config;
+        seed               = other.seed;
+        rng                = other.rng;
+        density_grid_rng   = other.density_grid_rng;
+        counters_rgb       = std::move(other.counters_rgb);
+        snap_to_pixel_centers = other.snap_to_pixel_centers;
+        near_distance      = other.near_distance;
+        density_grid       = std::move(other.density_grid);
+        density_grid_bitfield = std::move(other.density_grid_bitfield);
+        density_grid_mean  = std::move(other.density_grid_mean);
+        density_grid_ema_step = other.density_grid_ema_step;
+        aabb               = other.aabb;
+        density_grid_decay = other.density_grid_decay;
+        trainer            = std::move(other.trainer);
+        training_step      = other.training_step;
+        training_prep_ms   = other.training_prep_ms;
+        training_ms        = other.training_ms;
+        loss_scalar        = other.loss_scalar;
+        stream             = other.stream;
+        other.stream       = nullptr;
+        return *this;
+    }
 
     void InstantNGP::run_training_prep() {
         std::uint32_t n_prep_to_skip = training_step / plan.prep.skip_growth_interval;
@@ -771,7 +825,7 @@ namespace ngp {
         const auto start = std::chrono::steady_clock::now();
         ngp::legacy::ScopeGuard timing_guard{[&] { training_prep_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() / n_prep_to_skip; }};
         update_density_grid();
-        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream));
     }
 
     auto InstantNGP::begin_training_step() -> InstantNGP::TrainingStepWorkspace {
@@ -781,9 +835,9 @@ namespace ngp {
         counters.numsteps_counter.enlarge(1u);
         counters.numsteps_counter_compacted.enlarge(1u);
         counters.loss.enlarge(counters.rays_per_batch);
-        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
-        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter_compacted.data(), 0, sizeof(std::uint32_t), stream.stream));
-        ngp::legacy::cuda_check(cudaMemsetAsync(counters.loss.data(), 0, sizeof(float) * counters.rays_per_batch, stream.stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter.data(), 0, sizeof(std::uint32_t), stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.numsteps_counter_compacted.data(), 0, sizeof(std::uint32_t), stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(counters.loss.data(), 0, sizeof(float) * counters.rays_per_batch, stream));
 
         TrainingStepWorkspace workspace{};
         workspace.padded_output_width = plan.training.padded_output_width;
@@ -800,7 +854,7 @@ namespace ngp {
         const std::size_t ray_counter_bytes       = ngp::legacy::align_to_cacheline(sizeof(std::uint32_t));
         const std::size_t total_bytes             = ray_indices_bytes + rays_unnormalized_bytes + numsteps_bytes + coords_bytes + mlp_out_bytes + dloss_bytes + compacted_coords_bytes + ray_counter_bytes;
 
-        workspace.alloc    = ngp::network::detail::allocate_workspace(stream.stream, total_bytes);
+        workspace.alloc    = ngp::network::detail::allocate_workspace(stream, total_bytes);
         std::uint8_t* base = workspace.alloc.data();
         std::size_t offset = 0u;
 
@@ -827,7 +881,7 @@ namespace ngp {
         workspace.rgbsigma_matrix         = ngp::legacy::GPUMatrixDynamic<__half>{workspace.mlp_out, workspace.padded_output_width, workspace.max_inference, ngp::legacy::CM};
         workspace.compacted_coords_matrix = ngp::legacy::GPUMatrixDynamic<float>{workspace.coords_compacted, workspace.floats_per_coord, batch_size, ngp::legacy::CM};
         workspace.gradient_matrix         = ngp::legacy::GPUMatrixDynamic<__half>{workspace.dloss_dmlp_out, workspace.padded_output_width, batch_size, ngp::legacy::CM};
-        workspace.compacted_output        = ngp::legacy::GPUMatrixDynamic<__half>{plan.training.padded_output_width, batch_size, stream.stream, ngp::legacy::CM};
+        workspace.compacted_output        = ngp::legacy::GPUMatrixDynamic<__half>{plan.training.padded_output_width, batch_size, stream, ngp::legacy::CM};
 
         if (training_step == 0u) counters.n_rays_total = 0u;
         workspace.n_rays_total = counters.n_rays_total;
@@ -839,14 +893,14 @@ namespace ngp {
     void InstantNGP::generate_training_batch(TrainingStepWorkspace& workspace) {
         auto& counters = counters_rgb;
 
-        ngp::legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), stream.stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), stream));
         if (counters.rays_per_batch > 0u) {
             const std::uint32_t blocks = (counters.rays_per_batch + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            generate_training_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, workspace.n_rays_total, rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, reinterpret_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u},
+            generate_training_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, workspace.n_rays_total, rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, reinterpret_cast<Ray*>(workspace.rays_unnormalized), workspace.numsteps, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u},
                 static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), density_grid_bitfield.data(), snap_to_pixel_centers);
         }
 
-        trainer->model.inference(stream.stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
+        trainer->model.inference(stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
     }
 
     void InstantNGP::compact_training_batch(TrainingStepWorkspace& workspace) {
@@ -855,23 +909,23 @@ namespace ngp {
 
         if (counters.rays_per_batch > 0u) {
             const std::uint32_t blocks = (counters.rays_per_batch + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            compute_loss_kernel_train_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(counters.rays_per_batch, aabb, workspace.n_rays_total, rng, batch_size, workspace.ray_counter, ngp::network::detail::default_loss_scale<__half>(), workspace.padded_output_width, static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
+            compute_loss_kernel_train_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.n_rays_total, rng, batch_size, workspace.ray_counter, ngp::network::detail::default_loss_scale<__half>(), workspace.padded_output_width, static_cast<std::uint32_t>(dataset.gpu.train.pixels.size()), dataset.gpu.train.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
                 reinterpret_cast<const Ray*>(workspace.rays_unnormalized), workspace.numsteps, ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords), 1u}, ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{reinterpret_cast<ngp::legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), snap_to_pixel_centers, density_grid_mean.data(), near_distance);
         }
 
         const std::uint32_t dloss_elements  = batch_size * workspace.padded_output_width;
         const std::uint32_t coords_elements = batch_size * workspace.floats_per_coord;
-        fill_rollover_and_rescale<__half><<<((dloss_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(), workspace.dloss_dmlp_out);
-        fill_rollover<float><<<((coords_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
+        fill_rollover_and_rescale<__half><<<((dloss_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(), workspace.dloss_dmlp_out);
+        fill_rollover<float><<<((coords_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
     }
 
     void InstantNGP::optimize_training_batch(TrainingStepWorkspace& workspace) {
-        ngp::legacy::run_graph_capture(trainer->graph, stream.stream, [&]() {
-            trainer->model.forward(stream.stream, workspace.compacted_coords_matrix, &workspace.compacted_output, trainer->scratch);
-            trainer->model.backward(stream.stream, trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, ngp::network::detail::GradientMode::Overwrite);
+        ngp::legacy::run_graph_capture(trainer->graph, stream, [&]() {
+            trainer->model.forward(stream, workspace.compacted_coords_matrix, &workspace.compacted_output, trainer->scratch);
+            trainer->model.backward(stream, trainer->scratch, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix, ngp::network::detail::GradientMode::Overwrite);
         });
 
-        trainer->optimizer.step(stream.stream, ngp::network::detail::default_loss_scale<__half>(), trainer->params.full_precision, trainer->params.values, trainer->params.gradients);
+        trainer->optimizer.step(stream, ngp::network::detail::default_loss_scale<__half>(), trainer->params.full_precision, trainer->params.values, trainer->params.gradients);
         ++training_step;
     }
 
@@ -880,7 +934,7 @@ namespace ngp {
         auto& counters                 = counters_rgb;
         const std::uint32_t batch_size = plan.training.batch_size;
 
-        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream));
 
         std::uint32_t measured_batch_size_before_compaction = 0u;
         std::uint32_t measured_batch_size                   = 0u;
@@ -895,12 +949,12 @@ namespace ngp {
             counters.measured_batch_size                   = measured_batch_size;
 
             if (get_loss_scalar) {
-                ngp::legacy::GpuAllocation reduction_alloc = ngp::network::detail::allocate_workspace(stream.stream, reduce_sum_workspace_size(counters.rays_per_batch) * sizeof(float));
+                ngp::legacy::GpuAllocation reduction_alloc = ngp::network::detail::allocate_workspace(stream, reduce_sum_workspace_size(counters.rays_per_batch) * sizeof(float));
                 float* reduction_workspace                 = reinterpret_cast<float*>(reduction_alloc.data());
-                ngp::legacy::cuda_check(cudaMemsetAsync(reduction_workspace, 0, sizeof(float), stream.stream));
-                reduce_sum(counters.loss.data(), SumIdentityOp{}, reduction_workspace, counters.rays_per_batch, stream.stream);
-                ngp::legacy::cuda_check(cudaMemcpyAsync(&loss_scalar, reduction_workspace, sizeof(float), cudaMemcpyDeviceToHost, stream.stream));
-                ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+                ngp::legacy::cuda_check(cudaMemsetAsync(reduction_workspace, 0, sizeof(float), stream));
+                reduce_sum(counters.loss.data(), SumIdentityOp{}, reduction_workspace, counters.rays_per_batch, stream);
+                ngp::legacy::cuda_check(cudaMemcpyAsync(&loss_scalar, reduction_workspace, sizeof(float), cudaMemcpyDeviceToHost, stream));
+                ngp::legacy::cuda_check(cudaStreamSynchronize(stream));
                 loss_scalar *= (float) counters.measured_batch_size / (float) batch_size;
             }
 
@@ -932,7 +986,7 @@ namespace ngp {
         const std::size_t indices_bytes     = ngp::legacy::align_to_cacheline(n_elements * sizeof(std::uint32_t));
         const std::size_t density_tmp_bytes = ngp::legacy::align_to_cacheline(n_elements * sizeof(float));
         const std::size_t mlp_out_bytes     = ngp::legacy::align_to_cacheline(n_density_grid_samples * padded_output_width * sizeof(__half));
-        ngp::legacy::GpuAllocation alloc    = ngp::network::detail::allocate_workspace(stream.stream, positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes);
+        ngp::legacy::GpuAllocation alloc    = ngp::network::detail::allocate_workspace(stream, positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes);
 
         std::uint8_t* base           = alloc.data();
         std::size_t offset           = 0u;
@@ -948,21 +1002,21 @@ namespace ngp {
             density_grid_ema_step = 0u;
             if (n_elements > 0u) {
                 const std::uint32_t blocks = (n_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-                mark_untrained_density_grid<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_elements, density_grid.data(), static_cast<std::uint32_t>(dataset.gpu.train.frames.size()), dataset.gpu.train.frames.data());
+                mark_untrained_density_grid<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(n_elements, density_grid.data(), static_cast<std::uint32_t>(dataset.gpu.train.frames.size()), dataset.gpu.train.frames.data());
             }
         }
 
-        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_tmp, 0, sizeof(float) * n_elements, stream.stream));
+        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_tmp, 0, sizeof(float) * n_elements, stream));
 
         if (n_uniform_density_grid_samples > 0u) {
             const std::uint32_t blocks = (n_uniform_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_uniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions, density_grid_indices, -0.01f);
+            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(n_uniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions, density_grid_indices, -0.01f);
         }
         density_grid_rng.advance();
 
         if (n_nonuniform_density_grid_samples > 0u) {
             const std::uint32_t blocks = (n_nonuniform_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_nonuniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS());
+            generate_grid_samples_nerf_nonuniform<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(n_nonuniform_density_grid_samples, density_grid_rng, density_grid_ema_step, aabb, density_grid.data(), density_grid_positions + n_uniform_density_grid_samples, density_grid_indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS());
         }
         density_grid_rng.advance();
 
@@ -971,17 +1025,17 @@ namespace ngp {
             const std::size_t batch_size = std::min(density_batch_size, static_cast<std::size_t>(n_density_grid_samples) - i);
             ngp::legacy::GPUMatrixDynamic<__half> density_matrix(mlp_out + i, padded_output_width, batch_size, ngp::legacy::RM);
             ngp::legacy::GPUMatrixDynamic<float> density_grid_position_matrix((float*) (density_grid_positions + i), sizeof(ngp::legacy::NerfPosition) / sizeof(float), batch_size, ngp::legacy::CM);
-            trainer->model.density(stream.stream, density_grid_position_matrix, density_matrix);
+            trainer->model.density(stream, density_grid_position_matrix, density_matrix);
         }
 
         if (n_density_grid_samples > 0u) {
             const std::uint32_t blocks = (n_density_grid_samples + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            splat_grid_samples_nerf_max_nearest_neighbor<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp);
+            splat_grid_samples_nerf_max_nearest_neighbor<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp);
         }
 
         if (n_elements > 0u) {
             const std::uint32_t blocks = (n_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            ema_grid_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(n_elements, density_grid_decay, density_grid_ema_step, density_grid.data(), density_grid_tmp);
+            ema_grid_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(n_elements, density_grid_decay, density_grid_ema_step, density_grid.data(), density_grid_tmp);
         }
         ++density_grid_ema_step;
 
@@ -989,12 +1043,12 @@ namespace ngp {
         density_grid_bitfield.enlarge(base_grid_elements / 8u);
         density_grid_mean.enlarge(reduce_sum_workspace_size(base_grid_elements));
 
-        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_mean.data(), 0, sizeof(float), stream.stream));
-        reduce_sum(density_grid.data(), DensityGridReduceOp{base_grid_elements}, density_grid_mean.data(), base_grid_elements, stream.stream);
+        ngp::legacy::cuda_check(cudaMemsetAsync(density_grid_mean.data(), 0, sizeof(float), stream));
+        reduce_sum(density_grid.data(), DensityGridReduceOp{base_grid_elements}, density_grid_mean.data(), base_grid_elements, stream);
 
         if (base_grid_elements / 8u > 0u) {
             const std::uint32_t blocks = ((base_grid_elements / 8u) + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-            grid_to_bitfield<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(base_grid_elements / 8u, density_grid.data(), density_grid_bitfield.data(), density_grid_mean.data());
+            grid_to_bitfield<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(base_grid_elements / 8u, density_grid.data(), density_grid_bitfield.data(), density_grid_mean.data());
         }
     }
 
@@ -1059,20 +1113,20 @@ namespace ngp {
 
         for (std::uint32_t pixel_offset = 0u; pixel_offset < workspace.total_pixels; pixel_offset += plan.validation.tile_rays) {
             const std::uint32_t tile_pixels = std::min(plan.validation.tile_rays, workspace.total_pixels - pixel_offset);
-            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.tile_numsteps.data(), 0, workspace.tile_numsteps.size() * sizeof(std::uint32_t), stream.stream));
-            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.sample_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
-            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.overflow_counter.data(), 0, sizeof(std::uint32_t), stream.stream));
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.tile_numsteps.data(), 0, workspace.tile_numsteps.size() * sizeof(std::uint32_t), stream));
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.sample_counter.data(), 0, sizeof(std::uint32_t), stream));
+            ngp::legacy::cuda_check(cudaMemsetAsync(workspace.overflow_counter.data(), 0, sizeof(std::uint32_t), stream));
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-                generate_validation_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(tile_pixels, pixel_offset, aabb, workspace.max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{(ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, frame, density_grid_bitfield.data());
+                generate_validation_samples_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, workspace.max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<ngp::legacy::NerfCoordinate>{(ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, frame, density_grid_bitfield.data());
             }
 
             std::uint32_t used_samples    = 0u;
             std::uint32_t overflowed_rays = 0u;
-            ngp::legacy::cuda_check(cudaMemcpyAsync(&used_samples, workspace.sample_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream.stream));
-            ngp::legacy::cuda_check(cudaMemcpyAsync(&overflowed_rays, workspace.overflow_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream.stream));
-            ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+            ngp::legacy::cuda_check(cudaMemcpyAsync(&used_samples, workspace.sample_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream));
+            ngp::legacy::cuda_check(cudaMemcpyAsync(&overflowed_rays, workspace.overflow_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, stream));
+            ngp::legacy::cuda_check(cudaStreamSynchronize(stream));
 
             if (overflowed_rays != 0u) {
                 std::ostringstream message;
@@ -1083,20 +1137,20 @@ namespace ngp {
             if (used_samples > 0u) {
                 const std::uint32_t padded_used_samples = ngp::legacy::next_multiple(used_samples, ngp::network::detail::batch_size_granularity);
                 const std::uint32_t coord_elements      = padded_used_samples * workspace.floats_per_coord;
-                fill_rollover<float><<<((coord_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream.stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
+                fill_rollover<float><<<((coord_elements + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear), ngp::network::detail::n_threads_linear, 0, stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
 
                 ngp::legacy::GPUMatrixDynamic<float> coords_matrix((float*) workspace.tile_coords.data(), workspace.floats_per_coord, padded_used_samples, ngp::legacy::CM);
                 ngp::legacy::GPUMatrixDynamic<__half> rgbsigma_matrix(workspace.tile_mlp_out.data(), workspace.padded_output_width, padded_used_samples, ngp::legacy::CM);
-                trainer->model.inference(stream.stream, coords_matrix, rgbsigma_matrix);
+                trainer->model.inference(stream, coords_matrix, rgbsigma_matrix);
             }
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + ngp::network::detail::n_threads_linear - 1u) / ngp::network::detail::n_threads_linear;
-                composite_validation_kernel_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream.stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{(const ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, workspace.tile_mlp_out.data(), workspace.padded_output_width, background, workspace.rendered.data());
+                composite_validation_kernel_nerf<<<blocks, ngp::network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const ngp::legacy::NerfCoordinate>{(const ngp::legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, workspace.tile_mlp_out.data(), workspace.padded_output_width, background, workspace.rendered.data());
             }
         }
 
-        ngp::legacy::cuda_check(cudaStreamSynchronize(stream.stream));
+        ngp::legacy::cuda_check(cudaStreamSynchronize(stream));
 
         std::vector<ngp::legacy::math::vec3> rendered_host(workspace.total_pixels);
         workspace.rendered.copy_to_host(rendered_host);

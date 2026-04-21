@@ -545,13 +545,15 @@ namespace ngp::network::detail {
         reinterpret_cast<VectorFragment<ngp::legacy::math::tvec<T, N, sizeof(T)>>*>(gradients_in)[i] = frag;
     }
 
-    void wait_stream_state_for_event(ngp::StreamState& stream_state, cudaEvent_t event);
-    void wait_stream_state_for_stream(ngp::StreamState& stream_state, cudaStream_t stream);
-    void signal_stream_state(ngp::StreamState& stream_state, cudaStream_t stream);
-    std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<ngp::StreamState>>>& stream_pools();
+    struct AuxStreamSlot;
+
+    void wait_aux_stream_for_event(AuxStreamSlot& aux_stream, cudaEvent_t event);
+    void wait_aux_stream_for_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
+    void signal_aux_stream(AuxStreamSlot& aux_stream, cudaStream_t stream);
+    std::unordered_map<cudaStream_t, std::stack<std::shared_ptr<AuxStreamSlot>>>& aux_stream_pools();
     void free_aux_stream_pool(cudaStream_t parent_stream);
-    std::shared_ptr<ngp::StreamState> acquire_aux_stream(cudaStream_t parent_stream);
-    void release_aux_stream(cudaStream_t parent_stream, std::shared_ptr<ngp::StreamState> aux_stream);
+    std::shared_ptr<AuxStreamSlot> acquire_aux_stream(cudaStream_t parent_stream);
+    void release_aux_stream(cudaStream_t parent_stream, std::shared_ptr<AuxStreamSlot> aux_stream);
 
     struct SyncedStreamReservation final {
         SyncedStreamReservation() = default;
@@ -562,8 +564,9 @@ namespace ngp::network::detail {
         SyncedStreamReservation& operator=(SyncedStreamReservation&& other);
         SyncedStreamReservation(SyncedStreamReservation&& other);
 
-        std::shared_ptr<ngp::StreamState> aux_stream = nullptr;
-        cudaStream_t main_stream                     = nullptr;
+        std::shared_ptr<AuxStreamSlot> aux_stream_slot = nullptr;
+        cudaStream_t aux_stream                        = nullptr;
+        cudaStream_t main_stream                       = nullptr;
     };
 
 } // namespace ngp::network::detail
@@ -812,7 +815,7 @@ namespace ngp::encoding {
 
             ngp::network::detail::SyncedStreamReservation synced_streams{stream, m_n_to_pad > 0u ? 2u : 1u};
             const cudaStream_t main_stream = synced_streams.main_stream;
-            const cudaStream_t aux_stream  = synced_streams.aux_stream ? synced_streams.aux_stream->stream : synced_streams.main_stream;
+            const cudaStream_t aux_stream  = synced_streams.aux_stream ? synced_streams.aux_stream : synced_streams.main_stream;
 
             if (m_n_to_pad > 0u) {
                 if (output.layout() == ngp::legacy::AoS) {
@@ -1947,7 +1950,7 @@ namespace ngp::mlp {
         if (param_gradients_mode != ngp::network::detail::GradientMode::Ignore) {
             multi_streams.emplace_back(stream, 2u);
             auto output_gradient = dynamic_view(output_gradient_matrix());
-            fc_multiply_split_k<LastLayerK>(multi_streams.back().aux_stream->stream, tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx).transposed(), output_gradient, split_k_factor, param_gradient_beta);
+            fc_multiply_split_k<LastLayerK>(multi_streams.back().aux_stream, tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx).transposed(), output_gradient, split_k_factor, param_gradient_beta);
         }
 
         if (m_output_width > 16u) fc_multiply<FullLayer>(stream, output_weight_matrix().transposed(), tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx), scratch.backward_hidden.at(backward_tmp_idx), m_activation, true);
@@ -1975,7 +1978,7 @@ namespace ngp::mlp {
             if (param_gradients_mode != ngp::network::detail::GradientMode::Ignore) {
                 multi_streams.emplace_back(stream, 2u);
                 auto gradient_matrix = dynamic_view(gradient_matrix_at(matrix_idx));
-                fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream->stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), scratch.forward_hidden.at(tmp_idx).transposed(), gradient_matrix, split_k_factor, param_gradient_beta);
+                fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), scratch.forward_hidden.at(tmp_idx).transposed(), gradient_matrix, split_k_factor, param_gradient_beta);
             }
 
             tmp_idx -= 1u;
@@ -1985,7 +1988,7 @@ namespace ngp::mlp {
         if (param_gradients_mode != ngp::network::detail::GradientMode::Ignore) {
             multi_streams.emplace_back(stream, 2u);
             auto input_gradient = dynamic_view(input_gradient_matrix());
-            fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream->stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), input.transposed(), input_gradient, split_k_factor, param_gradient_beta);
+            fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), input.transposed(), input_gradient, split_k_factor, param_gradient_beta);
         }
 
         if (dL_dinput && !dL_dinput_fused) fc_multiply<FullLayer>(stream, input_weight_matrix().transposed(), scratch.backward_hidden.at(backward_tmp_idx - 1u), *dL_dinput);

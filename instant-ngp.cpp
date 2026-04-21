@@ -12,29 +12,6 @@ import std;
 
 namespace ngp {
 
-    StreamState::StreamState() {
-        legacy::cuda_check(cudaStreamCreate(&stream));
-        legacy::cuda_check(cudaEventCreate(&event));
-    }
-    StreamState::~StreamState() {
-        if (stream) {
-            ngp::network::detail::free_aux_stream_pool(stream);
-            cudaStreamDestroy(stream);
-        }
-
-        if (event) {
-            cudaEventDestroy(event);
-        }
-    }
-    StreamState& StreamState::operator=(StreamState&& other) noexcept {
-        std::swap(stream, other.stream);
-        std::swap(event, other.event);
-        return *this;
-    }
-    StreamState::StreamState(StreamState&& other) noexcept {
-        *this = std::move(other);
-    }
-
     void InstantNGP::load_dataset(const std::filesystem::path& dataset_path, DatasetType dataset_type) {
         if (dataset_path.empty()) {
             throw std::invalid_argument{"dataset_path must not be empty."};

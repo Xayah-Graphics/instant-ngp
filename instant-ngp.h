@@ -20,22 +20,6 @@ namespace ngp {
         void operator()(network::TrainerState<__half>* trainer) const;
     };
 
-    namespace network::detail {
-        void free_aux_stream_pool(cudaStream_t parent_stream);
-    } // namespace network::detail
-
-    struct StreamState {
-        StreamState();
-        ~StreamState();
-        StreamState& operator=(const StreamState&) = delete;
-        StreamState(const StreamState&)            = delete;
-        StreamState& operator=(StreamState&& other) noexcept;
-        StreamState(StreamState&& other) noexcept;
-
-        cudaStream_t stream = {};
-        cudaEvent_t event   = {};
-    };
-
     class InstantNGP final {
     private:
         struct TrainingStepWorkspace;
@@ -110,8 +94,8 @@ namespace ngp {
         ~InstantNGP();
         InstantNGP(const InstantNGP&)                = delete;
         InstantNGP& operator=(const InstantNGP&)     = delete;
-        InstantNGP(InstantNGP&&) noexcept            = default;
-        InstantNGP& operator=(InstantNGP&&) noexcept = default;
+        InstantNGP(InstantNGP&& other) noexcept;
+        InstantNGP& operator=(InstantNGP&& other) noexcept;
 
     protected:
         void run_training_prep();
@@ -253,7 +237,7 @@ namespace ngp {
         float training_ms                                                           = 0.0f;
         float loss_scalar                                                           = 0.0f;
 
-        StreamState stream;
+        cudaStream_t stream = {};
     };
 
 } // namespace ngp

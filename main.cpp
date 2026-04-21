@@ -14,7 +14,7 @@ int main(int argc, char* argv[]) {
         };
 
         CliOptions options{};
-        options.network.density_network.n_hidden_layers = 2u;
+        options.network.rgb_network.n_hidden_layers = 2u;
 
         const auto print_usage = [&] {
             std::println("Usage: {} [options]\n", argc > 0 ? argv[0] : "instant-ngp-app");
