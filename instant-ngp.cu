@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <type_traits>
@@ -956,6 +958,145 @@ namespace ngp {
         validation.psnr        = validation.mse > 0.0f ? -10.0f * std::log10(validation.mse) : std::numeric_limits<float>::infinity();
         validation.image_index = (std::int32_t) validation_image_index;
         return validation;
+    }
+
+    auto InstantNGP::benchmark_test_dataset(const std::filesystem::path& report_path) -> TestBenchmarkResult {
+        if (report_path.empty()) throw std::invalid_argument{"test benchmark report path must not be empty."};
+        if (!device.trainer) throw std::runtime_error{"Test benchmark requires an initialized network."};
+
+        const std::size_t test_count = dataset.cpu.test.size();
+        if (test_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};
+
+        const std::filesystem::path parent_dir = report_path.parent_path();
+        if (!parent_dir.empty() && !std::filesystem::exists(parent_dir) && !std::filesystem::create_directories(parent_dir)) throw std::runtime_error{"Failed to create test report directory '" + parent_dir.string() + "'."};
+
+        std::ofstream report_stream{report_path, std::ios::binary};
+        if (!report_stream.is_open()) throw std::runtime_error{"Failed to open test benchmark report '" + report_path.string() + "'."};
+        report_stream << std::setprecision(9);
+        report_stream << "image_index,width,height,mse,psnr\n";
+
+        TestBenchmarkResult result{};
+        result.image_count = static_cast<std::uint32_t>(test_count);
+        result.min_psnr    = std::numeric_limits<float>::infinity();
+        result.max_psnr    = -std::numeric_limits<float>::infinity();
+
+        double total_squared_error = 0.0;
+        double total_psnr          = 0.0;
+        const auto benchmark_start = std::chrono::steady_clock::now();
+
+        for (std::size_t test_image_index = 0u; test_image_index < test_count; ++test_image_index) {
+            const Dataset::CPU::Frame& source = dataset.cpu.test[test_image_index];
+            if (source.width == 0u || source.height == 0u) throw std::runtime_error{"Test frame has zero resolution."};
+            if (!std::isfinite(source.focal_length_x) || source.focal_length_x <= 0.0f) throw std::runtime_error{"Test frame has an invalid focal_length_x."};
+            if (!std::isfinite(source.focal_length_y) || source.focal_length_y <= 0.0f) throw std::runtime_error{"Test frame has an invalid focal_length_y."};
+
+            const float focal_length_difference = std::fabs(source.focal_length_x - source.focal_length_y);
+            const float focal_length_scale      = std::max(1.0f, std::max(std::fabs(source.focal_length_x), std::fabs(source.focal_length_y)));
+            if (focal_length_difference > 1e-6f * focal_length_scale) throw std::runtime_error{"Test benchmark currently requires focal_length_x and focal_length_y to match."};
+
+            GpuFrame frame{};
+            frame.resolution   = legacy::math::ivec2{(int) source.width, (int) source.height};
+            frame.focal_length = source.focal_length_x;
+            for (std::size_t row = 0u; row < 3u; ++row) {
+                for (std::size_t column = 0u; column < 4u; ++column) frame.camera[column][row] = source.transform_matrix_4x4[row * 4u + column];
+            }
+            frame.camera[1] *= -1.0f;
+            frame.camera[2] *= -1.0f;
+            frame.camera[3]                      = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
+            const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(frame.camera, 0);
+            frame.camera                         = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
+            frame.camera                         = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
+            frame.camera                         = ngp::legacy::math::row(frame.camera, 2, camera_row0);
+
+            const legacy::math::ivec2 resolution = frame.resolution;
+            const legacy::math::vec3 background  = legacy::math::vec3(1.0f);
+
+            ValidationRenderWorkspace workspace{};
+            workspace.total_pixels        = (std::uint32_t) ngp::legacy::math::product(resolution);
+            workspace.padded_output_width = spec.plan.validation.padded_output_width;
+            workspace.floats_per_coord    = spec.plan.validation.floats_per_coord;
+            workspace.max_samples         = spec.plan.validation.max_samples;
+            workspace.rendered            = ngp::legacy::GpuBuffer<legacy::math::vec3>{workspace.total_pixels};
+            workspace.tile_numsteps       = ngp::legacy::GpuBuffer<std::uint32_t>{spec.plan.validation.tile_rays * 2u};
+            workspace.tile_coords         = ngp::legacy::GpuBuffer<float>{workspace.max_samples * workspace.floats_per_coord};
+            workspace.tile_mlp_out        = ngp::legacy::GpuBuffer<__half>{workspace.max_samples * workspace.padded_output_width};
+            workspace.sample_counter      = ngp::legacy::GpuBuffer<std::uint32_t>{1u};
+            workspace.overflow_counter    = ngp::legacy::GpuBuffer<std::uint32_t>{1u};
+
+            for (std::uint32_t pixel_offset = 0u; pixel_offset < workspace.total_pixels; pixel_offset += spec.plan.validation.tile_rays) {
+                const std::uint32_t tile_pixels = std::min(spec.plan.validation.tile_rays, workspace.total_pixels - pixel_offset);
+                legacy::cuda_check(cudaMemsetAsync(workspace.tile_numsteps.data(), 0, workspace.tile_numsteps.size() * sizeof(std::uint32_t), device.stream));
+                legacy::cuda_check(cudaMemsetAsync(workspace.sample_counter.data(), 0, sizeof(std::uint32_t), device.stream));
+                legacy::cuda_check(cudaMemsetAsync(workspace.overflow_counter.data(), 0, sizeof(std::uint32_t), device.stream));
+
+                if (tile_pixels > 0u) {
+                    const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
+                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(tile_pixels, pixel_offset, sampler.aabb, workspace.max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<legacy::NerfCoordinate>{(legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, frame, sampler.density.occupancy_bits.data());
+                }
+
+                std::uint32_t used_samples    = 0u;
+                std::uint32_t overflowed_rays = 0u;
+                legacy::cuda_check(cudaMemcpyAsync(&used_samples, workspace.sample_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, device.stream));
+                legacy::cuda_check(cudaMemcpyAsync(&overflowed_rays, workspace.overflow_counter.data(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost, device.stream));
+                legacy::cuda_check(cudaStreamSynchronize(device.stream));
+
+                if (overflowed_rays != 0u) {
+                    std::ostringstream message;
+                    message << "Test benchmark sample budget overflowed for " << overflowed_rays << " rays at image " << test_image_index << ". Reduce tile size or increase the sample budget.";
+                    throw std::runtime_error{message.str()};
+                }
+
+                if (used_samples > 0u) {
+                    const std::uint32_t padded_used_samples = legacy::next_multiple(used_samples, network::detail::batch_size_granularity);
+                    const std::uint32_t coord_elements      = padded_used_samples * workspace.floats_per_coord;
+                    fill_rollover<float><<<((coord_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, device.stream>>>(padded_used_samples, workspace.floats_per_coord, workspace.sample_counter.data(), workspace.tile_coords.data());
+
+                    legacy::GPUMatrixDynamic<float> coords_matrix((float*) workspace.tile_coords.data(), workspace.floats_per_coord, padded_used_samples, legacy::CM);
+                    legacy::GPUMatrixDynamic<__half> rgbsigma_matrix(workspace.tile_mlp_out.data(), workspace.padded_output_width, padded_used_samples, legacy::CM);
+                    device.trainer->model.inference(device.stream, coords_matrix, rgbsigma_matrix);
+                }
+
+                if (tile_pixels > 0u) {
+                    const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
+                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, device.stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const legacy::NerfCoordinate>{(const legacy::NerfCoordinate*) workspace.tile_coords.data(), 1u}, workspace.tile_mlp_out.data(), workspace.padded_output_width, background, workspace.rendered.data());
+                }
+            }
+
+            legacy::cuda_check(cudaStreamSynchronize(device.stream));
+
+            std::vector<legacy::math::vec3> rendered_host(workspace.total_pixels);
+            workspace.rendered.copy_to_host(rendered_host);
+
+            double image_squared_error = 0.0;
+            for (int y = 0; y < resolution.y; ++y) {
+                for (int x = 0; x < resolution.x; ++x) {
+                    const std::size_t pixel_index       = (std::size_t) x + (std::size_t) y * (std::size_t) resolution.x;
+                    const legacy::math::vec3 prediction = clamp_rgb01(rendered_host[pixel_index]);
+                    const legacy::math::vec4 gt         = read_rgba(legacy::math::ivec2{x, y}, resolution, source.rgba.data());
+                    const legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(gt.rgb() + (1.0f - gt.a) * background));
+                    const legacy::math::vec3 diff       = prediction - target;
+                    image_squared_error += (double) ngp::legacy::math::mean(diff * diff);
+                }
+            }
+
+            const float mse  = (float) (image_squared_error / (double) workspace.total_pixels);
+            const float psnr = mse > 0.0f ? -10.0f * std::log10(mse) : std::numeric_limits<float>::infinity();
+
+            report_stream << test_image_index << ',' << resolution.x << ',' << resolution.y << ',' << mse << ',' << psnr << '\n';
+            if (!report_stream.good()) throw std::runtime_error{"Failed while writing test benchmark report '" + report_path.string() + "'."};
+
+            total_squared_error += image_squared_error;
+            total_psnr += (double) psnr;
+            result.total_pixels += (std::uint64_t) workspace.total_pixels;
+            result.min_psnr = std::min(result.min_psnr, psnr);
+            result.max_psnr = std::max(result.max_psnr, psnr);
+        }
+
+        result.benchmark_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - benchmark_start).count();
+        result.mean_mse     = result.total_pixels > 0u ? (float) (total_squared_error / (double) result.total_pixels) : 0.0f;
+        result.mean_psnr    = result.image_count > 0u ? (float) (total_psnr / (double) result.image_count) : 0.0f;
+        result.split_psnr   = result.mean_mse > 0.0f ? -10.0f * std::log10(result.mean_mse) : std::numeric_limits<float>::infinity();
+        return result;
     }
 
     void InstantNGP::train(const std::int32_t iters) {

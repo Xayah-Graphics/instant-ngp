@@ -4,12 +4,13 @@ import std;
 int main(int argc, char* argv[]) {
     try {
         struct CliOptions final {
-            std::filesystem::path scene               = "../data/nerf-synthetic/chair";
+            std::filesystem::path scene               = "../data/nerf-synthetic/lego";
             std::uint32_t steps                       = 50000u;
             std::uint32_t log_interval                = 1000u;
             std::uint32_t validation_interval         = 10000u;
             std::filesystem::path validation_dir      = "validation";
             std::uint32_t validation_image_index      = 0u;
+            std::filesystem::path test_report         = {"test_metrics.csv"};
             ngp::InstantNGP::NetworkConfig network    = {};
         };
 
@@ -25,6 +26,7 @@ int main(int argc, char* argv[]) {
             std::println("  --validation-interval <count>   Render a validation image every N steps. Default: disabled");
             std::println("  --validation-dir <path>         Validation output directory. Default: {}", options.validation_dir.string());
             std::println("  --validation-image-index <idx>  Validation image index. Default: {}", options.validation_image_index);
+            std::println("  --test-report <path>            Benchmark the whole test split after training and write per-image CSV metrics to this file");
             std::println("  --grid-storage <hash|dense|tiled>");
             std::println("  --hash-levels <count>");
             std::println("  --hash-features <count>");
@@ -81,6 +83,8 @@ int main(int argc, char* argv[]) {
                 options.validation_dir = std::filesystem::path{std::string{require_value(i, arg)}};
             } else if (arg == "--validation-image-index") {
                 options.validation_image_index = parse_u32(arg, require_value(i, arg));
+            } else if (arg == "--test-report") {
+                options.test_report = std::filesystem::path{std::string{require_value(i, arg)}};
             } else if (arg == "--grid-storage") {
                 const std::string_view value = require_value(i, arg);
                 if (value == "hash") options.network.encoding.storage = ngp::InstantNGP::GridStorage::Hash;
@@ -126,6 +130,7 @@ int main(int argc, char* argv[]) {
 
         std::println("scene={}", options.scene.string());
         std::println("steps={} log_interval={} validation_interval={}", options.steps, options.log_interval, options.validation_interval);
+        if (!options.test_report.empty()) std::println("test_report={}", options.test_report.string());
         std::println("grid={} levels={} features={} hash_log2={} base_res={} sh_degree={}",
             options.network.encoding.storage == ngp::InstantNGP::GridStorage::Hash ? "hash" : (options.network.encoding.storage == ngp::InstantNGP::GridStorage::Dense ? "dense" : "tiled"),
             options.network.encoding.n_levels,
@@ -202,6 +207,23 @@ int main(int argc, char* argv[]) {
                     validation.psnr,
                     output_path.string());
             }
+        }
+
+        if (!options.test_report.empty()) {
+            const ngp::InstantNGP::TestBenchmarkResult test = ngp.benchmark_test_dataset(options.test_report);
+            const float images_per_second = test.benchmark_ms > 0.0f ? 1000.0f * static_cast<float>(test.image_count) / test.benchmark_ms : 0.0f;
+            std::println("test step={} images={} total_pixels={} mean_mse={} mean_psnr={} split_psnr={} min_psnr={} max_psnr={} benchmark_ms={} images_per_second={} report={}",
+                ngp.read_train_stats().training_step,
+                test.image_count,
+                test.total_pixels,
+                test.mean_mse,
+                test.mean_psnr,
+                test.split_psnr,
+                test.min_psnr,
+                test.max_psnr,
+                test.benchmark_ms,
+                images_per_second,
+                options.test_report.string());
         }
 
         return 0;

@@ -47,10 +47,22 @@ namespace ngp {
             std::int32_t image_index = -1;
         };
 
+        struct TestBenchmarkResult final {
+            std::uint32_t image_count = 0u;
+            std::uint64_t total_pixels = 0u;
+            float mean_mse = 0.0f;
+            float mean_psnr = 0.0f;
+            float split_psnr = 0.0f;
+            float min_psnr = 0.0f;
+            float max_psnr = 0.0f;
+            float benchmark_ms = 0.0f;
+        };
+
         void load_dataset(const std::filesystem::path& dataset_path);
         void train(std::int32_t iters);
         [[nodiscard]] auto read_train_stats() const -> TrainStats;
         [[nodiscard]] auto render_validation_image(const std::filesystem::path& output_path, std::uint32_t validation_image_index) -> ValidationResult;
+        [[nodiscard]] auto benchmark_test_dataset(const std::filesystem::path& report_path) -> TestBenchmarkResult;
 
         struct NetworkConfig {
             struct HashGridConfig {
@@ -107,7 +119,7 @@ namespace ngp {
 
                 std::vector<Frame> train      = {}; // setup-only
                 std::vector<Frame> validation = {}; // runtime-immutable
-                std::vector<Frame> test       = {}; // setup-only
+                std::vector<Frame> test       = {}; // runtime-immutable
             };
 
             struct GPU final {
@@ -157,7 +169,7 @@ namespace ngp {
 
             struct ValidationStage {
                 uint32_t tile_rays           = 4096; // runtime-immutable
-                uint32_t max_samples_per_ray = 96; // runtime-immutable
+                uint32_t max_samples_per_ray = 1024; // runtime-immutable
                 uint32_t floats_per_coord    = 0; // runtime-immutable
                 uint32_t padded_output_width = 0; // runtime-immutable
                 uint32_t max_samples         = 0; // runtime-immutable
