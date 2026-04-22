@@ -483,8 +483,8 @@ namespace ngp::network::detail {
         ~SyncedStreamReservation();
         SyncedStreamReservation& operator=(const SyncedStreamReservation&) = delete;
         SyncedStreamReservation(const SyncedStreamReservation&)            = delete;
-        SyncedStreamReservation& operator=(SyncedStreamReservation&& other);
-        SyncedStreamReservation(SyncedStreamReservation&& other);
+        SyncedStreamReservation& operator=(SyncedStreamReservation&& other) noexcept;
+        SyncedStreamReservation(SyncedStreamReservation&& other) noexcept;
 
         std::unique_ptr<AuxStreamSlot> aux_stream_slot = {};
         cudaStream_t aux_stream                        = nullptr;
@@ -694,7 +694,7 @@ namespace ngp::encoding {
 
             for (std::uint32_t i = 0; i < n_levels; ++i) {
                 const std::uint32_t resolution = network::detail::grid_resolution(network::detail::grid_scale(i, std::log2(per_level_scale), base_resolution));
-                const std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
+                constexpr std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
                 std::uint32_t params_in_level  = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : network::detail::powi(resolution, N_POS_DIMS);
 
                 params_in_level = legacy::next_multiple(params_in_level, 8u);
@@ -793,25 +793,25 @@ namespace ngp::encoding {
                 dL_dy_rm = reinterpret_cast<const T*>(workspace.data());
             }
 
-            typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type* grid_gradient = nullptr;
+            std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>* grid_gradient = nullptr;
             legacy::GpuAllocation grid_gradient_tmp                                              = {};
 
-            if constexpr (!std::is_same_v<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, T>) {
-                grid_gradient_tmp = legacy::GpuAllocation{n_params * sizeof(typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type), stream};
-                grid_gradient     = reinterpret_cast<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type*>(grid_gradient_tmp.data());
+            if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
+                grid_gradient_tmp = legacy::GpuAllocation{n_params * sizeof(std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>), stream};
+                grid_gradient     = reinterpret_cast<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>*>(grid_gradient_tmp.data());
             } else {
-                grid_gradient = reinterpret_cast<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type*>(gradients);
+                grid_gradient = reinterpret_cast<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>*>(gradients);
             }
 
-            if (param_gradients_mode == network::detail::GradientMode::Overwrite) legacy::cuda_check(cudaMemsetAsync(grid_gradient, 0, n_params * sizeof(typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type), stream));
+            if (param_gradients_mode == network::detail::GradientMode::Overwrite) legacy::cuda_check(cudaMemsetAsync(grid_gradient, 0, n_params * sizeof(std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>), stream));
 
             static constexpr std::uint32_t n_threads_hashgrid    = 256u;
             static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
 
             const dim3 blocks_hashgrid = {((num_elements * N_FEATURES_PER_LEVEL / n_features_per_thread) + n_threads_hashgrid - 1u) / n_threads_hashgrid, n_levels, 1u};
-            kernel_grid_backward<T, typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, max_level_gpu, stochastic_interpolation, grid_type, grid_gradient, input.view(), dL_dy_rm);
+            kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, max_level_gpu, stochastic_interpolation, grid_type, grid_gradient, input.view(), dL_dy_rm);
 
-            if constexpr (!std::is_same_v<typename std::conditional<N_FEATURES_PER_LEVEL == 1u, float, T>::type, T>) {
+            if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
                 if (n_params > 0u) {
                     const std::uint32_t blocks = (static_cast<std::uint32_t>(n_params) + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
                     network::detail::cast<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(static_cast<std::uint32_t>(n_params), reinterpret_cast<const float*>(grid_gradient), gradients);
@@ -1175,14 +1175,14 @@ namespace ngp::mlp {
                 ActivationTransferEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
                 Gemm;
 
-            typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {act}, 1};
+            typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {act}, 1};
             fc_multiply_impl<Gemm>(stream, arguments);
         } else {
             typedef cutlass::gemm::device::Gemm<MatmulTypeCompute, typename CutlassLayout<LayoutA>::type, MatmulTypeCompute, typename CutlassLayout<LayoutB>::type, MatmulTypeAccumulator, typename CutlassLayout<LayoutC>::type, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>,
                 ActivationEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
                 Gemm;
 
-            typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {act, sum_source}, 1};
+            typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {act, sum_source}, 1};
             fc_multiply_impl<Gemm>(stream, arguments);
         }
     }
@@ -1239,7 +1239,7 @@ namespace ngp::mlp {
             cutlass::epilogue::thread::LinearCombination<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>>
             Gemm;
 
-        typename Gemm::Arguments arguments{{M, N, K}, {(MatmulTypeCompute*) A.data(), (int) A.stride()}, {(MatmulTypeCompute*) B.data(), (int) B.stride()}, {(MatmulTypeAccumulator*) C.data(), (int) C.stride()}, {(MatmulTypeAccumulator*) D.data(), (int) D.stride()}, {(cutlass::half_t) 1.0f, (cutlass::half_t) beta}, (int) split_k_slices};
+        typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {static_cast<cutlass::half_t>(1.0f), static_cast<cutlass::half_t>(beta)}, static_cast<int>(split_k_slices)};
         fc_multiply_split_k_impl<Gemm>(stream, arguments);
     }
 
@@ -1349,7 +1349,7 @@ namespace ngp::mlp {
             __syncthreads();
 
             TCNN_PRAGMA_UNROLL
-            for (std::uint32_t l = 0u; l < N_ITERS; ++l) *(int4*) &out_intermediate_threadblock_this_layer[lane_offset + (row + 16u * l) * WIDTH] = *(int4*) &act_shmem[lane_offset + (row + 16u * l) * (WIDTH + SKEW)];
+            for (std::uint32_t l = 0u; l < N_ITERS; ++l) *reinterpret_cast<int4*>(&out_intermediate_threadblock_this_layer[lane_offset + (row + 16u * l) * WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * l) * (WIDTH + SKEW)]);
         }
     }
 
@@ -1364,7 +1364,7 @@ namespace ngp::mlp {
         const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
 
         TCNN_PRAGMA_UNROLL
-        for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)] = *(int4*) &input_threadblock[lane_offset + (row + 16u * i) * WIDTH];
+        for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]) = *reinterpret_cast<const int4*>(&input_threadblock[lane_offset + (row + 16u * i) * WIDTH]);
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, network::detail::Activation ACTIVATION, typename OUTPUT_LAYOUT>
@@ -1418,7 +1418,7 @@ namespace ngp::mlp {
             const std::uint32_t row         = (8u * li + wi * 8u * 32u) / WIDTH;
 
             TCNN_PRAGMA_UNROLL
-            for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &out_intermediate[lane_offset + (row + elem_idx + i * 16u) * WIDTH] = *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)];
+            for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&out_intermediate[lane_offset + (row + elem_idx + i * 16u) * WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]);
         } else {
             threadblock_load_input_static<WIDTH, N_ITERS>(act_shmem, out_intermediate + elem_idx * WIDTH);
         }
@@ -1479,7 +1479,7 @@ namespace ngp::mlp {
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t idx = thread_elem_idx; idx < n_elems_b; idx += n_elems_per_load) {
             const std::uint32_t idx_skewed      = idx + idx / in_width * INPUT_SKEW;
-            *(int4*) &weights_shmem[idx_skewed] = *(int4*) &weights_this_layer[idx];
+                *reinterpret_cast<int4*>(&weights_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&weights_this_layer[idx]);
         }
 
         const std::uint32_t n_tensor_ops = in_width / 16u;
@@ -1493,7 +1493,7 @@ namespace ngp::mlp {
                 TCNN_PRAGMA_UNROLL
                 for (std::uint32_t idx = thread_elem_idx; idx < n_elems_a; idx += n_elems_per_load) {
                     const std::uint32_t idx_skewed  = idx + idx / in_width * INPUT_SKEW;
-                    *(int4*) &act_shmem[idx_skewed] = *(int4*) &input_threadblock[l * n_elems_a + idx];
+                    *reinterpret_cast<int4*>(&act_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&input_threadblock[l * n_elems_a + idx]);
                 }
 
                 __syncthreads();
@@ -1524,7 +1524,7 @@ namespace ngp::mlp {
             __syncthreads();
 
             TCNN_PRAGMA_UNROLL
-            for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &out_intermediate_threadblock_this_layer[lane_offset + (row + 16u * i) * WIDTH] = *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)];
+            for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&out_intermediate_threadblock_this_layer[lane_offset + (row + 16u * i) * WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]);
         }
     }
 
@@ -1544,7 +1544,7 @@ namespace ngp::mlp {
         const std::uint32_t weights_row    = (8u * li) % WIDTH;
         const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / WIDTH;
 
-        *(int4*) &weights_shmem[weights_row + weights_col * (WIDTH + SKEW)] = *(int4*) &weights_this_layer[weights_row + weights_col * WIDTH];
+        *reinterpret_cast<int4*>(&weights_shmem[weights_row + weights_col * (WIDTH + SKEW)]) = *reinterpret_cast<const int4*>(&weights_this_layer[weights_row + weights_col * WIDTH]);
         __syncthreads();
 
         TCNN_PRAGMA_UNROLL
@@ -1578,7 +1578,7 @@ namespace ngp::mlp {
         __syncthreads();
 
         TCNN_PRAGMA_UNROLL
-        for (std::uint32_t i = 0u; i < N_ITERS; ++i) *(int4*) &output_threadblock[lane_offset + (row + 16u * i) * WIDTH] = *(int4*) &act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)];
+        for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&output_threadblock[lane_offset + (row + 16u * i) * WIDTH]) = *reinterpret_cast<const int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]);
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, network::detail::Activation ACTIVATION, bool INFERENCE>
@@ -1649,7 +1649,7 @@ namespace ngp::mlp {
 
         const dim3 blocks = {n_blocks, 1u, 1u};
 
-        check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) shmem_size));
+        check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shmem_size)));
         kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>
             <<<blocks, threads, shmem_size, stream>>>(output_activation, input.data(), weights.data(), output_intermediate.data(), output ? output->data() : nullptr, output ? output->stride() : 0u, batch_size, in_width, output ? output->rows() : 0u, n_hidden_layers, input.layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major, output && output->layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major);
     }
@@ -1779,7 +1779,7 @@ namespace ngp::mlp {
         const std::uint32_t split_k_factor                = batch_size / std::min(1u << 12u, batch_size);
         const legacy::GPUMatrixDynamic<T>& tmp_dL_doutput = output_activation == network::detail::Activation::None ? dL_doutput : scratch.backward_output;
 
-        auto dynamic_view = [](auto& matrix) { return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<decltype(matrix)>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()}; };
+        auto dynamic_view = []<typename T0>(T0& matrix) { return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<T0>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()}; };
 
         std::uint32_t tmp_idx          = n_hidden_matmuls;
         std::uint32_t backward_tmp_idx = 0u;
@@ -2034,14 +2034,14 @@ namespace ngp::network::detail {
         aux_stream = nullptr;
     }
 
-    SyncedStreamReservation& SyncedStreamReservation::operator=(SyncedStreamReservation&& other) {
+    SyncedStreamReservation& SyncedStreamReservation::operator=(SyncedStreamReservation&& other) noexcept {
         std::swap(aux_stream_slot, other.aux_stream_slot);
         std::swap(aux_stream, other.aux_stream);
         std::swap(main_stream, other.main_stream);
         return *this;
     }
 
-    SyncedStreamReservation::SyncedStreamReservation(SyncedStreamReservation&& other) {
+    SyncedStreamReservation::SyncedStreamReservation(SyncedStreamReservation&& other) noexcept {
         *this = std::move(other);
     }
 
@@ -2405,7 +2405,7 @@ namespace ngp {
         legacy::math::vec3 pos;
 
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS) {
-            const float dt = MIN_CONE_STEPSIZE;
+            constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
                 ++j;
                 t += dt;
@@ -2431,7 +2431,7 @@ namespace ngp {
         t                                   = startt;
         j                                   = 0u;
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
-            const float dt = MIN_CONE_STEPSIZE;
+            constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
                 coords_out(j)->set(warp_position(pos, aabb), warped_dir, dt);
                 ++j;
@@ -2577,7 +2577,7 @@ namespace ngp {
         std::uint32_t numsteps = 0u;
         legacy::math::vec3 pos;
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && numsteps < NERF_STEPS) {
-            const float dt = MIN_CONE_STEPSIZE;
+            constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
                 ++numsteps;
                 t += dt;
@@ -2603,7 +2603,7 @@ namespace ngp {
 
         std::uint32_t j = 0u;
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
-            const float dt = MIN_CONE_STEPSIZE;
+            constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
                 coords_out(j)->set(warp_position(pos, aabb), warped_dir, dt);
                 ++j;
@@ -2776,7 +2776,7 @@ namespace ngp {
             ngp::network::extract_rgb<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(rgb_elements, scratch.dL_drgb.m(), dL_doutput.m(), dL_doutput.data(), scratch.dL_drgb.data());
         }
 
-        const legacy::GPUMatrixDynamic<__half> rgb_output{(__half*) output.data(), current_model.rgb_network.padded_output_width, batch_size, output.layout()};
+        const legacy::GPUMatrixDynamic<__half> rgb_output{reinterpret_cast<__half*>(output.data()), current_model.rgb_network.padded_output_width, batch_size, output.layout()};
         current_model.rgb_network.backward(stream, scratch.rgb_network, scratch.rgb_network_input, rgb_output, scratch.dL_drgb, &scratch.dL_drgb_input, model_gradient_mode);
 
         auto dL_ddensity_output = scratch.dL_drgb_input.slice_rows(0u, current_model.density_network.padded_output_width);
@@ -2789,7 +2789,7 @@ namespace ngp {
             current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, &scratch.dL_ddensity_input, model_gradient_mode);
             std::visit([&](auto& impl) { impl.backward(stream, input.slice_rows(0u, current_model.layout.pos_input_width), scratch.dL_ddensity_input, model_gradient_mode); }, current_model.pos_encoding);
         } else {
-            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, (legacy::GPUMatrixDynamic<__half>*) nullptr, model_gradient_mode);
+            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, nullptr, model_gradient_mode);
         }
     }
 
