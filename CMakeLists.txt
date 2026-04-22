@@ -97,9 +97,9 @@ target_sources(
         PRIVATE
         instant-ngp.cpp
         instant-ngp.cu
-        network.cu
         PUBLIC
         instant-ngp.h
+        common.cuh
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
 target_compile_definitions(

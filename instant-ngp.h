@@ -11,21 +11,59 @@
 
 namespace ngp {
 
-    namespace network {
-        template <typename T>
-        struct TrainerState;
-    } // namespace network
-
-    class InstantNGP final {
-    public:
-        enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
-        enum class GridStorage { Hash, Dense, Tiled };
+    namespace instant_ngp_detail {
 
         struct GpuFrame final {
             const std::uint8_t* pixels     = nullptr;
             legacy::math::ivec2 resolution = {};
             float focal_length             = 0.0f;
             legacy::math::mat4x3 camera    = {};
+        };
+
+        struct Ray final {
+            legacy::math::vec3 o = {};
+            legacy::math::vec3 d = {};
+
+            __device__ bool is_valid() const {
+                return d != legacy::math::vec3(0.0f);
+            }
+        };
+
+    } // namespace instant_ngp_detail
+
+    class InstantNGP final {
+    public:
+        enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
+        enum class GridStorage { Hash, Dense, Tiled };
+
+        struct NetworkConfig final {
+            struct HashGridConfig final {
+                std::uint32_t n_levels               = 8u;
+                std::uint32_t n_features_per_level   = 4u;
+                std::uint32_t log2_hashmap_size      = 19u;
+                std::uint32_t base_resolution        = 16u;
+                std::optional<float> per_level_scale = {};
+                bool stochastic_interpolation        = false;
+                GridStorage storage                  = GridStorage::Hash;
+            } encoding = {};
+
+            struct DirectionEncodingConfig final {
+                std::uint32_t sh_degree = 4u;
+            } direction_encoding = {};
+
+            struct FullyFusedMlpConfig final {
+                std::uint32_t n_hidden_layers         = 1u;
+                ActivationMode activation             = ActivationMode::ReLU;
+                ActivationMode output_activation      = ActivationMode::None;
+            } density_network = {}, rgb_network = {};
+
+            struct AdamConfig final {
+                float learning_rate = 1e-2f;
+                float beta1         = 0.9f;
+                float beta2         = 0.99f;
+                float epsilon       = 1e-15f;
+                float l2_reg        = 1e-6f;
+            } optimizer = {};
         };
 
         struct InferenceCamera final {
@@ -68,10 +106,17 @@ namespace ngp {
         };
 
         struct InferenceResult final {
-            std::uint32_t width = 0u;
+            std::uint32_t width  = 0u;
             std::uint32_t height = 0u;
-            float render_ms = 0.0f;
+            float render_ms      = 0.0f;
         };
+
+        explicit InstantNGP(const NetworkConfig& network_config);
+        ~InstantNGP() noexcept = default;
+        InstantNGP(const InstantNGP&)            = delete;
+        InstantNGP& operator=(const InstantNGP&) = delete;
+        InstantNGP(InstantNGP&& other) noexcept  = default;
+        InstantNGP& operator=(InstantNGP&& other) noexcept = default;
 
         void load_dataset(const std::filesystem::path& dataset_path);
         [[nodiscard]] auto train(std::int32_t iters) -> TrainResult;
@@ -79,169 +124,229 @@ namespace ngp {
         [[nodiscard]] auto test(const std::filesystem::path& report_path) -> TestResult;
         [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult;
 
-        struct NetworkConfig {
-            struct HashGridConfig {
-                uint32_t n_levels             = 8;
-                uint32_t n_features_per_level = 4;
-                uint32_t log2_hashmap_size    = 19;
-                uint32_t base_resolution      = 16;
-                std::optional<float> per_level_scale;
-                bool stochastic_interpolation = false;
-                GridStorage storage           = GridStorage::Hash;
-            } encoding;
-
-            struct DirectionEncodingConfig {
-                uint32_t sh_degree = 4;
-            } direction_encoding;
-
-            struct FullyFusedMlpConfig {
-                uint32_t n_hidden_layers         = 1;
-                ActivationMode activation        = ActivationMode::ReLU;
-                ActivationMode output_activation = ActivationMode::None;
-            } density_network, rgb_network;
-
-            struct AdamConfig {
-                float learning_rate = 1e-2f;
-                float beta1         = 0.9f;
-                float beta2         = 0.99f;
-                float epsilon       = 1e-15f;
-                float l2_reg        = 1e-6f;
-            } optimizer;
-        };
-
-        explicit InstantNGP(const NetworkConfig& network_config);
-        ~InstantNGP() noexcept;
-        InstantNGP(const InstantNGP&)            = delete;
-        InstantNGP& operator=(const InstantNGP&) = delete;
-        InstantNGP(InstantNGP&& other) noexcept;
-        InstantNGP& operator=(InstantNGP&& other) noexcept;
-
     private:
-        // These markers describe steady-state runtime behavior, not C++ constness.
-        // runtime-* covers train/validation/stats execution after setup is complete.
-        // setup-only covers constructor/load_dataset staging that steady-state runtime does not touch.
-        // Owning handles are classified by the mutability of the state they own.
-        struct Dataset final {
-            struct CPU final {
-                struct Frame final {
-                    std::vector<std::uint8_t> rgba             = {}; // runtime-immutable
-                    std::uint32_t width                        = 0; // runtime-immutable
-                    std::uint32_t height                       = 0; // runtime-immutable
-                    float focal_length_x                       = 0.0f; // runtime-immutable
-                    float focal_length_y                       = 0.0f; // runtime-immutable
-                    std::array<float, 16> transform_matrix_4x4 = {}; // runtime-immutable
-                };
-
-                std::vector<Frame> train      = {}; // setup-only
-                std::vector<Frame> validation = {}; // runtime-immutable
-                std::vector<Frame> test       = {}; // runtime-immutable
-            };
-
-            struct GPU final {
-                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {}; // runtime-immutable
-                legacy::GpuBuffer<GpuFrame> frames                  = {}; // runtime-immutable
-            };
-
-            CPU cpu = {}; // runtime-immutable
-            GPU gpu = {}; // runtime-immutable
+        enum class GradientMode {
+            Ignore,
+            Overwrite,
+            Accumulate,
         };
+
+        void initialize_network_state();
+        void set_model_params(__half* params_ptr, __half* gradients_ptr);
+        void initialize_model_params(legacy::math::pcg32& rng, float* params_full_precision, float scale = 1.0f);
+        [[nodiscard]] auto total_parameter_count() const -> std::size_t;
+        [[nodiscard]] auto matrix_parameter_count() const -> std::uint32_t;
+        [[nodiscard]] auto model_input_width() const -> std::uint32_t;
+        [[nodiscard]] auto model_padded_output_width() const -> std::uint32_t;
+        void prepare_model_scratch(std::uint32_t batch_size, legacy::MatrixLayout output_layout);
+        void density(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
+        void inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
+        void forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>* output);
+        void backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<__half>& output, const legacy::GPUMatrixDynamic<__half>& dL_doutput, GradientMode gradient_mode = GradientMode::Ignore);
+
+        struct ModelState;
+        struct ModelScratch;
+        struct OptimizerState;
 
         struct TrainPlan final {
-            struct NetworkStage {
-                uint32_t n_pos_dims               = 0; // runtime-immutable
-                uint32_t n_dir_dims               = 0; // runtime-immutable
-                uint32_t dir_offset               = 0; // runtime-immutable
-                uint32_t density_alignment        = 0; // runtime-immutable
-                uint32_t density_input_dims       = 0; // runtime-immutable
-                uint32_t density_output_dims      = 0; // runtime-immutable
-                uint32_t dir_encoding_output_dims = 0; // runtime-immutable
-                uint32_t rgb_alignment            = 0; // runtime-immutable
-                uint32_t rgb_input_dims           = 0; // runtime-immutable
-                uint32_t rgb_output_dims          = 3; // runtime-immutable
-            } network = {}; // runtime-immutable
+            struct NetworkStage final {
+                std::uint32_t n_pos_dims               = 0u;
+                std::uint32_t n_dir_dims               = 0u;
+                std::uint32_t dir_offset               = 0u;
+                std::uint32_t density_alignment        = 0u;
+                std::uint32_t density_input_dims       = 0u;
+                std::uint32_t density_output_dims      = 0u;
+                std::uint32_t dir_encoding_output_dims = 0u;
+                std::uint32_t rgb_alignment            = 0u;
+                std::uint32_t rgb_input_dims           = 0u;
+                std::uint32_t rgb_output_dims          = 3u;
+            } network = {};
 
-            struct TrainingStage {
-                uint32_t batch_size          = 0; // runtime-immutable
-                uint32_t floats_per_coord    = 0; // runtime-immutable
-                uint32_t padded_output_width = 0; // runtime-immutable
-                uint32_t max_samples         = 0; // runtime-immutable
-            } training = {}; // runtime-immutable
+            struct TrainingStage final {
+                std::uint32_t batch_size          = 0u;
+                std::uint32_t floats_per_coord    = 0u;
+                std::uint32_t padded_output_width = 0u;
+                std::uint32_t max_samples         = 0u;
+            } training = {};
 
-            struct TrainingPrepStage {
-                uint32_t warmup_steps              = 256; // runtime-immutable
-                uint32_t skip_growth_interval      = 16; // runtime-immutable
-                uint32_t max_skip                  = 16; // runtime-immutable
-                uint32_t uniform_samples_warmup    = 0; // runtime-immutable
-                uint32_t uniform_samples_steady    = 0; // runtime-immutable
-                uint32_t nonuniform_samples_steady = 0; // runtime-immutable
-            } prep = {}; // runtime-immutable
+            struct TrainingPrepStage final {
+                std::uint32_t warmup_steps              = 256u;
+                std::uint32_t skip_growth_interval      = 16u;
+                std::uint32_t max_skip                  = 16u;
+                std::uint32_t uniform_samples_warmup    = 0u;
+                std::uint32_t uniform_samples_steady    = 0u;
+                std::uint32_t nonuniform_samples_steady = 0u;
+            } prep = {};
 
-            struct DensityGridStage {
-                uint32_t padded_output_width = 0; // runtime-immutable
-                uint32_t query_batch_size    = 0; // runtime-immutable
-                uint32_t n_elements          = 0; // runtime-immutable
-            } density_grid = {}; // runtime-immutable
+            struct DensityGridStage final {
+                std::uint32_t padded_output_width = 0u;
+                std::uint32_t query_batch_size    = 0u;
+                std::uint32_t n_elements          = 0u;
+            } density_grid = {};
 
-            struct ValidationStage {
-                uint32_t tile_rays           = 4096; // runtime-immutable
-                uint32_t max_samples_per_ray = 1024; // runtime-immutable
-                uint32_t floats_per_coord    = 0; // runtime-immutable
-                uint32_t padded_output_width = 0; // runtime-immutable
-                uint32_t max_samples         = 0; // runtime-immutable
-            } validation = {}; // runtime-immutable
+            struct ValidationStage final {
+                std::uint32_t tile_rays           = 4096u;
+                std::uint32_t max_samples_per_ray = 1024u;
+                std::uint32_t floats_per_coord    = 0u;
+                std::uint32_t padded_output_width = 0u;
+                std::uint32_t max_samples         = 0u;
+            } validation = {};
         };
 
-        struct TrainCounters final {
-            legacy::GpuBuffer<std::uint32_t> numsteps_counter           = {}; // runtime-mutable
-            legacy::GpuBuffer<std::uint32_t> numsteps_counter_compacted = {}; // runtime-mutable
-            legacy::GpuBuffer<float> loss                               = {}; // runtime-mutable
-
-            std::uint32_t rays_per_batch                        = 1u << 12; // runtime-mutable
-            std::uint32_t n_rays_total                          = 0u; // runtime-mutable
-            std::uint32_t measured_batch_size                   = 0u; // runtime-mutable
-            std::uint32_t measured_batch_size_before_compaction = 0u; // runtime-mutable
+        struct ConfigState final {
+            NetworkConfig network = {};
+            TrainPlan plan        = {};
+            std::uint32_t seed    = 1337u;
         };
 
-        struct Spec final {
-            NetworkConfig network_config = {}; // runtime-immutable
-            TrainPlan plan               = {}; // runtime-immutable
-            std::uint32_t seed           = 1337u; // setup-only
+        struct DatasetState final {
+            struct HostData final {
+                struct Frame final {
+                    std::vector<std::uint8_t> rgba              = {};
+                    std::uint32_t width                         = 0u;
+                    std::uint32_t height                        = 0u;
+                    float focal_length_x                        = 0.0f;
+                    float focal_length_y                        = 0.0f;
+                    std::array<float, 16u> transform_matrix_4x4 = {};
+                };
+
+                std::vector<Frame> train      = {};
+                std::vector<Frame> validation = {};
+                std::vector<Frame> test       = {};
+            } host = {};
+
+            struct DeviceData final {
+                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
+                legacy::GpuBuffer<instant_ngp_detail::GpuFrame> frames = {};
+            } device = {};
         };
 
-        struct SamplerState final {
+        struct SamplingState final {
             struct DensityGrid final {
-                legacy::GpuBuffer<float> values                = {}; // runtime-mutable
-                legacy::GpuBuffer<std::uint8_t> occupancy_bits = {}; // runtime-mutable
-                legacy::GpuBuffer<float> reduction_workspace   = {}; // runtime-mutable
-                std::uint32_t ema_step                         = 0u; // runtime-mutable
-                float ema_decay                                = 0.95f; // runtime-immutable
-            } density = {}; // runtime-mutable
+                legacy::GpuBuffer<float> values              = {};
+                legacy::GpuBuffer<std::uint8_t> occupancy    = {};
+                legacy::GpuBuffer<float> reduction           = {};
+                std::uint32_t ema_step                       = 0u;
+                float ema_decay                              = 0.95f;
+            } density = {};
 
-            legacy::BoundingBox aabb        = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)}; // runtime-immutable
-            bool snap_to_pixel_centers      = true; // runtime-immutable
-            float near_distance             = 0.1f; // runtime-immutable
-            legacy::math::pcg32 density_rng = {}; // runtime-mutable
+            struct UpdateWorkspace final {
+                legacy::GpuBuffer<char> arena           = {};
+                legacy::NerfPosition* positions         = nullptr;
+                std::uint32_t* indices                 = nullptr;
+                float* density_scratch                 = nullptr;
+                __half* mlp_out                        = nullptr;
+            } update = {};
+
+            legacy::BoundingBox aabb  = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
+            bool snap_to_pixel_centers = true;
+            float near_distance        = 0.1f;
+            legacy::math::pcg32 density_rng = {};
         };
 
         struct TrainingState final {
-            TrainCounters counters  = {}; // runtime-mutable
-            legacy::math::pcg32 rng = {}; // runtime-mutable
-            std::uint32_t step      = 0u; // runtime-mutable
-            float last_prep_ms      = 0.0f; // runtime-mutable
-            float last_train_ms     = 0.0f; // runtime-mutable
-            float last_loss         = 0.0f; // runtime-mutable
+            struct Counters final {
+                legacy::GpuBuffer<std::uint32_t> numsteps_counter           = {};
+                legacy::GpuBuffer<std::uint32_t> numsteps_counter_compacted = {};
+                legacy::GpuBuffer<float> loss                               = {};
+
+                std::uint32_t rays_per_batch                        = 1u << 12;
+                std::uint32_t n_rays_total                          = 0u;
+                std::uint32_t measured_batch_size                   = 0u;
+                std::uint32_t measured_batch_size_before_compaction = 0u;
+            } counters = {};
+
+            struct StepWorkspace final {
+                legacy::GpuBuffer<char> arena                   = {};
+                std::uint32_t* ray_indices                      = nullptr;
+                void* rays_unnormalized                         = nullptr;
+                std::uint32_t* numsteps                         = nullptr;
+                float* coords                                   = nullptr;
+                __half* mlp_out                                 = nullptr;
+                __half* dloss_dmlp_out                          = nullptr;
+                float* coords_compacted                         = nullptr;
+                std::uint32_t* ray_counter                      = nullptr;
+                std::uint32_t max_samples                       = 0u;
+                std::uint32_t max_inference                     = 0u;
+                std::uint32_t floats_per_coord                  = 0u;
+                std::uint32_t padded_output_width               = 0u;
+                std::uint32_t n_rays_total                      = 0u;
+                legacy::GPUMatrixDynamic<float> coords_matrix           = {};
+                legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
+                legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
+                legacy::GPUMatrixDynamic<__half> gradient_matrix        = {};
+                legacy::GPUMatrixDynamic<__half> compacted_output       = {};
+            } workspace = {};
+
+            legacy::GpuBuffer<float> loss_reduction = {};
+            legacy::math::pcg32 rng                 = {};
+            std::uint32_t step                      = 0u;
+            float last_prep_ms                      = 0.0f;
+            float last_train_ms                     = 0.0f;
+            float last_loss                         = 0.0f;
         };
 
         struct DeviceState final {
-            std::unique_ptr<network::TrainerState<__half>, void (*)(network::TrainerState<__half>*)> trainer = {nullptr, nullptr}; // runtime-mutable
-            cudaStream_t stream                                                                              = {}; // runtime-immutable
+            DeviceState() = default;
+            ~DeviceState() noexcept;
+            DeviceState(const DeviceState&)            = delete;
+            DeviceState& operator=(const DeviceState&) = delete;
+            DeviceState(DeviceState&& other) noexcept;
+            DeviceState& operator=(DeviceState&& other) noexcept;
+
+            cudaStream_t stream = {};
         };
 
-        Spec spec              = {}; // runtime-immutable
-        Dataset dataset        = {}; // runtime-immutable
-        SamplerState sampler   = {}; // runtime-mutable
-        TrainingState training = {}; // runtime-mutable
-        DeviceState device     = {}; // runtime-mutable
+        struct NetworkState final {
+            struct ParameterBlock final {
+                legacy::GpuBuffer<char> buffer = {};
+                float* full_precision          = nullptr;
+                __half* values                 = nullptr;
+                __half* gradients              = nullptr;
+            } parameters = {};
+
+            NetworkState() = default;
+            ~NetworkState() noexcept;
+            NetworkState(const NetworkState&)            = delete;
+            NetworkState& operator=(const NetworkState&) = delete;
+            NetworkState(NetworkState&& other) noexcept;
+            NetworkState& operator=(NetworkState&& other) noexcept;
+
+            std::unique_ptr<ModelState, void (*)(ModelState*)> definition = {nullptr, nullptr};
+            std::unique_ptr<ModelScratch, void (*)(ModelScratch*)> scratch = {nullptr, nullptr};
+            std::unique_ptr<OptimizerState, void (*)(OptimizerState*)> optimizer = {nullptr, nullptr};
+            legacy::GraphCaptureState graph_capture = {};
+        };
+
+        struct RenderState final {
+            struct Workspace final {
+                std::uint32_t total_pixels        = 0u;
+                std::uint32_t padded_output_width = 0u;
+                std::uint32_t floats_per_coord    = 0u;
+                std::uint32_t max_samples         = 0u;
+                legacy::GpuBuffer<legacy::math::vec3> rendered = {};
+                legacy::GpuBuffer<std::uint32_t> tile_numsteps = {};
+                legacy::GpuBuffer<float> tile_coords           = {};
+                legacy::GpuBuffer<__half> tile_mlp_out         = {};
+                legacy::GpuBuffer<std::uint32_t> sample_counter   = {};
+                legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
+            } workspace = {};
+
+            instant_ngp_detail::GpuFrame frame = {};
+            std::vector<legacy::math::vec3> rendered_host = {};
+            std::vector<std::uint8_t> png_rgb             = {};
+            std::uint32_t used_samples                    = 0u;
+            std::uint32_t overflowed_rays                 = 0u;
+            legacy::math::vec3 background                 = legacy::math::vec3(1.0f);
+        };
+
+        ConfigState config     = {};
+        DatasetState dataset   = {};
+        SamplingState sampling = {};
+        TrainingState training = {};
+        mutable RenderState render = {};
+        DeviceState device     = {};
+        NetworkState network   = {};
     };
 
 } // namespace ngp

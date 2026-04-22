@@ -17,11 +17,11 @@ namespace ngp {
         if (!std::filesystem::exists(dataset_path)) throw std::runtime_error{std::format("Dataset path does not exist: '{}'.", dataset_path.string())};
         if (!std::filesystem::is_directory(dataset_path)) throw std::runtime_error{std::format("Dataset path must be a directory: '{}'.", dataset_path.string())};
 
-        Dataset loaded_dataset{};
-        const std::array<std::pair<std::string_view, std::vector<Dataset::CPU::Frame>*>, 3> splits{
-            std::pair{"transforms_train.json", &loaded_dataset.cpu.train},
-            std::pair{"transforms_val.json", &loaded_dataset.cpu.validation},
-            std::pair{"transforms_test.json", &loaded_dataset.cpu.test},
+        DatasetState loaded_dataset{};
+        const std::array<std::pair<std::string_view, std::vector<DatasetState::HostData::Frame>*>, 3> splits{
+            std::pair{"transforms_train.json", &loaded_dataset.host.train},
+            std::pair{"transforms_val.json", &loaded_dataset.host.validation},
+            std::pair{"transforms_test.json", &loaded_dataset.host.test},
         };
 
         for (const auto& [file_name, frames] : splits) {
@@ -69,7 +69,7 @@ namespace ngp {
                 const nlohmann::json& transform_matrix = frame_json.at("transform_matrix");
                 if (!transform_matrix.is_array() || transform_matrix.size() != 4) throw std::runtime_error{std::format("Invalid 'transform_matrix' in '{}', frame {}.", json_path.string(), frame_index)};
 
-                Dataset::CPU::Frame& frame = (*frames)[frame_index];
+                DatasetState::HostData::Frame& frame = (*frames)[frame_index];
                 frame.rgba.assign(raw_pixels.get(), raw_pixels.get() + rgba_size);
                 frame.width          = static_cast<std::uint32_t>(width);
                 frame.height         = static_cast<std::uint32_t>(height);
@@ -89,13 +89,13 @@ namespace ngp {
             }
         }
 
-        if (loaded_dataset.cpu.train.empty()) throw std::runtime_error{"load_dataset requires at least one training frame after parsing the dataset."};
+        if (loaded_dataset.host.train.empty()) throw std::runtime_error{"load_dataset requires at least one training frame after parsing the dataset."};
 
-        loaded_dataset.gpu.pixels.resize(loaded_dataset.cpu.train.size());
-        std::vector<GpuFrame> uploaded_frames(loaded_dataset.cpu.train.size());
+        loaded_dataset.device.pixels.resize(loaded_dataset.host.train.size());
+        std::vector<instant_ngp_detail::GpuFrame> uploaded_frames(loaded_dataset.host.train.size());
 
-        for (std::size_t frame_index = 0; frame_index < loaded_dataset.cpu.train.size(); ++frame_index) {
-            const Dataset::CPU::Frame& source_frame = loaded_dataset.cpu.train[frame_index];
+        for (std::size_t frame_index = 0; frame_index < loaded_dataset.host.train.size(); ++frame_index) {
+            const DatasetState::HostData::Frame& source_frame = loaded_dataset.host.train[frame_index];
             if (source_frame.width == 0 || source_frame.height == 0) throw std::runtime_error{"load_dataset encountered a training frame with zero resolution during upload staging."};
             if (!std::isfinite(source_frame.focal_length_x) || source_frame.focal_length_x <= 0.0f) throw std::runtime_error{"load_dataset encountered a training frame with an invalid focal_length_x during upload staging."};
             if (!std::isfinite(source_frame.focal_length_y) || source_frame.focal_length_y <= 0.0f) throw std::runtime_error{"load_dataset encountered a training frame with an invalid focal_length_y during upload staging."};
@@ -107,11 +107,11 @@ namespace ngp {
             const std::size_t expected_rgba_size = static_cast<std::size_t>(source_frame.width) * static_cast<std::size_t>(source_frame.height) * 4ull;
             if (source_frame.rgba.size() != expected_rgba_size) throw std::runtime_error{"load_dataset encountered a training frame whose RGBA byte count no longer matches width * height * 4 during upload staging."};
 
-            legacy::GpuBuffer<std::uint8_t>& pixel_buffer = loaded_dataset.gpu.pixels[frame_index];
+            legacy::GpuBuffer<std::uint8_t>& pixel_buffer = loaded_dataset.device.pixels[frame_index];
             pixel_buffer.resize(source_frame.rgba.size());
             pixel_buffer.copy_from_host(source_frame.rgba);
 
-            GpuFrame& target_frame  = uploaded_frames[frame_index];
+            instant_ngp_detail::GpuFrame& target_frame = uploaded_frames[frame_index];
             target_frame.pixels     = pixel_buffer.data();
             target_frame.resolution = legacy::math::ivec2{
                 static_cast<int>(source_frame.width),
@@ -132,9 +132,9 @@ namespace ngp {
             target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 2, camera_row0);
         }
 
-        loaded_dataset.gpu.frames.resize(uploaded_frames.size());
-        loaded_dataset.gpu.frames.copy_from_host(uploaded_frames);
+        loaded_dataset.device.frames.resize(uploaded_frames.size());
+        loaded_dataset.device.frames.copy_from_host(uploaded_frames);
         dataset = std::move(loaded_dataset);
-        std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", dataset.cpu.train.size(), dataset.cpu.validation.size(), dataset.cpu.test.size());
+        std::print("Loaded dataset with {} training frames, {} validation frames, and {} test frames.\n", dataset.host.train.size(), dataset.host.validation.size(), dataset.host.test.size());
     }
 } // namespace ngp
