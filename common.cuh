@@ -31,8 +31,8 @@
 
 namespace ngp::legacy {
 
-    inline constexpr std::uint32_t NERF_GRIDSIZE      = 128u;
-    inline constexpr std::uint32_t NERF_GRID_N_CELLS  = NERF_GRIDSIZE * NERF_GRIDSIZE * NERF_GRIDSIZE;
+    inline constexpr std::uint32_t NERF_GRIDSIZE     = 128u;
+    inline constexpr std::uint32_t NERF_GRID_N_CELLS = NERF_GRIDSIZE * NERF_GRIDSIZE * NERF_GRIDSIZE;
 
     namespace math {
 #define PCG32_DEFAULT_STATE  0x853c49e6748fea9bULL
@@ -855,6 +855,12 @@ namespace ngp::legacy {
         using mat4x3 = tmat<float, 4, 3>;
         using mat3   = mat3x3;
     } // namespace math
+
+    struct Ray final {
+        math::vec3 o = {};
+        math::vec3 d = {};
+    };
+
     template <typename T>
     T next_multiple(T val, T divisor) {
         return ((val + divisor - 1) / divisor) * divisor;

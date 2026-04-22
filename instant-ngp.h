@@ -8,30 +8,6 @@
 #include <vector>
 
 namespace ngp {
-
-    namespace optimizer {
-
-        template <typename T>
-        struct AdamOptimizer;
-
-    } // namespace optimizer
-
-    namespace instant_ngp_detail {
-
-        struct GpuFrame final {
-            const std::uint8_t* pixels     = nullptr;
-            legacy::math::ivec2 resolution = {};
-            float focal_length             = 0.0f;
-            legacy::math::mat4x3 camera    = {};
-        };
-
-        struct Ray final {
-            legacy::math::vec3 o = {};
-            legacy::math::vec3 d = {};
-        };
-
-    } // namespace instant_ngp_detail
-
     class InstantNGP final {
     public:
         enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
@@ -112,6 +88,33 @@ namespace ngp {
             float render_ms      = 0.0f;
         };
 
+        struct DatasetState final {
+            struct HostData final {
+                struct Frame final {
+                    std::vector<std::uint8_t> rgba = {};
+                    legacy::math::ivec2 resolution = {};
+                    float focal_length             = 0.0f;
+                    legacy::math::mat4x3 camera    = {};
+                };
+
+                std::vector<Frame> train      = {};
+                std::vector<Frame> validation = {};
+                std::vector<Frame> test       = {};
+            } host = {};
+
+            struct DeviceData final {
+                struct GpuFrame final {
+                    const std::uint8_t* pixels     = nullptr;
+                    legacy::math::ivec2 resolution = {};
+                    float focal_length             = 0.0f;
+                    legacy::math::mat4x3 camera    = {};
+                };
+
+                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
+                legacy::GpuBuffer<GpuFrame> frames                  = {};
+            } device = {};
+        };
+
         explicit InstantNGP(const NetworkConfig& network_config);
         ~InstantNGP() noexcept;
         InstantNGP(const InstantNGP&)                      = delete;
@@ -125,6 +128,8 @@ namespace ngp {
         [[nodiscard]] auto test(const std::filesystem::path& report_path) -> TestResult;
         [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult;
 
+        DatasetState dataset = {};
+
     private:
         void density(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
         void inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
@@ -133,6 +138,7 @@ namespace ngp {
 
         struct ModelState;
         struct ModelScratch;
+        struct Optimizer;
 
         struct TrainPlan final {
             struct NetworkStage final {
@@ -177,26 +183,6 @@ namespace ngp {
                 std::uint32_t padded_output_width = 0u;
                 std::uint32_t max_samples         = 0u;
             } validation = {};
-        };
-
-        struct DatasetState final {
-            struct HostData final {
-                struct Frame final {
-                    std::vector<std::uint8_t> rgba = {};
-                    legacy::math::ivec2 resolution = {};
-                    float focal_length             = 0.0f;
-                    legacy::math::mat4x3 camera    = {};
-                };
-
-                std::vector<Frame> train      = {};
-                std::vector<Frame> validation = {};
-                std::vector<Frame> test       = {};
-            } host = {};
-
-            struct DeviceData final {
-                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels    = {};
-                legacy::GpuBuffer<instant_ngp_detail::GpuFrame> frames = {};
-            } device = {};
         };
 
         struct SamplingState final {
@@ -273,22 +259,21 @@ namespace ngp {
             legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
         };
 
-        NetworkConfig network_config                = {};
-        TrainPlan train_plan                        = {};
-        std::uint32_t seed                          = 1337u;
-        DatasetState dataset                        = {};
-        SamplingState sampling                      = {};
-        TrainingState training                      = {};
-        mutable RenderWorkspace render_workspace    = {};
-        cudaStream_t stream                         = {};
-        legacy::GpuBuffer<char> parameter_buffer    = {};
-        float* full_precision_params                = nullptr;
-        __half* network_params                      = nullptr;
-        __half* network_param_gradients             = nullptr;
-        ModelState* model                           = nullptr;
-        ModelScratch* model_scratch                 = nullptr;
-        optimizer::AdamOptimizer<__half>* optimizer = nullptr;
-        legacy::GraphCaptureState graph_capture     = {};
+        NetworkConfig network_config             = {};
+        TrainPlan train_plan                     = {};
+        std::uint32_t seed                       = 1337u;
+        SamplingState sampling                   = {};
+        TrainingState training                   = {};
+        mutable RenderWorkspace render_workspace = {};
+        cudaStream_t stream                      = {};
+        legacy::GpuBuffer<char> parameter_buffer = {};
+        float* full_precision_params             = nullptr;
+        __half* network_params                   = nullptr;
+        __half* network_param_gradients          = nullptr;
+        ModelState* model                        = nullptr;
+        ModelScratch* model_scratch              = nullptr;
+        Optimizer* optimizer                     = nullptr;
+        legacy::GraphCaptureState graph_capture  = {};
     };
 
 } // namespace ngp

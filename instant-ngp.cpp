@@ -98,7 +98,7 @@ namespace ngp {
         if (loaded_dataset.host.train.empty()) throw std::runtime_error{"load_dataset requires at least one training frame after parsing the dataset."};
 
         loaded_dataset.device.pixels.resize(loaded_dataset.host.train.size());
-        std::vector<instant_ngp_detail::GpuFrame> uploaded_frames(loaded_dataset.host.train.size());
+        std::vector<DatasetState::DeviceData::GpuFrame> uploaded_frames(loaded_dataset.host.train.size());
 
         for (std::size_t frame_index = 0; frame_index < loaded_dataset.host.train.size(); ++frame_index) {
             const DatasetState::HostData::Frame& source_frame = loaded_dataset.host.train[frame_index];
@@ -112,11 +112,11 @@ namespace ngp {
             pixel_buffer.resize(source_frame.rgba.size());
             pixel_buffer.copy_from_host(source_frame.rgba);
 
-            instant_ngp_detail::GpuFrame& target_frame = uploaded_frames[frame_index];
-            target_frame.pixels       = pixel_buffer.data();
-            target_frame.resolution   = source_frame.resolution;
-            target_frame.focal_length = source_frame.focal_length;
-            target_frame.camera       = source_frame.camera;
+            DatasetState::DeviceData::GpuFrame& target_frame = uploaded_frames[frame_index];
+            target_frame.pixels                                          = pixel_buffer.data();
+            target_frame.resolution                                      = source_frame.resolution;
+            target_frame.focal_length                                    = source_frame.focal_length;
+            target_frame.camera                                          = source_frame.camera;
         }
 
         loaded_dataset.device.frames.resize(uploaded_frames.size());
