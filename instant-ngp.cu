@@ -2432,7 +2432,7 @@ namespace ngp {
         const legacy::math::mat4x3 xform = frame.camera;
 
         instant_ngp_detail::Ray ray_unnormalized = uv_to_ray(0u, uv, resolution, focal_length, xform);
-        if (!ray_unnormalized.is_valid()) ray_unnormalized = {xform[3], xform[2]};
+        if (ray_unnormalized.d == legacy::math::vec3(0.0f)) ray_unnormalized = {xform[3], xform[2]};
 
         const legacy::math::vec3 ray_d_normalized = ngp::legacy::math::normalize(ray_unnormalized.d);
         legacy::math::vec2 tminmax                = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
@@ -2606,7 +2606,7 @@ namespace ngp {
         const legacy::math::mat4x3 xform     = frame.camera;
 
         instant_ngp_detail::Ray ray_unnormalized = uv_to_ray(0u, uv, resolution, frame.focal_length, xform);
-        if (!ray_unnormalized.is_valid()) return;
+        if (ray_unnormalized.d == legacy::math::vec3(0.0f)) return;
 
         const legacy::math::vec3 ray_d_normalized = ngp::legacy::math::normalize(ray_unnormalized.d);
         legacy::math::vec2 tminmax                = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
@@ -2692,16 +2692,10 @@ namespace ngp {
 
     struct InstantNGP::ModelState final {
         struct Layout final {
-            std::uint32_t pos_input_width      = 0u;
-            std::uint32_t pos_output_width     = 0u;
-            legacy::MatrixLayout pos_layout    = legacy::CM;
-            std::size_t pos_param_count        = 0u;
-            std::uint32_t dir_input_width      = 0u;
-            std::uint32_t dir_output_width     = 0u;
-            legacy::MatrixLayout dir_layout    = legacy::CM;
-            std::uint32_t density_output_width = 0u;
-            std::uint32_t rgb_output_width     = 0u;
-            std::uint32_t padded_output_width  = 0u;
+            std::uint32_t pos_input_width   = 0u;
+            std::uint32_t pos_output_width  = 0u;
+            legacy::MatrixLayout pos_layout = legacy::CM;
+            std::size_t pos_param_count     = 0u;
         };
 
         struct ParamLayout final {
@@ -2715,10 +2709,8 @@ namespace ngp {
         encoding::SphericalHarmonicsEncoding<__half> dir_encoding;
         mlp::FullyFusedMLP<__half, density_network_width> density_network;
         mlp::FullyFusedMLP<__half, rgb_network_width> rgb_network;
-        Layout layout                         = {};
-        std::uint32_t rgb_network_input_width = 0u;
-        std::uint32_t dir_offset              = 0u;
-        ParamLayout params                    = {};
+        Layout layout      = {};
+        ParamLayout params = {};
     };
 
     struct InstantNGP::ModelScratch final {
@@ -2733,44 +2725,40 @@ namespace ngp {
         mlp::FullyFusedMLP<__half, rgb_network_width>::Scratch rgb_network         = {};
     };
 
-    struct InstantNGP::OptimizerState final {
-        optimizer::AdamOptimizer<__half> impl = {};
-    };
-
     void InstantNGP::density(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const {
-        if (!network.definition) throw std::runtime_error{"Network model must be initialized before density inference."};
+        if (!model) throw std::runtime_error{"Network model must be initialized before density inference."};
         if (input.layout() != legacy::CM) throw std::runtime_error{"model density input must be in column major format."};
 
-        auto& model                    = *network.definition;
+        auto& current_model            = *model;
         const std::uint32_t batch_size = output.n();
-        legacy::GPUMatrixDynamic<__half> density_input{model.layout.pos_output_width, batch_size, stream, model.layout.pos_layout};
-        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, model.layout.pos_input_width), density_input); }, model.pos_encoding);
-        model.density_network.inference(stream, density_input, output);
+        legacy::GPUMatrixDynamic<__half> density_input{current_model.layout.pos_output_width, batch_size, stream, current_model.layout.pos_layout};
+        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, current_model.layout.pos_input_width), density_input); }, current_model.pos_encoding);
+        current_model.density_network.inference(stream, density_input, output);
     }
 
     void InstantNGP::inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const {
-        if (!network.definition) throw std::runtime_error{"Network model must be initialized before inference."};
+        if (!model) throw std::runtime_error{"Network model must be initialized before inference."};
 
-        auto& model                                   = *network.definition;
-        const std::uint32_t model_input_width         = model.dir_offset + model.layout.dir_input_width;
-        const std::uint32_t model_padded_output_width = model.layout.padded_output_width;
+        auto& current_model                           = *model;
+        const std::uint32_t model_input_width         = train_plan.network.dir_offset + current_model.dir_encoding.input_width;
+        const std::uint32_t model_padded_output_width = std::max(current_model.rgb_network.padded_output_width, 4u);
         legacy::check_or_throw(input.m() == model_input_width);
         legacy::check_or_throw(output.m() == model_padded_output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
 
         const std::uint32_t batch_size = input.n();
-        legacy::GPUMatrixDynamic<__half> density_input{model.layout.pos_output_width, batch_size, stream, model.layout.pos_layout};
-        legacy::GPUMatrixDynamic<__half> rgb_input{model.rgb_network_input_width, batch_size, stream, model.layout.dir_layout};
-        legacy::GPUMatrixDynamic<__half> density_output = rgb_input.slice_rows(0u, model.layout.density_output_width);
-        legacy::GPUMatrixDynamic<__half> rgb_output{output.data(), model.layout.rgb_output_width, batch_size, output.layout()};
+        legacy::GPUMatrixDynamic<__half> density_input{current_model.layout.pos_output_width, batch_size, stream, current_model.layout.pos_layout};
+        legacy::GPUMatrixDynamic<__half> rgb_input{current_model.rgb_network.input_width, batch_size, stream, current_model.dir_encoding.preferred_output_layout};
+        legacy::GPUMatrixDynamic<__half> density_output = rgb_input.slice_rows(0u, current_model.density_network.padded_output_width);
+        legacy::GPUMatrixDynamic<__half> rgb_output{output.data(), current_model.rgb_network.padded_output_width, batch_size, output.layout()};
 
-        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, model.layout.pos_input_width), density_input); }, model.pos_encoding);
-        model.density_network.inference(stream, density_input, density_output);
+        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, current_model.layout.pos_input_width), density_input); }, current_model.pos_encoding);
+        current_model.density_network.inference(stream, density_input, density_output);
 
-        auto dir_output = rgb_input.slice_rows(model.layout.density_output_width, model.layout.dir_output_width);
-        model.dir_encoding.encode(stream, input.slice_rows(model.dir_offset, model.layout.dir_input_width), dir_output);
-        model.rgb_network.inference(stream, rgb_input, rgb_output);
+        auto dir_output = rgb_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.padded_output_width);
+        current_model.dir_encoding.encode(stream, input.slice_rows(train_plan.network.dir_offset, current_model.dir_encoding.input_width), dir_output);
+        current_model.rgb_network.inference(stream, rgb_input, rgb_output);
 
         if (batch_size > 0u) {
             const std::uint32_t blocks = (batch_size + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
@@ -2779,41 +2767,41 @@ namespace ngp {
     }
 
     void InstantNGP::forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>* output) {
-        if (!network.definition || !network.scratch) throw std::runtime_error{"Network model must be initialized before forward."};
+        if (!model || !model_scratch) throw std::runtime_error{"Network model must be initialized before forward."};
 
-        auto& model                                   = *network.definition;
-        auto& scratch                                 = *network.scratch;
-        const std::uint32_t model_input_width         = model.dir_offset + model.layout.dir_input_width;
-        const std::uint32_t model_padded_output_width = model.layout.padded_output_width;
+        auto& current_model                           = *model;
+        auto& scratch                                 = *model_scratch;
+        const std::uint32_t model_input_width         = train_plan.network.dir_offset + current_model.dir_encoding.input_width;
+        const std::uint32_t model_padded_output_width = std::max(current_model.rgb_network.padded_output_width, 4u);
         legacy::check_or_throw(input.m() == model_input_width);
         legacy::check_or_throw(!output || output->m() == model_padded_output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
         legacy::check_or_throw(!output || input.n() == output->n());
 
         const std::uint32_t batch_size = input.n();
-        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, model.layout.pos_input_width), scratch.density_network_input); }, model.pos_encoding);
-        model.density_network.forward(stream, scratch.density_network_input, &scratch.density_network_output, scratch.density_network);
+        std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, current_model.layout.pos_input_width), scratch.density_network_input); }, current_model.pos_encoding);
+        current_model.density_network.forward(stream, scratch.density_network_input, &scratch.density_network_output, scratch.density_network);
 
-        auto dir_output = scratch.rgb_network_input.slice_rows(model.layout.density_output_width, model.layout.dir_output_width);
-        model.dir_encoding.encode(stream, input.slice_rows(model.dir_offset, model.layout.dir_input_width), dir_output);
+        auto dir_output = scratch.rgb_network_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.padded_output_width);
+        current_model.dir_encoding.encode(stream, input.slice_rows(train_plan.network.dir_offset, current_model.dir_encoding.input_width), dir_output);
 
-        if (output) scratch.rgb_network_output = ngp::legacy::GPUMatrixDynamic<__half>{output->data(), model.layout.rgb_output_width, batch_size, output->layout()};
-        model.rgb_network.forward(stream, scratch.rgb_network_input, output ? &scratch.rgb_network_output : nullptr, scratch.rgb_network);
+        if (output) scratch.rgb_network_output = ngp::legacy::GPUMatrixDynamic<__half>{output->data(), current_model.rgb_network.padded_output_width, batch_size, output->layout()};
+        current_model.rgb_network.forward(stream, scratch.rgb_network_input, output ? &scratch.rgb_network_output : nullptr, scratch.rgb_network);
 
         if (output && batch_size > 0u) {
             const std::uint32_t blocks = (batch_size + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            ngp::network::extract_density<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(batch_size, model.layout.dir_layout == legacy::AoS ? scratch.density_network_output.stride() : 1u, model_padded_output_width, scratch.density_network_output.data(), output->data() + 3u);
+            ngp::network::extract_density<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(batch_size, current_model.dir_encoding.preferred_output_layout == legacy::AoS ? scratch.density_network_output.stride() : 1u, model_padded_output_width, scratch.density_network_output.data(), output->data() + 3u);
         }
     }
 
     void InstantNGP::backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<__half>& output, const legacy::GPUMatrixDynamic<__half>& dL_doutput) {
-        if (!network.definition || !network.scratch) throw std::runtime_error{"Network model must be initialized before backward."};
+        if (!model || !model_scratch) throw std::runtime_error{"Network model must be initialized before backward."};
 
-        auto& model                                                 = *network.definition;
-        auto& scratch                                               = *network.scratch;
+        auto& current_model                                         = *model;
+        auto& scratch                                               = *model_scratch;
         constexpr network::detail::GradientMode model_gradient_mode = network::detail::GradientMode::Overwrite;
-        const std::uint32_t model_input_width                       = model.dir_offset + model.layout.dir_input_width;
-        const std::uint32_t model_padded_output_width               = model.layout.padded_output_width;
+        const std::uint32_t model_input_width                       = train_plan.network.dir_offset + current_model.dir_encoding.input_width;
+        const std::uint32_t model_padded_output_width               = std::max(current_model.rgb_network.padded_output_width, 4u);
         legacy::check_or_throw(input.m() == model_input_width);
         legacy::check_or_throw(output.m() == model_padded_output_width);
         legacy::check_or_throw(dL_doutput.m() == model_padded_output_width);
@@ -2830,20 +2818,20 @@ namespace ngp {
             ngp::network::extract_rgb<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(rgb_elements, scratch.dL_drgb.m(), dL_doutput.m(), dL_doutput.data(), scratch.dL_drgb.data());
         }
 
-        const legacy::GPUMatrixDynamic<__half> rgb_output{(__half*) output.data(), model.layout.rgb_output_width, batch_size, output.layout()};
-        model.rgb_network.backward(stream, scratch.rgb_network, scratch.rgb_network_input, rgb_output, scratch.dL_drgb, &scratch.dL_drgb_input, model_gradient_mode);
+        const legacy::GPUMatrixDynamic<__half> rgb_output{(__half*) output.data(), current_model.rgb_network.padded_output_width, batch_size, output.layout()};
+        current_model.rgb_network.backward(stream, scratch.rgb_network, scratch.rgb_network_input, rgb_output, scratch.dL_drgb, &scratch.dL_drgb_input, model_gradient_mode);
 
-        auto dL_ddensity_output = scratch.dL_drgb_input.slice_rows(0u, model.layout.density_output_width);
+        auto dL_ddensity_output = scratch.dL_drgb_input.slice_rows(0u, current_model.density_network.padded_output_width);
         if (batch_size > 0u) {
             const std::uint32_t blocks = (batch_size + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
             ngp::network::add_density_gradient<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(batch_size, dL_doutput.m(), dL_doutput.data(), dL_ddensity_output.layout() == legacy::RM ? 1u : dL_ddensity_output.stride(), dL_ddensity_output.data());
         }
 
-        if (model.layout.pos_param_count > 0u) {
-            model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, &scratch.dL_ddensity_input, model_gradient_mode);
-            std::visit([&](auto& impl) { impl.backward(stream, input.slice_rows(0u, model.layout.pos_input_width), scratch.dL_ddensity_input, model_gradient_mode); }, model.pos_encoding);
+        if (current_model.layout.pos_param_count > 0u) {
+            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, &scratch.dL_ddensity_input, model_gradient_mode);
+            std::visit([&](auto& impl) { impl.backward(stream, input.slice_rows(0u, current_model.layout.pos_input_width), scratch.dL_ddensity_input, model_gradient_mode); }, current_model.pos_encoding);
         } else {
-            model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, (legacy::GPUMatrixDynamic<__half>*) nullptr, model_gradient_mode);
+            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, (legacy::GPUMatrixDynamic<__half>*) nullptr, model_gradient_mode);
         }
     }
 
@@ -2887,7 +2875,7 @@ namespace ngp {
         training.rng         = legacy::math::pcg32{seed};
         sampling.density_rng = legacy::math::pcg32{training.rng.next_uint()};
         try {
-            network.definition = new ModelState{
+            model = new ModelState{
                 ngp::encoding::create_position_encoding<__half>(train_plan.network.n_pos_dims, this->network_config.encoding, train_plan.network.density_alignment),
                 ngp::encoding::create_direction_encoding<__half>(train_plan.network.n_dir_dims, this->network_config.direction_encoding, train_plan.network.rgb_alignment),
                 mlp::FullyFusedMLP<__half, density_network_width>{
@@ -2905,104 +2893,100 @@ namespace ngp {
                     network::detail::activation_from_config(this->network_config.rgb_network.output_activation),
                 },
                 {},
-                train_plan.network.rgb_input_dims,
-                train_plan.network.dir_offset,
-                {},
             };
-            network.scratch = new ModelScratch{};
-            network.optimizer = new OptimizerState{};
+            model_scratch = new ModelScratch{};
+            optimizer     = new ngp::optimizer::AdamOptimizer<__half>{};
 
-            auto& model = *network.definition;
-            model.layout.pos_input_width      = std::visit([](const auto& impl) { return impl.input_width; }, model.pos_encoding);
-            model.layout.pos_output_width     = std::visit([](const auto& impl) { return impl.padded_output_width; }, model.pos_encoding);
-            model.layout.pos_layout           = std::visit([](const auto& impl) { return impl.preferred_output_layout; }, model.pos_encoding);
-            model.layout.pos_param_count      = std::visit([](const auto& impl) { return impl.n_params; }, model.pos_encoding);
-            model.layout.dir_input_width      = model.dir_encoding.input_width;
-            model.layout.dir_output_width     = model.dir_encoding.padded_output_width;
-            model.layout.dir_layout           = model.dir_encoding.preferred_output_layout;
-            model.layout.density_output_width = model.density_network.padded_output_width;
-            model.layout.rgb_output_width     = model.rgb_network.padded_output_width;
-            model.layout.padded_output_width  = std::max(model.layout.rgb_output_width, 4u);
+            auto& current_model                   = *model;
+            current_model.layout.pos_input_width  = std::visit([](const auto& impl) { return impl.input_width; }, current_model.pos_encoding);
+            current_model.layout.pos_output_width = std::visit([](const auto& impl) { return impl.padded_output_width; }, current_model.pos_encoding);
+            current_model.layout.pos_layout       = std::visit([](const auto& impl) { return impl.preferred_output_layout; }, current_model.pos_encoding);
+            current_model.layout.pos_param_count  = std::visit([](const auto& impl) { return impl.n_params; }, current_model.pos_encoding);
 
-            model.params.density_network = 0u;
-            model.params.rgb_network     = model.params.density_network + model.density_network.n_params;
-            model.params.pos_encoding    = model.params.rgb_network + model.rgb_network.n_params;
-            model.params.total           = model.params.pos_encoding + std::visit([](const auto& impl) { return impl.n_params; }, model.pos_encoding);
+            current_model.params.density_network = 0u;
+            current_model.params.rgb_network     = current_model.params.density_network + current_model.density_network.n_params;
+            current_model.params.pos_encoding    = current_model.params.rgb_network + current_model.rgb_network.n_params;
+            current_model.params.total           = current_model.params.pos_encoding + std::visit([](const auto& impl) { return impl.n_params; }, current_model.pos_encoding);
 
-            network.optimizer->impl.beta1              = this->network_config.optimizer.beta1;
-            network.optimizer->impl.beta2              = this->network_config.optimizer.beta2;
-            network.optimizer->impl.epsilon            = this->network_config.optimizer.epsilon;
-            network.optimizer->impl.base_learning_rate = this->network_config.optimizer.learning_rate;
-            network.optimizer->impl.l2_reg             = this->network_config.optimizer.l2_reg;
-            const std::size_t param_count              = model.params.total;
-            network.optimizer->impl.allocate(static_cast<std::uint32_t>(param_count), static_cast<std::uint32_t>(model.params.pos_encoding));
+            optimizer->beta1              = this->network_config.optimizer.beta1;
+            optimizer->beta2              = this->network_config.optimizer.beta2;
+            optimizer->epsilon            = this->network_config.optimizer.epsilon;
+            optimizer->base_learning_rate = this->network_config.optimizer.learning_rate;
+            optimizer->l2_reg             = this->network_config.optimizer.l2_reg;
+            const std::size_t param_count = current_model.params.total;
+            optimizer->allocate(static_cast<std::uint32_t>(param_count), static_cast<std::uint32_t>(current_model.params.pos_encoding));
 
-            network.parameters.buffer.resize(sizeof(float) * param_count + sizeof(__half) * param_count * 2u);
-            network.parameters.buffer.memset(0);
-            network.parameters.full_precision = reinterpret_cast<float*>(network.parameters.buffer.data());
-            network.parameters.values         = reinterpret_cast<__half*>(network.parameters.buffer.data() + sizeof(float) * param_count);
-            network.parameters.gradients      = reinterpret_cast<__half*>(network.parameters.buffer.data() + sizeof(float) * param_count + sizeof(__half) * param_count);
+            parameter_buffer.resize(sizeof(float) * param_count + sizeof(__half) * param_count * 2u);
+            parameter_buffer.memset(0);
+            full_precision_params   = reinterpret_cast<float*>(parameter_buffer.data());
+            network_params          = reinterpret_cast<__half*>(parameter_buffer.data() + sizeof(float) * param_count);
+            network_param_gradients = reinterpret_cast<__half*>(parameter_buffer.data() + sizeof(float) * param_count + sizeof(__half) * param_count);
 
-            model.density_network.params     = network.parameters.values + model.params.density_network;
-            model.density_network.gradients  = network.parameters.gradients + model.params.density_network;
-            std::size_t density_param_offset = 0u;
-            for (std::size_t i = 0u; i < model.density_network.weight_matrices.size(); ++i) {
-                model.density_network.weight_matrices[i].set_data_unsafe(model.density_network.params + density_param_offset);
-                model.density_network.gradient_matrices[i].set_data_unsafe(model.density_network.gradients + density_param_offset);
-                density_param_offset += model.density_network.weight_matrices[i].n_elements();
+            current_model.density_network.params    = network_params + current_model.params.density_network;
+            current_model.density_network.gradients = network_param_gradients + current_model.params.density_network;
+            std::size_t density_param_offset        = 0u;
+            for (std::size_t i = 0u; i < current_model.density_network.weight_matrices.size(); ++i) {
+                current_model.density_network.weight_matrices[i].set_data_unsafe(current_model.density_network.params + density_param_offset);
+                current_model.density_network.gradient_matrices[i].set_data_unsafe(current_model.density_network.gradients + density_param_offset);
+                density_param_offset += current_model.density_network.weight_matrices[i].n_elements();
             }
 
-            model.rgb_network.params     = network.parameters.values + model.params.rgb_network;
-            model.rgb_network.gradients  = network.parameters.gradients + model.params.rgb_network;
-            std::size_t rgb_param_offset = 0u;
-            for (std::size_t i = 0u; i < model.rgb_network.weight_matrices.size(); ++i) {
-                model.rgb_network.weight_matrices[i].set_data_unsafe(model.rgb_network.params + rgb_param_offset);
-                model.rgb_network.gradient_matrices[i].set_data_unsafe(model.rgb_network.gradients + rgb_param_offset);
-                rgb_param_offset += model.rgb_network.weight_matrices[i].n_elements();
+            current_model.rgb_network.params    = network_params + current_model.params.rgb_network;
+            current_model.rgb_network.gradients = network_param_gradients + current_model.params.rgb_network;
+            std::size_t rgb_param_offset        = 0u;
+            for (std::size_t i = 0u; i < current_model.rgb_network.weight_matrices.size(); ++i) {
+                current_model.rgb_network.weight_matrices[i].set_data_unsafe(current_model.rgb_network.params + rgb_param_offset);
+                current_model.rgb_network.gradient_matrices[i].set_data_unsafe(current_model.rgb_network.gradients + rgb_param_offset);
+                rgb_param_offset += current_model.rgb_network.weight_matrices[i].n_elements();
             }
 
-            std::visit([&](auto& impl) {
-                impl.params    = network.parameters.values + model.params.pos_encoding;
-                impl.gradients = network.parameters.gradients + model.params.pos_encoding;
-            }, model.pos_encoding);
+            std::visit(
+                [&](auto& impl) {
+                    impl.params    = network_params + current_model.params.pos_encoding;
+                    impl.gradients = network_param_gradients + current_model.params.pos_encoding;
+                },
+                current_model.pos_encoding);
 
             legacy::math::pcg32 init_rng{seed};
-            model.density_network.initialize_params(init_rng, network.parameters.full_precision + model.params.density_network, 1.0f);
-            model.rgb_network.initialize_params(init_rng, network.parameters.full_precision + model.params.rgb_network, 1.0f);
-            std::visit([&](auto& impl) { impl.initialize_params(init_rng, network.parameters.full_precision + model.params.pos_encoding, 1.0f); }, model.pos_encoding);
+            current_model.density_network.initialize_params(init_rng, full_precision_params + current_model.params.density_network, 1.0f);
+            current_model.rgb_network.initialize_params(init_rng, full_precision_params + current_model.params.rgb_network, 1.0f);
+            std::visit([&](auto& impl) { impl.initialize_params(init_rng, full_precision_params + current_model.params.pos_encoding, 1.0f); }, current_model.pos_encoding);
             if (param_count > 0u) {
                 const std::uint32_t blocks = (static_cast<std::uint32_t>(param_count) + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                ngp::network::detail::cast<__half><<<blocks, network::detail::n_threads_linear, 0, nullptr>>>(static_cast<std::uint32_t>(param_count), network.parameters.full_precision, network.parameters.values);
+                ngp::network::detail::cast<__half><<<blocks, network::detail::n_threads_linear, 0, nullptr>>>(static_cast<std::uint32_t>(param_count), full_precision_params, network_params);
             }
 
             legacy::cuda_check(cudaDeviceSynchronize());
 
-            auto& scratch                  = *network.scratch;
+            auto& scratch                  = *model_scratch;
             const std::uint32_t batch_size = train_plan.training.batch_size;
-            scratch.density_network_input  = ngp::legacy::GPUMatrixDynamic<__half>{model.layout.pos_output_width, batch_size, stream, model.layout.pos_layout};
-            scratch.rgb_network_input      = ngp::legacy::GPUMatrixDynamic<__half>{model.rgb_network_input_width, batch_size, stream, model.layout.dir_layout};
-            scratch.density_network_output = scratch.rgb_network_input.slice_rows(0u, model.layout.density_output_width);
-            scratch.dL_drgb                = ngp::legacy::GPUMatrixDynamic<__half>{model.layout.rgb_output_width, batch_size, stream, legacy::CM};
-            scratch.dL_drgb_input          = ngp::legacy::GPUMatrixDynamic<__half>{model.rgb_network_input_width, batch_size, stream, model.layout.dir_layout};
-            if (model.layout.pos_param_count > 0u)
-                scratch.dL_ddensity_input = ngp::legacy::GPUMatrixDynamic<__half>{model.layout.pos_output_width, batch_size, stream, model.layout.pos_layout};
+            scratch.density_network_input  = ngp::legacy::GPUMatrixDynamic<__half>{current_model.layout.pos_output_width, batch_size, stream, current_model.layout.pos_layout};
+            scratch.rgb_network_input      = ngp::legacy::GPUMatrixDynamic<__half>{current_model.rgb_network.input_width, batch_size, stream, current_model.dir_encoding.preferred_output_layout};
+            scratch.density_network_output = scratch.rgb_network_input.slice_rows(0u, current_model.density_network.padded_output_width);
+            scratch.dL_drgb                = ngp::legacy::GPUMatrixDynamic<__half>{current_model.rgb_network.padded_output_width, batch_size, stream, legacy::CM};
+            scratch.dL_drgb_input          = ngp::legacy::GPUMatrixDynamic<__half>{current_model.rgb_network.input_width, batch_size, stream, current_model.dir_encoding.preferred_output_layout};
+            if (current_model.layout.pos_param_count > 0u)
+                scratch.dL_ddensity_input = ngp::legacy::GPUMatrixDynamic<__half>{current_model.layout.pos_output_width, batch_size, stream, current_model.layout.pos_layout};
             else
                 scratch.dL_ddensity_input = {};
 
-            model.density_network.prepare_scratch(stream, batch_size, legacy::CM, scratch.density_network);
-            model.rgb_network.prepare_scratch(stream, batch_size, legacy::CM, scratch.rgb_network);
+            current_model.density_network.prepare_scratch(stream, batch_size, legacy::CM, scratch.density_network);
+            current_model.rgb_network.prepare_scratch(stream, batch_size, legacy::CM, scratch.rgb_network);
         } catch (...) {
-            delete network.optimizer;
-            delete network.scratch;
-            delete network.definition;
-            network.optimizer = nullptr;
-            network.scratch   = nullptr;
-            network.definition = nullptr;
-            network.parameters = {};
-            render_workspace   = {};
-            training           = {};
-            sampling           = {};
-            dataset            = {};
+            delete optimizer;
+            delete model_scratch;
+            delete model;
+            optimizer               = nullptr;
+            model_scratch           = nullptr;
+            model                   = nullptr;
+            parameter_buffer        = {};
+            full_precision_params   = nullptr;
+            network_params          = nullptr;
+            network_param_gradients = nullptr;
+            render_workspace        = {};
+            training                = {};
+            sampling                = {};
+            dataset                 = {};
             if (stream) {
                 network::detail::free_aux_stream_pool(stream);
                 cudaStreamDestroy(stream);
@@ -3014,29 +2998,32 @@ namespace ngp {
 
     InstantNGP::~InstantNGP() noexcept {
         try {
-            if (network.graph_capture.graph) {
-                legacy::cuda_check(cudaGraphDestroy(network.graph_capture.graph));
-                network.graph_capture.graph = nullptr;
+            if (graph_capture.graph) {
+                legacy::cuda_check(cudaGraphDestroy(graph_capture.graph));
+                graph_capture.graph = nullptr;
             }
-            if (network.graph_capture.graph_instance) {
-                legacy::cuda_check(cudaGraphExecDestroy(network.graph_capture.graph_instance));
-                network.graph_capture.graph_instance = nullptr;
+            if (graph_capture.graph_instance) {
+                legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
+                graph_capture.graph_instance = nullptr;
             }
         } catch (const std::runtime_error& error) {
             if (std::string{error.what()}.find("driver shutting down") == std::string::npos) std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
         }
 
-        delete network.optimizer;
-        delete network.scratch;
-        delete network.definition;
-        network.optimizer  = nullptr;
-        network.scratch    = nullptr;
-        network.definition = nullptr;
-        network.parameters = {};
-        render_workspace   = {};
-        training           = {};
-        sampling           = {};
-        dataset            = {};
+        delete optimizer;
+        delete model_scratch;
+        delete model;
+        optimizer               = nullptr;
+        model_scratch           = nullptr;
+        model                   = nullptr;
+        parameter_buffer        = {};
+        full_precision_params   = nullptr;
+        network_params          = nullptr;
+        network_param_gradients = nullptr;
+        render_workspace        = {};
+        training                = {};
+        sampling                = {};
+        dataset                 = {};
         if (stream) {
             network::detail::free_aux_stream_pool(stream);
             cudaStreamDestroy(stream);
@@ -3045,7 +3032,7 @@ namespace ngp {
     }
 
     auto InstantNGP::train(const std::int32_t iters) -> TrainResult {
-        if (!network.definition || network.parameters.values == nullptr || dataset.device.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
+        if (!model || network_params == nullptr || dataset.device.frames.size() == 0u) throw std::runtime_error{"training data must be loaded before train()."};
 
         for (std::int32_t i = 0; i < iters; ++i) {
             std::uint32_t n_prep_to_skip = training.step / train_plan.prep.skip_growth_interval;
@@ -3136,13 +3123,13 @@ namespace ngp {
                 legacy::cuda_check(cudaStreamSynchronize(stream));
             }
 
-            network.optimizer->impl.beta1              = network_config.optimizer.beta1;
-            network.optimizer->impl.beta2              = network_config.optimizer.beta2;
-            network.optimizer->impl.epsilon            = network_config.optimizer.epsilon;
-            network.optimizer->impl.base_learning_rate = network_config.optimizer.learning_rate;
-            network.optimizer->impl.l2_reg             = network_config.optimizer.l2_reg;
-            const bool get_loss_scalar                 = training.step % 16u == 0u;
-            const auto train_start                     = std::chrono::steady_clock::now();
+            optimizer->beta1              = network_config.optimizer.beta1;
+            optimizer->beta2              = network_config.optimizer.beta2;
+            optimizer->epsilon            = network_config.optimizer.epsilon;
+            optimizer->base_learning_rate = network_config.optimizer.learning_rate;
+            optimizer->l2_reg             = network_config.optimizer.l2_reg;
+            const bool get_loss_scalar    = training.step % 16u == 0u;
+            const auto train_start        = std::chrono::steady_clock::now();
             legacy::ScopeGuard train_timing_guard{[&] { training.last_train_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(); }};
 
             auto& counters                 = training.counters;
@@ -3223,7 +3210,7 @@ namespace ngp {
             fill_rollover_and_rescale<__half><<<((dloss_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(), workspace.dloss_dmlp_out);
             fill_rollover<float><<<((coords_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
 
-            auto& graph_capture = network.graph_capture;
+            auto& graph_capture = this->graph_capture;
             if (stream == nullptr || stream == cudaStreamLegacy) {
                 forward(stream, workspace.compacted_coords_matrix, &workspace.compacted_output);
                 backward(stream, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix);
@@ -3297,7 +3284,7 @@ namespace ngp {
                     }
                 }
             }
-            network.optimizer->impl.step(stream, network::detail::default_loss_scale<__half>, network.parameters.full_precision, network.parameters.values, network.parameters.gradients);
+            optimizer->step(stream, network::detail::default_loss_scale<__half>, full_precision_params, network_params, network_param_gradients);
             ++training.step;
 
             legacy::cuda_check(cudaStreamSynchronize(stream));
@@ -3351,7 +3338,7 @@ namespace ngp {
 
     auto InstantNGP::validate(const std::filesystem::path& report_path) -> ValidateResult {
         if (report_path.empty()) throw std::invalid_argument{"validation benchmark report path must not be empty."};
-        if (!network.definition || network.parameters.values == nullptr) throw std::runtime_error{"Validation benchmark requires an initialized network."};
+        if (!model || network_params == nullptr) throw std::runtime_error{"Validation benchmark requires an initialized network."};
 
         const std::size_t validation_count = dataset.host.validation.size();
         if (validation_count == 0u) throw std::runtime_error{"No validation images are available in the current dataset."};
@@ -3475,7 +3462,7 @@ namespace ngp {
 
     auto InstantNGP::inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult {
         if (output_path.empty()) throw std::invalid_argument{"inference output path must not be empty."};
-        if (!network.definition || network.parameters.values == nullptr) throw std::runtime_error{"Inference requires an initialized network."};
+        if (!model || network_params == nullptr) throw std::runtime_error{"Inference requires an initialized network."};
         if (camera.resolution.x <= 0 || camera.resolution.y <= 0) throw std::runtime_error{"Inference camera has an invalid resolution."};
         if (!std::isfinite(camera.focal_length) || camera.focal_length <= 0.0f) throw std::runtime_error{"Inference camera has an invalid focal length."};
         for (std::size_t column = 0u; column < 4u; ++column) {
@@ -3572,7 +3559,7 @@ namespace ngp {
 
     auto InstantNGP::test(const std::filesystem::path& report_path) -> TestResult {
         if (report_path.empty()) throw std::invalid_argument{"test benchmark report path must not be empty."};
-        if (!network.definition || network.parameters.values == nullptr) throw std::runtime_error{"Test benchmark requires an initialized network."};
+        if (!model || network_params == nullptr) throw std::runtime_error{"Test benchmark requires an initialized network."};
 
         const std::size_t test_count = dataset.host.test.size();
         if (test_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};

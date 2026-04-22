@@ -9,6 +9,13 @@
 
 namespace ngp {
 
+    namespace optimizer {
+
+        template <typename T>
+        struct AdamOptimizer;
+
+    } // namespace optimizer
+
     namespace instant_ngp_detail {
 
         struct GpuFrame final {
@@ -21,10 +28,6 @@ namespace ngp {
         struct Ray final {
             legacy::math::vec3 o = {};
             legacy::math::vec3 d = {};
-
-            __device__ bool is_valid() const {
-                return d != legacy::math::vec3(0.0f);
-            }
         };
 
     } // namespace instant_ngp_detail
@@ -50,9 +53,9 @@ namespace ngp {
             } direction_encoding = {};
 
             struct FullyFusedMlpConfig final {
-                std::uint32_t n_hidden_layers         = 1u;
-                ActivationMode activation             = ActivationMode::ReLU;
-                ActivationMode output_activation      = ActivationMode::None;
+                std::uint32_t n_hidden_layers    = 1u;
+                ActivationMode activation        = ActivationMode::ReLU;
+                ActivationMode output_activation = ActivationMode::None;
             } density_network = {}, rgb_network = {};
 
             struct AdamConfig final {
@@ -111,9 +114,9 @@ namespace ngp {
 
         explicit InstantNGP(const NetworkConfig& network_config);
         ~InstantNGP() noexcept;
-        InstantNGP(const InstantNGP&)            = delete;
-        InstantNGP& operator=(const InstantNGP&) = delete;
-        InstantNGP(InstantNGP&& other) noexcept  = delete;
+        InstantNGP(const InstantNGP&)                      = delete;
+        InstantNGP& operator=(const InstantNGP&)           = delete;
+        InstantNGP(InstantNGP&& other) noexcept            = delete;
         InstantNGP& operator=(InstantNGP&& other) noexcept = delete;
 
         void load_dataset(const std::filesystem::path& dataset_path);
@@ -130,7 +133,6 @@ namespace ngp {
 
         struct ModelState;
         struct ModelScratch;
-        struct OptimizerState;
 
         struct TrainPlan final {
             struct NetworkStage final {
@@ -180,10 +182,10 @@ namespace ngp {
         struct DatasetState final {
             struct HostData final {
                 struct Frame final {
-                    std::vector<std::uint8_t> rgba   = {};
-                    legacy::math::ivec2 resolution   = {};
-                    float focal_length               = 0.0f;
-                    legacy::math::mat4x3 camera      = {};
+                    std::vector<std::uint8_t> rgba = {};
+                    legacy::math::ivec2 resolution = {};
+                    float focal_length             = 0.0f;
+                    legacy::math::mat4x3 camera    = {};
                 };
 
                 std::vector<Frame> train      = {};
@@ -192,31 +194,31 @@ namespace ngp {
             } host = {};
 
             struct DeviceData final {
-                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels = {};
+                std::vector<legacy::GpuBuffer<std::uint8_t>> pixels    = {};
                 legacy::GpuBuffer<instant_ngp_detail::GpuFrame> frames = {};
             } device = {};
         };
 
         struct SamplingState final {
             struct DensityGrid final {
-                legacy::GpuBuffer<float> values              = {};
-                legacy::GpuBuffer<std::uint8_t> occupancy    = {};
-                legacy::GpuBuffer<float> reduction           = {};
-                std::uint32_t ema_step                       = 0u;
-                float ema_decay                              = 0.95f;
+                legacy::GpuBuffer<float> values           = {};
+                legacy::GpuBuffer<std::uint8_t> occupancy = {};
+                legacy::GpuBuffer<float> reduction        = {};
+                std::uint32_t ema_step                    = 0u;
+                float ema_decay                           = 0.95f;
             } density = {};
 
             struct UpdateWorkspace final {
-                legacy::GpuBuffer<char> arena           = {};
-                legacy::NerfPosition* positions         = nullptr;
-                std::uint32_t* indices                 = nullptr;
-                float* density_scratch                 = nullptr;
-                __half* mlp_out                        = nullptr;
+                legacy::GpuBuffer<char> arena   = {};
+                legacy::NerfPosition* positions = nullptr;
+                std::uint32_t* indices          = nullptr;
+                float* density_scratch          = nullptr;
+                __half* mlp_out                 = nullptr;
             } update = {};
 
-            legacy::BoundingBox aabb  = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
-            bool snap_to_pixel_centers = true;
-            float near_distance        = 0.1f;
+            legacy::BoundingBox aabb        = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
+            bool snap_to_pixel_centers      = true;
+            float near_distance             = 0.1f;
             legacy::math::pcg32 density_rng = {};
         };
 
@@ -233,20 +235,20 @@ namespace ngp {
             } counters = {};
 
             struct StepWorkspace final {
-                legacy::GpuBuffer<char> arena                   = {};
-                std::uint32_t* ray_indices                      = nullptr;
-                void* rays_unnormalized                         = nullptr;
-                std::uint32_t* numsteps                         = nullptr;
-                float* coords                                   = nullptr;
-                __half* mlp_out                                 = nullptr;
-                __half* dloss_dmlp_out                          = nullptr;
-                float* coords_compacted                         = nullptr;
-                std::uint32_t* ray_counter                      = nullptr;
-                std::uint32_t max_samples                       = 0u;
-                std::uint32_t max_inference                     = 0u;
-                std::uint32_t floats_per_coord                  = 0u;
-                std::uint32_t padded_output_width               = 0u;
-                std::uint32_t n_rays_total                      = 0u;
+                legacy::GpuBuffer<char> arena                           = {};
+                std::uint32_t* ray_indices                              = nullptr;
+                void* rays_unnormalized                                 = nullptr;
+                std::uint32_t* numsteps                                 = nullptr;
+                float* coords                                           = nullptr;
+                __half* mlp_out                                         = nullptr;
+                __half* dloss_dmlp_out                                  = nullptr;
+                float* coords_compacted                                 = nullptr;
+                std::uint32_t* ray_counter                              = nullptr;
+                std::uint32_t max_samples                               = 0u;
+                std::uint32_t max_inference                             = 0u;
+                std::uint32_t floats_per_coord                          = 0u;
+                std::uint32_t padded_output_width                       = 0u;
+                std::uint32_t n_rays_total                              = 0u;
                 legacy::GPUMatrixDynamic<float> coords_matrix           = {};
                 legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
                 legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
@@ -262,38 +264,31 @@ namespace ngp {
             float last_loss                         = 0.0f;
         };
 
-        struct NetworkState final {
-            struct ParameterBlock final {
-                legacy::GpuBuffer<char> buffer = {};
-                float* full_precision          = nullptr;
-                __half* values                 = nullptr;
-                __half* gradients              = nullptr;
-            } parameters = {};
-
-            ModelState* definition = nullptr;
-            ModelScratch* scratch  = nullptr;
-            OptimizerState* optimizer = nullptr;
-            legacy::GraphCaptureState graph_capture = {};
-        };
-
         struct RenderWorkspace final {
-            legacy::GpuBuffer<legacy::math::vec3> rendered = {};
-            legacy::GpuBuffer<std::uint32_t> tile_numsteps = {};
-            legacy::GpuBuffer<float> tile_coords           = {};
-            legacy::GpuBuffer<__half> tile_mlp_out         = {};
+            legacy::GpuBuffer<legacy::math::vec3> rendered    = {};
+            legacy::GpuBuffer<std::uint32_t> tile_numsteps    = {};
+            legacy::GpuBuffer<float> tile_coords              = {};
+            legacy::GpuBuffer<__half> tile_mlp_out            = {};
             legacy::GpuBuffer<std::uint32_t> sample_counter   = {};
             legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
         };
 
-        NetworkConfig network_config = {};
-        TrainPlan train_plan         = {};
-        std::uint32_t seed           = 1337u;
-        DatasetState dataset         = {};
-        SamplingState sampling       = {};
-        TrainingState training       = {};
-        mutable RenderWorkspace render_workspace = {};
-        cudaStream_t stream          = {};
-        NetworkState network         = {};
+        NetworkConfig network_config                = {};
+        TrainPlan train_plan                        = {};
+        std::uint32_t seed                          = 1337u;
+        DatasetState dataset                        = {};
+        SamplingState sampling                      = {};
+        TrainingState training                      = {};
+        mutable RenderWorkspace render_workspace    = {};
+        cudaStream_t stream                         = {};
+        legacy::GpuBuffer<char> parameter_buffer    = {};
+        float* full_precision_params                = nullptr;
+        __half* network_params                      = nullptr;
+        __half* network_param_gradients             = nullptr;
+        ModelState* model                           = nullptr;
+        ModelScratch* model_scratch                 = nullptr;
+        optimizer::AdamOptimizer<__half>* optimizer = nullptr;
+        legacy::GraphCaptureState graph_capture     = {};
     };
 
 } // namespace ngp
