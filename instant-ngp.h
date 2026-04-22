@@ -215,7 +215,6 @@ namespace ngp {
                 legacy::GpuBuffer<float> loss                               = {};
 
                 std::uint32_t rays_per_batch                        = 1u << 12;
-                std::uint32_t n_rays_total                          = 0u;
                 std::uint32_t measured_batch_size                   = 0u;
                 std::uint32_t measured_batch_size_before_compaction = 0u;
             } counters = {};
@@ -234,7 +233,6 @@ namespace ngp {
                 std::uint32_t max_inference                             = 0u;
                 std::uint32_t floats_per_coord                          = 0u;
                 std::uint32_t padded_output_width                       = 0u;
-                std::uint32_t n_rays_total                              = 0u;
                 legacy::GPUMatrixDynamic<float> coords_matrix           = {};
                 legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
                 legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
