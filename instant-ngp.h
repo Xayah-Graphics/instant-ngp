@@ -2,10 +2,8 @@
 #define INSTANT_NGP_H
 
 #include "common.cuh"
-#include <array>
 #include <cstdint>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <vector>
 
@@ -112,11 +110,11 @@ namespace ngp {
         };
 
         explicit InstantNGP(const NetworkConfig& network_config);
-        ~InstantNGP() noexcept = default;
+        ~InstantNGP() noexcept;
         InstantNGP(const InstantNGP&)            = delete;
         InstantNGP& operator=(const InstantNGP&) = delete;
-        InstantNGP(InstantNGP&& other) noexcept  = default;
-        InstantNGP& operator=(InstantNGP&& other) noexcept = default;
+        InstantNGP(InstantNGP&& other) noexcept  = delete;
+        InstantNGP& operator=(InstantNGP&& other) noexcept = delete;
 
         void load_dataset(const std::filesystem::path& dataset_path);
         [[nodiscard]] auto train(std::int32_t iters) -> TrainResult;
@@ -125,24 +123,10 @@ namespace ngp {
         [[nodiscard]] auto inference(const std::filesystem::path& output_path, const InferenceCamera& camera) const -> InferenceResult;
 
     private:
-        enum class GradientMode {
-            Ignore,
-            Overwrite,
-            Accumulate,
-        };
-
-        void initialize_network_state();
-        void set_model_params(__half* params_ptr, __half* gradients_ptr);
-        void initialize_model_params(legacy::math::pcg32& rng, float* params_full_precision, float scale = 1.0f);
-        [[nodiscard]] auto total_parameter_count() const -> std::size_t;
-        [[nodiscard]] auto matrix_parameter_count() const -> std::uint32_t;
-        [[nodiscard]] auto model_input_width() const -> std::uint32_t;
-        [[nodiscard]] auto model_padded_output_width() const -> std::uint32_t;
-        void prepare_model_scratch(std::uint32_t batch_size, legacy::MatrixLayout output_layout);
         void density(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
         void inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
         void forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>* output);
-        void backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<__half>& output, const legacy::GPUMatrixDynamic<__half>& dL_doutput, GradientMode gradient_mode = GradientMode::Ignore);
+        void backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<__half>& output, const legacy::GPUMatrixDynamic<__half>& dL_doutput);
 
         struct ModelState;
         struct ModelScratch;
@@ -193,21 +177,13 @@ namespace ngp {
             } validation = {};
         };
 
-        struct ConfigState final {
-            NetworkConfig network = {};
-            TrainPlan plan        = {};
-            std::uint32_t seed    = 1337u;
-        };
-
         struct DatasetState final {
             struct HostData final {
                 struct Frame final {
-                    std::vector<std::uint8_t> rgba              = {};
-                    std::uint32_t width                         = 0u;
-                    std::uint32_t height                        = 0u;
-                    float focal_length_x                        = 0.0f;
-                    float focal_length_y                        = 0.0f;
-                    std::array<float, 16u> transform_matrix_4x4 = {};
+                    std::vector<std::uint8_t> rgba   = {};
+                    legacy::math::ivec2 resolution   = {};
+                    float focal_length               = 0.0f;
+                    legacy::math::mat4x3 camera      = {};
                 };
 
                 std::vector<Frame> train      = {};
@@ -286,17 +262,6 @@ namespace ngp {
             float last_loss                         = 0.0f;
         };
 
-        struct DeviceState final {
-            DeviceState() = default;
-            ~DeviceState() noexcept;
-            DeviceState(const DeviceState&)            = delete;
-            DeviceState& operator=(const DeviceState&) = delete;
-            DeviceState(DeviceState&& other) noexcept;
-            DeviceState& operator=(DeviceState&& other) noexcept;
-
-            cudaStream_t stream = {};
-        };
-
         struct NetworkState final {
             struct ParameterBlock final {
                 legacy::GpuBuffer<char> buffer = {};
@@ -305,48 +270,30 @@ namespace ngp {
                 __half* gradients              = nullptr;
             } parameters = {};
 
-            NetworkState() = default;
-            ~NetworkState() noexcept;
-            NetworkState(const NetworkState&)            = delete;
-            NetworkState& operator=(const NetworkState&) = delete;
-            NetworkState(NetworkState&& other) noexcept;
-            NetworkState& operator=(NetworkState&& other) noexcept;
-
-            std::unique_ptr<ModelState, void (*)(ModelState*)> definition = {nullptr, nullptr};
-            std::unique_ptr<ModelScratch, void (*)(ModelScratch*)> scratch = {nullptr, nullptr};
-            std::unique_ptr<OptimizerState, void (*)(OptimizerState*)> optimizer = {nullptr, nullptr};
+            ModelState* definition = nullptr;
+            ModelScratch* scratch  = nullptr;
+            OptimizerState* optimizer = nullptr;
             legacy::GraphCaptureState graph_capture = {};
         };
 
-        struct RenderState final {
-            struct Workspace final {
-                std::uint32_t total_pixels        = 0u;
-                std::uint32_t padded_output_width = 0u;
-                std::uint32_t floats_per_coord    = 0u;
-                std::uint32_t max_samples         = 0u;
-                legacy::GpuBuffer<legacy::math::vec3> rendered = {};
-                legacy::GpuBuffer<std::uint32_t> tile_numsteps = {};
-                legacy::GpuBuffer<float> tile_coords           = {};
-                legacy::GpuBuffer<__half> tile_mlp_out         = {};
-                legacy::GpuBuffer<std::uint32_t> sample_counter   = {};
-                legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
-            } workspace = {};
-
-            instant_ngp_detail::GpuFrame frame = {};
-            std::vector<legacy::math::vec3> rendered_host = {};
-            std::vector<std::uint8_t> png_rgb             = {};
-            std::uint32_t used_samples                    = 0u;
-            std::uint32_t overflowed_rays                 = 0u;
-            legacy::math::vec3 background                 = legacy::math::vec3(1.0f);
+        struct RenderWorkspace final {
+            legacy::GpuBuffer<legacy::math::vec3> rendered = {};
+            legacy::GpuBuffer<std::uint32_t> tile_numsteps = {};
+            legacy::GpuBuffer<float> tile_coords           = {};
+            legacy::GpuBuffer<__half> tile_mlp_out         = {};
+            legacy::GpuBuffer<std::uint32_t> sample_counter   = {};
+            legacy::GpuBuffer<std::uint32_t> overflow_counter = {};
         };
 
-        ConfigState config     = {};
-        DatasetState dataset   = {};
-        SamplingState sampling = {};
-        TrainingState training = {};
-        mutable RenderState render = {};
-        DeviceState device     = {};
-        NetworkState network   = {};
+        NetworkConfig network_config = {};
+        TrainPlan train_plan         = {};
+        std::uint32_t seed           = 1337u;
+        DatasetState dataset         = {};
+        SamplingState sampling       = {};
+        TrainingState training       = {};
+        mutable RenderWorkspace render_workspace = {};
+        cudaStream_t stream          = {};
+        NetworkState network         = {};
     };
 
 } // namespace ngp

@@ -70,11 +70,9 @@ namespace ngp {
                 if (!transform_matrix.is_array() || transform_matrix.size() != 4) throw std::runtime_error{std::format("Invalid 'transform_matrix' in '{}', frame {}.", json_path.string(), frame_index)};
 
                 DatasetState::HostData::Frame& frame = (*frames)[frame_index];
-                frame.rgba.assign(raw_pixels.get(), raw_pixels.get() + rgba_size);
-                frame.width          = static_cast<std::uint32_t>(width);
-                frame.height         = static_cast<std::uint32_t>(height);
-                frame.focal_length_x = focal_length_x;
-                frame.focal_length_y = focal_length_x;
+                frame.rgba         = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size};
+                frame.resolution   = legacy::math::ivec2{width, height};
+                frame.focal_length = focal_length_x;
 
                 for (std::size_t row = 0; row < 4; ++row) {
                     const nlohmann::json& transform_row = transform_matrix.at(row);
@@ -83,9 +81,17 @@ namespace ngp {
                     for (std::size_t column = 0; column < 4; ++column) {
                         const float transform_element = transform_row.at(column).get<float>();
                         if (!std::isfinite(transform_element)) throw std::runtime_error{std::format("Non-finite 'transform_matrix' element in '{}', frame {}, row {}, column {}.", json_path.string(), frame_index, row, column)};
-                        frame.transform_matrix_4x4[row * 4 + column] = transform_element;
+                        if (row < 3u) frame.camera[column][row] = transform_element;
                     }
                 }
+
+                frame.camera[1] *= -1.0f;
+                frame.camera[2] *= -1.0f;
+                frame.camera[3]               = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
+                const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(frame.camera, 0);
+                frame.camera                  = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
+                frame.camera                  = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
+                frame.camera                  = ngp::legacy::math::row(frame.camera, 2, camera_row0);
             }
         }
 
@@ -96,15 +102,10 @@ namespace ngp {
 
         for (std::size_t frame_index = 0; frame_index < loaded_dataset.host.train.size(); ++frame_index) {
             const DatasetState::HostData::Frame& source_frame = loaded_dataset.host.train[frame_index];
-            if (source_frame.width == 0 || source_frame.height == 0) throw std::runtime_error{"load_dataset encountered a training frame with zero resolution during upload staging."};
-            if (!std::isfinite(source_frame.focal_length_x) || source_frame.focal_length_x <= 0.0f) throw std::runtime_error{"load_dataset encountered a training frame with an invalid focal_length_x during upload staging."};
-            if (!std::isfinite(source_frame.focal_length_y) || source_frame.focal_length_y <= 0.0f) throw std::runtime_error{"load_dataset encountered a training frame with an invalid focal_length_y during upload staging."};
+            if (source_frame.resolution.x <= 0 || source_frame.resolution.y <= 0) throw std::runtime_error{"load_dataset encountered a training frame with zero resolution during upload staging."};
+            if (!std::isfinite(source_frame.focal_length) || source_frame.focal_length <= 0.0f) throw std::runtime_error{"load_dataset encountered a training frame with an invalid focal length during upload staging."};
 
-            const float focal_length_difference = std::fabs(source_frame.focal_length_x - source_frame.focal_length_y);
-            const float focal_length_scale      = std::max(1.0f, std::max(std::fabs(source_frame.focal_length_x), std::fabs(source_frame.focal_length_y)));
-            if (focal_length_difference > 1e-6f * focal_length_scale) throw std::runtime_error{"load_dataset currently requires focal_length_x and focal_length_y to match before GPU upload."};
-
-            const std::size_t expected_rgba_size = static_cast<std::size_t>(source_frame.width) * static_cast<std::size_t>(source_frame.height) * 4ull;
+            const std::size_t expected_rgba_size = static_cast<std::size_t>(source_frame.resolution.x) * static_cast<std::size_t>(source_frame.resolution.y) * 4ull;
             if (source_frame.rgba.size() != expected_rgba_size) throw std::runtime_error{"load_dataset encountered a training frame whose RGBA byte count no longer matches width * height * 4 during upload staging."};
 
             legacy::GpuBuffer<std::uint8_t>& pixel_buffer = loaded_dataset.device.pixels[frame_index];
@@ -112,24 +113,10 @@ namespace ngp {
             pixel_buffer.copy_from_host(source_frame.rgba);
 
             instant_ngp_detail::GpuFrame& target_frame = uploaded_frames[frame_index];
-            target_frame.pixels     = pixel_buffer.data();
-            target_frame.resolution = legacy::math::ivec2{
-                static_cast<int>(source_frame.width),
-                static_cast<int>(source_frame.height),
-            };
-            target_frame.focal_length = source_frame.focal_length_x;
-            for (std::size_t row = 0; row < 3; ++row) {
-                for (std::size_t column = 0; column < 4; ++column) {
-                    target_frame.camera[column][row] = source_frame.transform_matrix_4x4[row * 4 + column];
-                }
-            }
-            target_frame.camera[1] *= -1.0f;
-            target_frame.camera[2] *= -1.0f;
-            target_frame.camera[3]               = target_frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
-            const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(target_frame.camera, 0);
-            target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 0, ngp::legacy::math::row(target_frame.camera, 1));
-            target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 1, ngp::legacy::math::row(target_frame.camera, 2));
-            target_frame.camera                  = ngp::legacy::math::row(target_frame.camera, 2, camera_row0);
+            target_frame.pixels       = pixel_buffer.data();
+            target_frame.resolution   = source_frame.resolution;
+            target_frame.focal_length = source_frame.focal_length;
+            target_frame.camera       = source_frame.camera;
         }
 
         loaded_dataset.device.frames.resize(uploaded_frames.size());
