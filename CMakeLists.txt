@@ -95,8 +95,15 @@ add_library(instant-ngp)
 target_sources(
         instant-ngp
         PRIVATE
+        encoder.cu
+        fully-fused-mlp.cu
         instant-ngp.cpp
         instant-ngp.cu
+        optimizer.cu
+        encoder.cuh
+        fully-fused-mlp.cuh
+        network-detail.cuh
+        optimizer.cuh
         PUBLIC
         instant-ngp.h
         common.cuh
