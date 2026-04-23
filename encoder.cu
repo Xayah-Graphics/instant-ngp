@@ -216,16 +216,13 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const GridType grid_type, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
+    __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const GridType grid_type, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
         const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= num_elements) return;
 
         const std::uint32_t level = blockIdx.y;
 
-        if (max_level_gpu)
-            max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
-        else
-            max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
+        max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
 
         if (level >= max_level + 1e-3f) {
             if (encoded_positions) {
@@ -293,17 +290,14 @@ namespace ngp::encoding {
     }
 
     template <typename T, typename GradT, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL, std::uint32_t N_FEATURES_PER_THREAD>
-    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const float* __restrict__ max_level_gpu, const bool stochastic_interpolation, const GridType grid_type, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
+    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const bool stochastic_interpolation, const GridType grid_type, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
         const std::uint32_t i = ((blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD) / N_FEATURES_PER_LEVEL;
         if (i >= num_elements) return;
 
         const std::uint32_t level   = blockIdx.y;
         const std::uint32_t feature = (blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD - i * N_FEATURES_PER_LEVEL;
 
-        if (max_level_gpu)
-            max_level = (max_level_gpu[i] * num_grid_features) / N_FEATURES_PER_LEVEL;
-        else
-            max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
+        max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
 
         if (level > max_level + 1e-3f) return;
 
@@ -396,7 +390,6 @@ namespace ngp::encoding {
         }
 
         offset_table.data[n_levels] = offset;
-        offset_table.size           = n_levels + 1u;
         n_params                    = static_cast<std::size_t>(offset_table.data[n_levels]) * N_FEATURES_PER_LEVEL;
         output_width                = this->n_features;
         padded_output_width         = output_width;
@@ -444,7 +437,7 @@ namespace ngp::encoding {
             encoded_positions_soa = reinterpret_cast<T*>(workspace.data());
         }
 
-        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, main_stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, max_level_gpu, grid_type, params, input.view(), encoded_positions_soa);
+        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, main_stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, grid_type, params, input.view(), encoded_positions_soa);
 
         if (output.layout() == legacy::AoS) {
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
@@ -495,7 +488,7 @@ namespace ngp::encoding {
         static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
 
         const dim3 blocks_hashgrid = {((num_elements * N_FEATURES_PER_LEVEL / n_features_per_thread) + n_threads_hashgrid - 1u) / n_threads_hashgrid, n_levels, 1u};
-        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, max_level_gpu, stochastic_interpolation, grid_type, grid_gradient, input.view(), dL_dy_rm);
+        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, stochastic_interpolation, grid_type, grid_gradient, input.view(), dL_dy_rm);
 
         if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
             if (n_params > 0u) {

@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <cutlass/array.h>
 #include <cutlass/cutlass.h>
-#include <cutlass/functional.h>
 #include <cutlass/gemm/device/gemm.h>
 #include <cutlass/gemm/device/gemm_splitk_parallel.h>
 #include <cutlass/numeric_conversion.h>
@@ -82,19 +81,18 @@ namespace ngp::mlp {
 
         struct Params {
             network::detail::Activation activation;
-            bool sum_source;
         };
 
         CUTLASS_HOST_DEVICE
-        explicit ActivationEpilogue(const Params& params) : m_activation{params.activation}, m_sum_source{params.sum_source} {}
+        explicit ActivationEpilogue(const Params& params) : m_activation{params.activation} {}
 
         CUTLASS_HOST_DEVICE
         bool is_source_needed() const {
-            return m_sum_source;
+            return false;
         }
 
         CUTLASS_HOST_DEVICE
-        void set_k_partition(int k_partition, int k_partition_count) {}
+        void set_k_partition(int, int) {}
 
         CUTLASS_HOST_DEVICE
         FragmentOutput operator()(const FragmentAccumulator& accumulator) const {
@@ -108,22 +106,12 @@ namespace ngp::mlp {
         }
 
         CUTLASS_HOST_DEVICE
-        FragmentOutput operator()(const FragmentAccumulator& accumulator, const FragmentOutput& source) const {
-            cutlass::NumericArrayConverter<ElementCompute, ElementOutput, kCount, Round> source_converter;
-            cutlass::NumericArrayConverter<ElementCompute, ElementAccumulator, kCount, Round> accumulator_converter;
-
-            cutlass::plus<ComputeFragment> plus_op;
-            CutlassFragmentWrapper<ComputeFragment> intermediate{accumulator_converter(accumulator)};
-            if (m_sum_source) intermediate.x = plus_op(intermediate.x, source_converter(source));
-            intermediate = network::detail::warp_activation<ElementCompute>(m_activation, intermediate);
-
-            cutlass::NumericArrayConverter<ElementOutput, ElementCompute, kCount, Round> destination_converter;
-            return destination_converter(intermediate.x);
+        FragmentOutput operator()(const FragmentAccumulator& accumulator, const FragmentOutput&) const {
+            return operator()(accumulator);
         }
 
     private:
         network::detail::Activation m_activation;
-        bool m_sum_source = false;
     };
 
     template <typename ElementOutput_, int Count, typename ElementAccumulator_ = ElementOutput_, typename ElementCompute_ = ElementOutput_, cutlass::FloatRoundStyle Round = cutlass::FloatRoundStyle::round_to_nearest>
@@ -154,7 +142,7 @@ namespace ngp::mlp {
         }
 
         CUTLASS_HOST_DEVICE
-        void set_k_partition(int k_partition, int k_partition_count) {}
+        void set_k_partition(int, int) {}
 
         CUTLASS_HOST_DEVICE
         FragmentOutput operator()(const FragmentAccumulator& accumulator, const FragmentOutput& source) const {
@@ -212,7 +200,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, legacy::MatrixLayout LayoutC, typename TypeD, legacy::MatrixLayout LayoutD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, LayoutC>& C, const legacy::GPUMatrix<TypeD, LayoutD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, LayoutC>& C, const legacy::GPUMatrix<TypeD, LayoutD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
         static_assert(std::is_same_v<TypeA, TypeB>, "Type of matrix A and B must be equal");
         static_assert(std::is_same_v<TypeC, TypeD>, "Type of matrix C and D must be equal");
         static_assert(std::is_same_v<typename CutlassLayout<LayoutC>::type, typename CutlassLayout<LayoutD>::type>, "Layout of matrix C and D must be equal");
@@ -250,26 +238,26 @@ namespace ngp::mlp {
                 ActivationEpilogue<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>, cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>
                 Gemm;
 
-            typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {act, sum_source}, 1};
+            typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {act}, 1};
             fc_multiply_impl<Gemm>(stream, arguments);
         }
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
         if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
         if (D.layout() == legacy::CM)
-            fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer, sum_source);
+            fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer);
         else
-            fc_multiply<Config>(stream, A, B, C.rm(), D.rm(), act, transfer, sum_source);
+            fc_multiply<Config>(stream, A, B, C.rm(), D.rm(), act, transfer);
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false, bool sum_source = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
         if (B.layout() == legacy::CM)
-            fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer, sum_source);
+            fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer);
         else
-            fc_multiply<Config>(stream, A, B.rm(), C, D, act, transfer, sum_source);
+            fc_multiply<Config>(stream, A, B.rm(), C, D, act, transfer);
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeD>

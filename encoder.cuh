@@ -15,7 +15,6 @@ namespace ngp::encoding {
 
     struct ParamsOffsetTable final {
         std::uint32_t data[max_n_levels + 1u] = {};
-        std::uint32_t size                    = 0u;
     };
 
     template <typename T, std::uint32_t N_POS_DIMS = 3u, std::uint32_t N_FEATURES_PER_LEVEL = 2u>
@@ -40,7 +39,6 @@ namespace ngp::encoding {
         bool stochastic_interpolation                = false;
         GridType grid_type                           = GridType::Hash;
         float max_level                              = 1000.0f;
-        float* max_level_gpu                         = nullptr;
         T* params                                    = nullptr;
         T* gradients                                 = nullptr;
     };
