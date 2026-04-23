@@ -1817,4 +1817,42 @@ namespace ngp::legacy {
 
 } // namespace ngp::legacy
 
+namespace ngp::network::detail {
+
+    enum class GradientMode {
+        Ignore,
+        Overwrite,
+        Accumulate,
+    };
+
+    inline constexpr std::uint32_t batch_size_granularity = 256u;
+    inline constexpr std::uint32_t n_threads_linear       = 128u;
+
+#ifdef __CUDACC__
+    template <typename T>
+    __global__ void cast(const std::uint32_t num_elements, const float* __restrict__ full_precision, T* __restrict__ target) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= num_elements) return;
+        target[i] = static_cast<T>(full_precision[i]);
+    }
+#endif
+
+    struct AuxStreamSlot;
+
+    struct SyncedStreamReservation final {
+        SyncedStreamReservation() = default;
+        SyncedStreamReservation(cudaStream_t stream, std::size_t n_streams);
+        ~SyncedStreamReservation();
+        SyncedStreamReservation& operator=(const SyncedStreamReservation&) = delete;
+        SyncedStreamReservation(const SyncedStreamReservation&)            = delete;
+        SyncedStreamReservation& operator=(SyncedStreamReservation&& other) noexcept;
+        SyncedStreamReservation(SyncedStreamReservation&& other) noexcept;
+
+        AuxStreamSlot* aux_stream_slot = nullptr;
+        cudaStream_t aux_stream        = nullptr;
+        cudaStream_t main_stream       = nullptr;
+    };
+
+} // namespace ngp::network::detail
+
 #endif // NGP_LEGACY_CUH

@@ -1,5 +1,4 @@
 #include "optimizer.cuh"
-#include "network-detail.cuh"
 
 namespace ngp {
 

@@ -64,6 +64,169 @@ namespace ngp::mlp {
         V x                                         = {};
     };
 
+    __device__ inline float logistic(const float x) {
+        return 1.0f / (1.0f + expf(-x));
+    }
+
+    template <typename V>
+    struct VectorFragment final {
+        static constexpr std::uint32_t num_elements = V::size();
+        V x                                         = {};
+    };
+
+    template <typename T>
+    __device__ T relu(T value) {
+        return static_cast<T>(cuda::std::max(static_cast<float>(value), 0.0f));
+    }
+
+    template <>
+    inline __device__ half relu(half value) {
+#if defined(__CUDA_ARCH__)
+        return __hmax(value, static_cast<half>(0.0f));
+#else
+        return static_cast<half>(relu<float>(static_cast<float>(value)));
+#endif
+    }
+
+    inline constexpr float k_act = 10.0f;
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::None)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        result = frag;
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::ReLU)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = relu(static_cast<T>(frag.x[t]));
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::LeakyReLU)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(static_cast<T>(frag.x[t]) > static_cast<T>(0.0f) ? 1.0f : 0.01f);
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::Exponential)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(expf(static_cast<float>(frag.x[t])));
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::Sigmoid)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logistic(static_cast<float>(frag.x[t])));
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::Squareplus)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) {
+            const float x = static_cast<float>(frag.x[t]) * k_act;
+            result.x[t]   = static_cast<T>(0.5f * (x + sqrtf(x * x + 4.0f)) / k_act);
+        }
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::Softplus)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(logf(expf(static_cast<float>(frag.x[t]) * k_act) + 1.0f) / k_act);
+    }
+
+    template <typename T, typename Fragment, Activation activation>
+        requires (activation == Activation::Tanh)
+    __device__ void warp_activation(const Fragment& frag, Fragment& result) {
+        TCNN_PRAGMA_UNROLL
+        for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = static_cast<T>(tanhf(static_cast<float>(frag.x[t])));
+    }
+
+    template <typename T, typename Fragment>
+    __device__ void warp_activation(const Activation activation, const Fragment& frag, Fragment& result) {
+        switch (activation) {
+        case Activation::ReLU: warp_activation<T, Fragment, Activation::ReLU>(frag, result); return;
+        case Activation::LeakyReLU: warp_activation<T, Fragment, Activation::LeakyReLU>(frag, result); return;
+        case Activation::Exponential: warp_activation<T, Fragment, Activation::Exponential>(frag, result); return;
+        case Activation::Sigmoid: warp_activation<T, Fragment, Activation::Sigmoid>(frag, result); return;
+        case Activation::Squareplus: warp_activation<T, Fragment, Activation::Squareplus>(frag, result); return;
+        case Activation::Softplus: warp_activation<T, Fragment, Activation::Softplus>(frag, result); return;
+        case Activation::Tanh: warp_activation<T, Fragment, Activation::Tanh>(frag, result); return;
+        case Activation::None: warp_activation<T, Fragment, Activation::None>(frag, result); return;
+        default: return;
+        }
+    }
+
+    template <typename T, typename Fragment>
+    __device__ Fragment warp_activation(const Activation activation, const Fragment& frag) {
+        Fragment result = {};
+        warp_activation<T>(activation, frag, result);
+        return result;
+    }
+
+    template <typename T, typename Fragment, typename ForwardFragment>
+    __device__ void warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag, Fragment& result) {
+        switch (activation) {
+        case Activation::ReLU:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(forward_frag.x[t] > static_cast<T>(0.0f));
+            return;
+        case Activation::LeakyReLU:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(forward_frag.x[t] > static_cast<T>(0.0f) ? 1.0f : 0.01f);
+            return;
+        case Activation::Exponential:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * forward_frag.x[t];
+            return;
+        case Activation::Sigmoid:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(forward_frag.x[t] * static_cast<T>(1.0f - static_cast<float>(forward_frag.x[t])));
+            return;
+        case Activation::Squareplus:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) {
+                const float y = static_cast<float>(forward_frag.x[t]) * k_act;
+                result.x[t]   = frag.x[t] * static_cast<T>(y * y / (y * y + 1.0f));
+            }
+            return;
+        case Activation::Softplus:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(1.0f - expf(-static_cast<float>(forward_frag.x[t]) * k_act));
+            return;
+        case Activation::Tanh:
+            TCNN_PRAGMA_UNROLL
+            for (int t = 0; t < static_cast<int>(result.num_elements); ++t) result.x[t] = frag.x[t] * static_cast<T>(1.0f - (static_cast<float>(forward_frag.x[t]) * static_cast<float>(forward_frag.x[t])));
+            return;
+        case Activation::None: result = frag; return;
+        default: return;
+        }
+    }
+
+    template <typename T, typename Fragment, typename ForwardFragment>
+    __device__ Fragment warp_activation_backward(const Activation activation, const Fragment& frag, const ForwardFragment& forward_frag) {
+        Fragment result = {};
+        warp_activation_backward<T>(activation, frag, forward_frag, result);
+        return result;
+    }
+
+    template <typename T, std::uint32_t N = 1u>
+    __global__ void kernel_activation_backward_output(const std::uint32_t num_elements, const Activation activation, const T* __restrict__ output_values, const T* gradients_out, T* gradients_in) {
+        const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+        if (i >= num_elements) return;
+
+        const auto frag_forward_out = reinterpret_cast<const VectorFragment<legacy::math::tvec<T, N, sizeof(T)>>*>(output_values)[i];
+        auto frag                   = reinterpret_cast<const VectorFragment<legacy::math::tvec<T, N, sizeof(T)>>*>(gradients_out)[i];
+        warp_activation_backward<T>(activation, frag, frag_forward_out, frag);
+        reinterpret_cast<VectorFragment<legacy::math::tvec<T, N, sizeof(T)>>*>(gradients_in)[i] = frag;
+    }
+
     template <typename ElementOutput_, int Count, typename ElementAccumulator_ = ElementOutput_, typename ElementCompute_ = ElementOutput_, cutlass::FloatRoundStyle Round = cutlass::FloatRoundStyle::round_to_nearest>
     class ActivationEpilogue {
     public:
@@ -80,7 +243,7 @@ namespace ngp::mlp {
         static constexpr cutlass::FloatRoundStyle kRound = Round;
 
         struct Params {
-            network::detail::Activation activation;
+            Activation activation;
         };
 
         CUTLASS_HOST_DEVICE
@@ -99,7 +262,7 @@ namespace ngp::mlp {
             cutlass::NumericArrayConverter<ElementCompute, ElementAccumulator, kCount, Round> accumulator_converter;
 
             CutlassFragmentWrapper<ComputeFragment> intermediate{accumulator_converter(accumulator)};
-            intermediate = network::detail::warp_activation<ElementCompute>(m_activation, intermediate);
+            intermediate = warp_activation<ElementCompute>(m_activation, intermediate);
 
             cutlass::NumericArrayConverter<ElementOutput, ElementCompute, kCount, Round> destination_converter;
             return destination_converter(intermediate.x);
@@ -111,7 +274,7 @@ namespace ngp::mlp {
         }
 
     private:
-        network::detail::Activation m_activation;
+        Activation m_activation;
     };
 
     template <typename ElementOutput_, int Count, typename ElementAccumulator_ = ElementOutput_, typename ElementCompute_ = ElementOutput_, cutlass::FloatRoundStyle Round = cutlass::FloatRoundStyle::round_to_nearest>
@@ -130,7 +293,7 @@ namespace ngp::mlp {
         static constexpr cutlass::FloatRoundStyle kRound = Round;
 
         struct Params {
-            network::detail::Activation activation;
+            Activation activation;
         };
 
         CUTLASS_HOST_DEVICE
@@ -151,7 +314,7 @@ namespace ngp::mlp {
 
             CutlassFragmentWrapper<ComputeFragment> converted_source{source_converter(source)};
             CutlassFragmentWrapper<ComputeFragment> intermediate{accumulator_converter(accumulator)};
-            intermediate = network::detail::warp_activation_backward<ElementCompute>(m_activation, intermediate, converted_source);
+            intermediate = warp_activation_backward<ElementCompute>(m_activation, intermediate, converted_source);
 
             cutlass::NumericArrayConverter<ElementOutput, ElementCompute, kCount, Round> destination_converter;
             return destination_converter(intermediate.x);
@@ -167,7 +330,7 @@ namespace ngp::mlp {
         }
 
     private:
-        network::detail::Activation m_activation;
+        Activation m_activation;
     };
 
     template <typename T>
@@ -200,7 +363,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, legacy::MatrixLayout LayoutC, typename TypeD, legacy::MatrixLayout LayoutD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, LayoutC>& C, const legacy::GPUMatrix<TypeD, LayoutD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, LayoutC>& C, const legacy::GPUMatrix<TypeD, LayoutD>& D, Activation act = Activation::None, bool transfer = false) {
         static_assert(std::is_same_v<TypeA, TypeB>, "Type of matrix A and B must be equal");
         static_assert(std::is_same_v<TypeC, TypeD>, "Type of matrix C and D must be equal");
         static_assert(std::is_same_v<typename CutlassLayout<LayoutC>::type, typename CutlassLayout<LayoutD>::type>, "Layout of matrix C and D must be equal");
@@ -244,7 +407,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None, bool transfer = false) {
         if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
         if (D.layout() == legacy::CM)
             fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer);
@@ -253,7 +416,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None, bool transfer = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None, bool transfer = false) {
         if (B.layout() == legacy::CM)
             fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer);
         else
@@ -261,7 +424,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeD>& D, network::detail::Activation act = network::detail::Activation::None) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None) {
         fc_multiply<Config>(stream, A, B, D, D, act);
     }
 
@@ -295,7 +458,8 @@ namespace ngp::mlp {
             cutlass::epilogue::thread::LinearCombination<MatmulTypeAccumulator, n_vectorized_elements<MatmulTypeAccumulator>, cutlass::half_t, cutlass::half_t>>
             Gemm;
 
-        typename Gemm::Arguments arguments{{M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {static_cast<cutlass::half_t>(1.0f), static_cast<cutlass::half_t>(beta)}, static_cast<int>(split_k_slices)};
+        typename Gemm::Arguments arguments{
+            {M, N, K}, {reinterpret_cast<MatmulTypeCompute*>(A.data()), static_cast<int>(A.stride())}, {reinterpret_cast<MatmulTypeCompute*>(B.data()), static_cast<int>(B.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(C.data()), static_cast<int>(C.stride())}, {reinterpret_cast<MatmulTypeAccumulator*>(D.data()), static_cast<int>(D.stride())}, {static_cast<cutlass::half_t>(1.0f), static_cast<cutlass::half_t>(beta)}, static_cast<int>(split_k_slices)};
         fc_multiply_split_k_impl<Gemm>(stream, arguments);
     }
 
@@ -330,7 +494,7 @@ namespace ngp::mlp {
     }
 
     template <typename T>
-    void activation_backward_output_gpu(cudaStream_t stream, const std::uint32_t num_elements, const network::detail::Activation act, const T* __restrict__ output_values, const T* gradients_out, T* gradients_in) {
+    void activation_backward_output_gpu(cudaStream_t stream, const std::uint32_t num_elements, const Activation act, const T* __restrict__ output_values, const T* gradients_out, T* gradients_in) {
         static constexpr std::uint32_t activation_vector_size = 16u / sizeof(T);
         if (num_elements % activation_vector_size != 0u) {
             std::ostringstream stream_message;
@@ -338,12 +502,12 @@ namespace ngp::mlp {
             throw std::runtime_error{stream_message.str()};
         }
 
-        if (act == network::detail::Activation::None && gradients_out == gradients_in) return;
+        if (act == Activation::None && gradients_out == gradients_in) return;
 
         const std::uint32_t vector_count = num_elements / activation_vector_size;
         if (vector_count > 0u) {
             const std::uint32_t blocks = (vector_count + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            network::detail::kernel_activation_backward_output<T, activation_vector_size><<<blocks, network::detail::n_threads_linear, 0, stream>>>(vector_count, act, output_values, gradients_out, gradients_in);
+            kernel_activation_backward_output<T, activation_vector_size><<<blocks, network::detail::n_threads_linear, 0, stream>>>(vector_count, act, output_values, gradients_out, gradients_in);
         }
     }
 
@@ -353,7 +517,7 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, bool BACKWARD = false>
-    __device__ void threadblock_layer(network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const OUT_T* __restrict__ activation_aux = nullptr) {
+    __device__ void threadblock_layer(Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const OUT_T* __restrict__ activation_aux = nullptr) {
         constexpr std::uint32_t SKEW     = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
 
@@ -390,9 +554,9 @@ namespace ngp::mlp {
 
             if constexpr (BACKWARD) {
                 nvcuda::wmma::load_matrix_sync(act_frag, activation_aux + weights_col + l * 16u * WIDTH, WIDTH);
-                network::detail::warp_activation_backward<__half>(activation, result_frag[l], act_frag, result_frag[l]);
+                warp_activation_backward<__half>(activation, result_frag[l], act_frag, result_frag[l]);
             } else {
-                network::detail::warp_activation<__half>(activation, result_frag[l], result_frag[l]);
+                warp_activation<__half>(activation, result_frag[l], result_frag[l]);
             }
         }
 
@@ -423,7 +587,7 @@ namespace ngp::mlp {
         for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]) = *reinterpret_cast<const int4*>(&input_threadblock[lane_offset + (row + 16u * i) * WIDTH]);
     }
 
-    template <std::uint32_t WIDTH, std::uint32_t N_ITERS, network::detail::Activation ACTIVATION, typename OUTPUT_LAYOUT>
+    template <std::uint32_t WIDTH, std::uint32_t N_ITERS, Activation ACTIVATION, typename OUTPUT_LAYOUT>
     __global__ void kernel_mlp_fused_backward(const __half* __restrict__ dL_doutput, const __half* __restrict__ weights, __half* __restrict__ out_intermediate, const __half* __restrict__ forward, __half* __restrict__ dL_dinput, const __half* __restrict__ weights_first_layer, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls) {
         constexpr std::uint32_t SKEW = WIDTH % 16u == 0u ? 8u : 0u;
 
@@ -459,7 +623,7 @@ namespace ngp::mlp {
 
                 nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> forward_frag;
                 nvcuda::wmma::load_matrix_sync(forward_frag, forward + layer_stride * n_hidden_matmuls + weights_col + (elem_idx + l * 16u) * WIDTH, WIDTH);
-                network::detail::warp_activation_backward<__half>(ACTIVATION, result_frag[l], forward_frag, result_frag[l]);
+                warp_activation_backward<__half>(ACTIVATION, result_frag[l], forward_frag, result_frag[l]);
             }
 
             __syncthreads();
@@ -481,10 +645,10 @@ namespace ngp::mlp {
 
         for (std::uint32_t k = 0u; k < n_hidden_matmuls; ++k) threadblock_layer<WIDTH, N_ITERS, __half, true>(ACTIVATION, act_shmem, weights + weights_stride * (n_hidden_matmuls - k - 1u), out_intermediate + layer_stride * (k + 1u) + elem_idx_base * WIDTH, forward + layer_stride * (n_hidden_matmuls - k - 1u) + elem_idx_base * WIDTH);
 
-        if (dL_dinput != nullptr) threadblock_layer<WIDTH, N_ITERS, __half, true>(network::detail::Activation::None, act_shmem, weights_first_layer, dL_dinput + elem_idx_base * WIDTH);
+        if (dL_dinput != nullptr) threadblock_layer<WIDTH, N_ITERS, __half, true>(Activation::None, act_shmem, weights_first_layer, dL_dinput + elem_idx_base * WIDTH);
     }
 
-    template <std::uint32_t WIDTH, typename T, network::detail::Activation ACTIVATION>
+    template <std::uint32_t WIDTH, typename T, Activation ACTIVATION>
     void mlp_fused_backward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::RM>& weights_first_layer, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrixDynamic<T>& dL_doutput, legacy::GPUMatrixDynamic<T>& temporaries, const legacy::GPUMatrixDynamic<T>& forward, legacy::GPUMatrixDynamic<T>* dL_dinput, const std::uint32_t n_hidden_matmuls) {
         static_assert(std::is_same_v<T, __half>, "The fully fused backward pass only supports __half precision.");
         const std::uint32_t batch_size   = dL_doutput.cols();
@@ -512,7 +676,7 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, typename INPUT_LAYOUT>
-    __device__ void threadblock_input_layer_forward_dynamic(network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ input_threadblock, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const std::uint32_t in_width, const std::uint32_t batch_size) {
+    __device__ void threadblock_input_layer_forward_dynamic(Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ input_threadblock, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const std::uint32_t in_width, const std::uint32_t batch_size) {
         constexpr std::uint32_t SKEW       = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t INPUT_SKEW = 8u;
         constexpr std::uint32_t N_BLOCKS   = WIDTH / 16u;
@@ -534,7 +698,7 @@ namespace ngp::mlp {
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t idx = thread_elem_idx; idx < n_elems_b; idx += n_elems_per_load) {
-            const std::uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+            const std::uint32_t idx_skewed                       = idx + idx / in_width * INPUT_SKEW;
             *reinterpret_cast<int4*>(&weights_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&weights_this_layer[idx]);
         }
 
@@ -548,7 +712,7 @@ namespace ngp::mlp {
 
                 TCNN_PRAGMA_UNROLL
                 for (std::uint32_t idx = thread_elem_idx; idx < n_elems_a; idx += n_elems_per_load) {
-                    const std::uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+                    const std::uint32_t idx_skewed                   = idx + idx / in_width * INPUT_SKEW;
                     *reinterpret_cast<int4*>(&act_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&input_threadblock[l * n_elems_a + idx]);
                 }
 
@@ -568,7 +732,7 @@ namespace ngp::mlp {
             }
 
             if constexpr (std::is_same_v<INPUT_LAYOUT, nvcuda::wmma::row_major>) __syncthreads();
-            network::detail::warp_activation<__half>(activation, result_frag[l], result_frag[l]);
+            warp_activation<__half>(activation, result_frag[l], result_frag[l]);
         }
 
         if constexpr (std::is_same_v<INPUT_LAYOUT, nvcuda::wmma::col_major>) __syncthreads();
@@ -585,7 +749,7 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T>
-    __device__ void threadblock_last_layer_forward(network::detail::Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out, const std::uint32_t output_stride, const nvcuda::wmma::layout_t output_layout) {
+    __device__ void threadblock_last_layer_forward(Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out, const std::uint32_t output_stride, const nvcuda::wmma::layout_t output_layout) {
         constexpr std::uint32_t SKEW     = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
 
@@ -615,7 +779,7 @@ namespace ngp::mlp {
                 nvcuda::wmma::mma_sync(result_frag, act_frag, weights_frag[i], result_frag);
             }
 
-            network::detail::warp_activation<__half>(activation, result_frag, result_frag);
+            warp_activation<__half>(activation, result_frag, result_frag);
             if (output_layout == nvcuda::wmma::mem_row_major)
                 nvcuda::wmma::store_matrix_sync(out + idx * 16u * output_stride, result_frag, output_stride, output_layout);
             else
@@ -638,8 +802,8 @@ namespace ngp::mlp {
         for (std::uint32_t i = 0u; i < N_ITERS; ++i) *reinterpret_cast<int4*>(&output_threadblock[lane_offset + (row + 16u * i) * WIDTH]) = *reinterpret_cast<const int4*>(&act_shmem[lane_offset + (row + 16u * i) * (WIDTH + SKEW)]);
     }
 
-    template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, network::detail::Activation ACTIVATION, bool INFERENCE>
-    __global__ void kernel_mlp_fused(const network::detail::Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t in_width, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout) {
+    template <std::uint32_t WIDTH, std::uint32_t N_ITERS, typename OUT_T, Activation ACTIVATION, bool INFERENCE>
+    __global__ void kernel_mlp_fused(const Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const std::uint32_t output_stride, const std::uint32_t batch_size, const std::uint32_t in_width, const std::uint32_t out_width, const std::uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout) {
         extern __shared__ __half shmem[];
         __half* act_shmem = shmem;
 
@@ -671,8 +835,8 @@ namespace ngp::mlp {
         }
     }
 
-    template <std::uint32_t WIDTH, typename T, network::detail::Activation ACTIVATION, bool INFERENCE>
-    void mlp_fused_forward(cudaStream_t stream, network::detail::Activation output_activation, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>& output_intermediate, legacy::GPUMatrixDynamic<T>* output, const std::uint32_t n_hidden_layers) {
+    template <std::uint32_t WIDTH, typename T, Activation ACTIVATION, bool INFERENCE>
+    void mlp_fused_forward(cudaStream_t stream, Activation output_activation, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>& output_intermediate, legacy::GPUMatrixDynamic<T>* output, const std::uint32_t n_hidden_layers) {
         static_assert(std::is_same_v<T, __half>, "The fully fused forward pass only supports __half precision.");
         const std::uint32_t batch_size = input.cols();
         const std::uint32_t in_width   = input.rows();
@@ -712,7 +876,7 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    FullyFusedMLP<T, WIDTH>::FullyFusedMLP(const std::uint32_t input_width, const std::uint32_t output_width, const std::uint32_t n_hidden_layers, const network::detail::Activation activation, const network::detail::Activation output_activation) : n_hidden_layers{n_hidden_layers}, input_width{input_width}, output_width{output_width}, activation{activation}, output_activation{output_activation} {
+    FullyFusedMLP<T, WIDTH>::FullyFusedMLP(const std::uint32_t input_width, const std::uint32_t output_width, const std::uint32_t n_hidden_layers, const Activation activation, const Activation output_activation) : n_hidden_layers{n_hidden_layers}, input_width{input_width}, output_width{output_width}, activation{activation}, output_activation{output_activation} {
         if (this->n_hidden_layers == 0u) throw std::runtime_error{"FullyFusedMLP requires at least 1 hidden layer (3 layers in total)."};
 
         n_hidden_matmuls    = this->n_hidden_layers - 1u;
@@ -745,14 +909,14 @@ namespace ngp::mlp {
         legacy::GPUMatrixDynamic<T> inference_tmp = output_width > 16u ? ngp::legacy::GPUMatrixDynamic<T>{network_width, batch_size, stream, legacy::CM} : ngp::legacy::GPUMatrixDynamic<T>{nullptr, network_width, batch_size, legacy::CM};
 
         switch (activation) {
-        case network::detail::Activation::None: mlp_fused_forward<WIDTH, T, network::detail::Activation::None, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::Exponential: mlp_fused_forward<WIDTH, T, network::detail::Activation::Exponential, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::Sigmoid: mlp_fused_forward<WIDTH, T, network::detail::Activation::Sigmoid, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::ReLU: mlp_fused_forward<WIDTH, T, network::detail::Activation::ReLU, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::LeakyReLU: mlp_fused_forward<WIDTH, T, network::detail::Activation::LeakyReLU, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::Squareplus: mlp_fused_forward<WIDTH, T, network::detail::Activation::Squareplus, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::Softplus: mlp_fused_forward<WIDTH, T, network::detail::Activation::Softplus, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
-        case network::detail::Activation::Tanh: mlp_fused_forward<WIDTH, T, network::detail::Activation::Tanh, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::None: mlp_fused_forward<WIDTH, T, Activation::None, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::Exponential: mlp_fused_forward<WIDTH, T, Activation::Exponential, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::Sigmoid: mlp_fused_forward<WIDTH, T, Activation::Sigmoid, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::ReLU: mlp_fused_forward<WIDTH, T, Activation::ReLU, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::LeakyReLU: mlp_fused_forward<WIDTH, T, Activation::LeakyReLU, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::Squareplus: mlp_fused_forward<WIDTH, T, Activation::Squareplus, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::Softplus: mlp_fused_forward<WIDTH, T, Activation::Softplus, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
+        case Activation::Tanh: mlp_fused_forward<WIDTH, T, Activation::Tanh, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
         default: throw std::runtime_error{"Unsupported activation."};
         }
 
@@ -768,14 +932,14 @@ namespace ngp::mlp {
         legacy::check_or_throw(params != nullptr);
 
         switch (activation) {
-        case network::detail::Activation::None: mlp_fused_forward<WIDTH, T, network::detail::Activation::None, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::Exponential: mlp_fused_forward<WIDTH, T, network::detail::Activation::Exponential, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::Sigmoid: mlp_fused_forward<WIDTH, T, network::detail::Activation::Sigmoid, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::ReLU: mlp_fused_forward<WIDTH, T, network::detail::Activation::ReLU, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::LeakyReLU: mlp_fused_forward<WIDTH, T, network::detail::Activation::LeakyReLU, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::Squareplus: mlp_fused_forward<WIDTH, T, network::detail::Activation::Squareplus, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::Softplus: mlp_fused_forward<WIDTH, T, network::detail::Activation::Softplus, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
-        case network::detail::Activation::Tanh: mlp_fused_forward<WIDTH, T, network::detail::Activation::Tanh, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::None: mlp_fused_forward<WIDTH, T, Activation::None, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::Exponential: mlp_fused_forward<WIDTH, T, Activation::Exponential, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::Sigmoid: mlp_fused_forward<WIDTH, T, Activation::Sigmoid, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::ReLU: mlp_fused_forward<WIDTH, T, Activation::ReLU, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::LeakyReLU: mlp_fused_forward<WIDTH, T, Activation::LeakyReLU, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::Squareplus: mlp_fused_forward<WIDTH, T, Activation::Squareplus, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::Softplus: mlp_fused_forward<WIDTH, T, Activation::Softplus, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
+        case Activation::Tanh: mlp_fused_forward<WIDTH, T, Activation::Tanh, false>(stream, output_activation, weight_matrices.front(), input, scratch.forward_hidden.at(0), output, n_hidden_matmuls); break;
         default: throw std::runtime_error{"Unsupported activation."};
         }
 
@@ -796,12 +960,12 @@ namespace ngp::mlp {
         if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
 
         const std::uint32_t batch_size = dL_doutput.n();
-        if (output_activation != network::detail::Activation::None) activation_backward_output_gpu(stream, dL_doutput.n_elements(), output_activation, output.data(), dL_doutput.data(), scratch.backward_output.data());
+        if (output_activation != Activation::None) activation_backward_output_gpu(stream, dL_doutput.n_elements(), output_activation, output.data(), dL_doutput.data(), scratch.backward_output.data());
 
         const float param_gradient_beta = param_gradients_mode == network::detail::GradientMode::Accumulate ? 1.0f : 0.0f;
         std::vector<network::detail::SyncedStreamReservation> multi_streams;
         const std::uint32_t split_k_factor                = batch_size / std::min(1u << 12u, batch_size);
-        const legacy::GPUMatrixDynamic<T>& tmp_dL_doutput = output_activation == network::detail::Activation::None ? dL_doutput : scratch.backward_output;
+        const legacy::GPUMatrixDynamic<T>& tmp_dL_doutput = output_activation == Activation::None ? dL_doutput : scratch.backward_output;
 
         auto dynamic_view = []<typename T0>(T0& matrix) { return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<T0>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()}; };
 
@@ -819,14 +983,14 @@ namespace ngp::mlp {
         legacy::GPUMatrixDynamic<T>* dL_dinput_fused = input.m() == scratch.forward_hidden.at(0).m() && input.layout() == legacy::CM ? dL_dinput : nullptr;
 
         switch (activation) {
-        case network::detail::Activation::None: mlp_fused_backward<WIDTH, T, network::detail::Activation::None>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::Exponential: mlp_fused_backward<WIDTH, T, network::detail::Activation::Exponential>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::Sigmoid: mlp_fused_backward<WIDTH, T, network::detail::Activation::Sigmoid>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::ReLU: mlp_fused_backward<WIDTH, T, network::detail::Activation::ReLU>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::LeakyReLU: mlp_fused_backward<WIDTH, T, network::detail::Activation::LeakyReLU>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::Squareplus: mlp_fused_backward<WIDTH, T, network::detail::Activation::Squareplus>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::Softplus: mlp_fused_backward<WIDTH, T, network::detail::Activation::Softplus>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
-        case network::detail::Activation::Tanh: mlp_fused_backward<WIDTH, T, network::detail::Activation::Tanh>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::None: mlp_fused_backward<WIDTH, T, Activation::None>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::Exponential: mlp_fused_backward<WIDTH, T, Activation::Exponential>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::Sigmoid: mlp_fused_backward<WIDTH, T, Activation::Sigmoid>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::ReLU: mlp_fused_backward<WIDTH, T, Activation::ReLU>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::LeakyReLU: mlp_fused_backward<WIDTH, T, Activation::LeakyReLU>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::Squareplus: mlp_fused_backward<WIDTH, T, Activation::Squareplus>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::Softplus: mlp_fused_backward<WIDTH, T, Activation::Softplus>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
+        case Activation::Tanh: mlp_fused_backward<WIDTH, T, Activation::Tanh>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
         default: throw std::runtime_error{"Unsupported activation."};
         }
 
@@ -883,7 +1047,7 @@ namespace ngp::mlp {
             backward_offset += scratch.backward_hidden[i].n_bytes();
         }
 
-        if (output_activation != network::detail::Activation::None)
+        if (output_activation != Activation::None)
             scratch.backward_output = {padded_output_width, batch_size, stream, output_layout};
         else
             scratch.backward_output = {};

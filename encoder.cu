@@ -7,6 +7,12 @@
 
 namespace ngp::encoding {
 
+#if defined(TCNN_PARAMS_UNALIGNED)
+    inline constexpr bool params_aligned = false;
+#else
+    inline constexpr bool params_aligned = true;
+#endif
+
     template <typename T>
     __global__ void transpose_encoded_position(const std::uint32_t n_elements, const T* __restrict__ encoded_positions, legacy::PitchedPtr<T> output) {
         const std::uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
@@ -245,11 +251,11 @@ namespace ngp::encoding {
 
         auto grid_val = [&](const legacy::math::uvec<N_POS_DIMS>& local_pos) {
             const std::uint32_t index = grid_index<N_POS_DIMS>(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
-            return *reinterpret_cast<const legacy::math::tvec<T, N_FEATURES_PER_LEVEL, network::detail::params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*>(&grid[index]);
+            return *reinterpret_cast<const legacy::math::tvec<T, N_FEATURES_PER_LEVEL, params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*>(&grid[index]);
         };
 
         if (encoded_positions) {
-            legacy::math::tvec<T, N_FEATURES_PER_LEVEL, network::detail::params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)> result = {};
+            legacy::math::tvec<T, N_FEATURES_PER_LEVEL, params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)> result = {};
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t idx = 0u; idx < (1u << N_POS_DIMS); ++idx) {

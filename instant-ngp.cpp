@@ -70,9 +70,9 @@ namespace ngp {
                 if (!transform_matrix.is_array() || transform_matrix.size() != 4) throw std::runtime_error{std::format("Invalid 'transform_matrix' in '{}', frame {}.", json_path.string(), frame_index)};
 
                 DatasetState::HostData::Frame& frame = (*frames)[frame_index];
-                frame.rgba         = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size};
-                frame.resolution   = legacy::math::ivec2{width, height};
-                frame.focal_length = focal_length_x;
+                frame.rgba                           = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size};
+                frame.resolution                     = legacy::math::ivec2{width, height};
+                frame.focal_length                   = focal_length_x;
 
                 for (std::size_t row = 0; row < 4; ++row) {
                     const nlohmann::json& transform_row = transform_matrix.at(row);
@@ -87,11 +87,11 @@ namespace ngp {
 
                 frame.camera[1] *= -1.0f;
                 frame.camera[2] *= -1.0f;
-                frame.camera[3]               = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
+                frame.camera[3]                      = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
                 const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(frame.camera, 0);
-                frame.camera                  = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
-                frame.camera                  = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
-                frame.camera                  = ngp::legacy::math::row(frame.camera, 2, camera_row0);
+                frame.camera                         = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
+                frame.camera                         = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
+                frame.camera                         = ngp::legacy::math::row(frame.camera, 2, camera_row0);
             }
         }
 
@@ -113,10 +113,10 @@ namespace ngp {
             pixel_buffer.copy_from_host(source_frame.rgba);
 
             DatasetState::DeviceData::GpuFrame& target_frame = uploaded_frames[frame_index];
-            target_frame.pixels                                          = pixel_buffer.data();
-            target_frame.resolution                                      = source_frame.resolution;
-            target_frame.focal_length                                    = source_frame.focal_length;
-            target_frame.camera                                          = source_frame.camera;
+            target_frame.pixels                              = pixel_buffer.data();
+            target_frame.resolution                          = source_frame.resolution;
+            target_frame.focal_length                        = source_frame.focal_length;
+            target_frame.camera                              = source_frame.camera;
         }
 
         loaded_dataset.device.frames.resize(uploaded_frames.size());

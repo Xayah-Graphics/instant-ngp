@@ -1,12 +1,14 @@
-#include "instant-ngp.h"
-#include "network-detail.cuh"
 #include "encoder.cuh"
 #include "fully-fused-mlp.cuh"
+#include "instant-ngp.h"
 #include "optimizer.cuh"
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <sstream>
+#include <stack>
 #include <type_traits>
+#include <unordered_map>
 #include <variant>
 
 namespace ngp::network {
@@ -97,7 +99,7 @@ namespace ngp::network::detail {
         if (!pools.contains(main_stream)) std::terminate();
         pools[main_stream].push(std::unique_ptr<AuxStreamSlot>{aux_stream_slot});
         aux_stream_slot = nullptr;
-        aux_stream = nullptr;
+        aux_stream      = nullptr;
     }
 
     SyncedStreamReservation& SyncedStreamReservation::operator=(SyncedStreamReservation&& other) noexcept {
@@ -120,6 +122,65 @@ namespace ngp {
     inline constexpr float MIN_CONE_STEPSIZE                    = 1.73205080757f / static_cast<float>(NERF_STEPS);
     inline constexpr std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY = 16u;
     inline constexpr float NERF_MIN_OPTICAL_THICKNESS           = 0.01f;
+
+    template <typename T>
+    inline constexpr float default_loss_scale = 1.0f;
+
+#ifdef __CUDACC__
+    template <>
+    inline constexpr float default_loss_scale<__half> = 128.0f;
+#endif
+
+    __device__ inline std::uint32_t morton3D(const std::uint32_t x, const std::uint32_t y, const std::uint32_t z) {
+        std::uint32_t xx = x;
+        std::uint32_t yy = y;
+        std::uint32_t zz = z;
+        xx               = (xx * 0x00010001u) & 0xFF0000FFu;
+        xx               = (xx * 0x00000101u) & 0x0F00F00Fu;
+        xx               = (xx * 0x00000011u) & 0xC30C30C3u;
+        xx               = (xx * 0x00000005u) & 0x49249249u;
+        yy               = (yy * 0x00010001u) & 0xFF0000FFu;
+        yy               = (yy * 0x00000101u) & 0x0F00F00Fu;
+        yy               = (yy * 0x00000011u) & 0xC30C30C3u;
+        yy               = (yy * 0x00000005u) & 0x49249249u;
+        zz               = (zz * 0x00010001u) & 0xFF0000FFu;
+        zz               = (zz * 0x00000101u) & 0x0F00F00Fu;
+        zz               = (zz * 0x00000011u) & 0xC30C30C3u;
+        zz               = (zz * 0x00000005u) & 0x49249249u;
+        return xx | (yy << 1u) | (zz << 2u);
+    }
+
+    __device__ inline std::uint32_t morton3D_invert(std::uint32_t value) {
+        value = value & 0x49249249u;
+        value = (value | (value >> 2u)) & 0xC30C30C3u;
+        value = (value | (value >> 4u)) & 0x0F00F00Fu;
+        value = (value | (value >> 8u)) & 0xFF0000FFu;
+        value = (value | (value >> 16u)) & 0x0000FFFFu;
+        return value;
+    }
+
+    template <typename RNG>
+    __device__ legacy::math::vec3 random_val_3d(RNG& rng) {
+        return {rng.next_float(), rng.next_float(), rng.next_float()};
+    }
+
+    __device__ inline float logistic(const float x) {
+        return 1.0f / (1.0f + expf(-x));
+    }
+
+    inline mlp::Activation activation_from_config(const InstantNGP::ActivationMode activation) {
+        switch (activation) {
+        case InstantNGP::ActivationMode::None: return mlp::Activation::None;
+        case InstantNGP::ActivationMode::ReLU: return mlp::Activation::ReLU;
+        case InstantNGP::ActivationMode::Exponential: return mlp::Activation::Exponential;
+        case InstantNGP::ActivationMode::Sigmoid: return mlp::Activation::Sigmoid;
+        case InstantNGP::ActivationMode::Squareplus: return mlp::Activation::Squareplus;
+        case InstantNGP::ActivationMode::Softplus: return mlp::Activation::Softplus;
+        case InstantNGP::ActivationMode::Tanh: return mlp::Activation::Tanh;
+        case InstantNGP::ActivationMode::LeakyReLU: return mlp::Activation::LeakyReLU;
+        default: throw std::runtime_error{"Unsupported public activation mode."};
+        }
+    }
 
     inline __device__ legacy::Ray uv_to_ray(const legacy::math::vec2& uv, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
         legacy::math::vec3 dir    = {(uv.x - 0.5f) * static_cast<float>(resolution.x) / focal_length, (uv.y - 0.5f) * static_cast<float>(resolution.y) / focal_length, 1.0f};
@@ -158,7 +219,7 @@ namespace ngp {
     inline __device__ std::uint32_t density_grid_idx_at(const legacy::math::vec3& pos) {
         const legacy::math::ivec3 i = pos * static_cast<float>(legacy::NERF_GRIDSIZE);
         if (i.x < 0 || i.x >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.y < 0 || i.y >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.z < 0 || i.z >= static_cast<int>(legacy::NERF_GRIDSIZE)) return 0xFFFFFFFFu;
-        return network::detail::morton3D(i.x, i.y, i.z);
+        return morton3D(i.x, i.y, i.z);
     }
 
     inline __device__ bool density_grid_occupied_at(const legacy::math::vec3& pos, const std::uint8_t* density_grid_bitfield) {
@@ -219,16 +280,16 @@ namespace ngp {
     }
 
     inline __device__ float network_to_rgb_derivative(const float val) {
-        const float rgb = network::detail::logistic(val);
+        const float rgb = logistic(val);
         return rgb * (1.0f - rgb);
     }
 
     template <typename T>
     __device__ legacy::math::vec3 network_to_rgb_vec(const T& val) {
         return {
-            network::detail::logistic(static_cast<float>(val[0])),
-            network::detail::logistic(static_cast<float>(val[1])),
-            network::detail::logistic(static_cast<float>(val[2])),
+            logistic(static_cast<float>(val[0])),
+            logistic(static_cast<float>(val[1])),
+            logistic(static_cast<float>(val[2])),
         };
     }
 
@@ -332,9 +393,9 @@ namespace ngp {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
-        const std::uint32_t x = network::detail::morton3D_invert(i >> 0u);
-        const std::uint32_t y = network::detail::morton3D_invert(i >> 1u);
-        const std::uint32_t z = network::detail::morton3D_invert(i >> 2u);
+        const std::uint32_t x = morton3D_invert(i >> 0u);
+        const std::uint32_t y = morton3D_invert(i >> 1u);
+        const std::uint32_t z = morton3D_invert(i >> 2u);
 
         constexpr float voxel_size   = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE);
         const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(legacy::NERF_GRIDSIZE);
@@ -391,10 +452,10 @@ namespace ngp {
             if (grid_in[idx] > thresh) break;
         }
 
-        const std::uint32_t x        = network::detail::morton3D_invert(idx >> 0u);
-        const std::uint32_t y        = network::detail::morton3D_invert(idx >> 1u);
-        const std::uint32_t z        = network::detail::morton3D_invert(idx >> 2u);
-        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + network::detail::random_val_3d(rng)) / static_cast<float>(legacy::NERF_GRIDSIZE);
+        const std::uint32_t x        = morton3D_invert(idx >> 0u);
+        const std::uint32_t y        = morton3D_invert(idx >> 1u);
+        const std::uint32_t z        = morton3D_invert(idx >> 2u);
+        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + random_val_3d(rng)) / static_cast<float>(legacy::NERF_GRIDSIZE);
 
         out[i]     = {warp_position(pos, aabb), MIN_CONE_STEPSIZE};
         indices[i] = idx;
@@ -542,7 +603,7 @@ namespace ngp {
         const legacy::math::ivec2 resolution = frame.resolution;
 
         const legacy::math::vec2 uv               = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers);
-        const legacy::math::vec3 background_color = network::detail::random_val_3d(rng);
+        const legacy::math::vec3 background_color = random_val_3d(rng);
         const legacy::math::ivec2 texel           = ngp::legacy::math::clamp(legacy::math::ivec2(uv * legacy::math::vec2(resolution)), 0, resolution - 1);
         const legacy::math::vec4 texsamp          = read_rgba(texel, resolution, frame.pixels);
         const legacy::math::vec3 rgbtarget        = linear_to_srgb(texsamp.rgb() + (1.0f - texsamp.a) * srgb_to_linear(background_color));
@@ -898,15 +959,15 @@ namespace ngp {
                     train_plan.network.density_input_dims,
                     train_plan.network.density_output_dims,
                     this->network_config.density_network.n_hidden_layers,
-                    network::detail::activation_from_config(this->network_config.density_network.activation),
-                    network::detail::activation_from_config(this->network_config.density_network.output_activation),
+                    activation_from_config(this->network_config.density_network.activation),
+                    activation_from_config(this->network_config.density_network.output_activation),
                 },
                 mlp::FullyFusedMLP<__half, rgb_network_width>{
                     train_plan.network.rgb_input_dims,
                     train_plan.network.rgb_output_dims,
                     this->network_config.rgb_network.n_hidden_layers,
-                    network::detail::activation_from_config(this->network_config.rgb_network.activation),
-                    network::detail::activation_from_config(this->network_config.rgb_network.output_activation),
+                    activation_from_config(this->network_config.rgb_network.activation),
+                    activation_from_config(this->network_config.rgb_network.output_activation),
                 },
                 {},
             };
@@ -1212,7 +1273,7 @@ namespace ngp {
 
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, sampling.aabb, training.rng, batch_size, workspace.ray_counter, network::detail::default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
+                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, sampling.aabb, training.rng, batch_size, workspace.ray_counter, default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
                     static_cast<const legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampling.snap_to_pixel_centers, sampling.density.reduction.data(), sampling.near_distance);
             }
 
@@ -1294,7 +1355,7 @@ namespace ngp {
                 forward(stream, workspace.compacted_coords_matrix, &workspace.compacted_output);
                 backward(stream, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix);
             }
-            optimizer->step(stream, network::detail::default_loss_scale<__half>, full_precision_params, network_params, network_param_gradients);
+            optimizer->step(stream, default_loss_scale<__half>, full_precision_params, network_params, network_param_gradients);
             ++training.step;
 
             legacy::cuda_check(cudaStreamSynchronize(stream));

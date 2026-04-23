@@ -1,6 +1,6 @@
 #pragma once
 
-#include "network-detail.cuh"
+#include "instant-ngp.h"
 #include <variant>
 
 namespace ngp::encoding {

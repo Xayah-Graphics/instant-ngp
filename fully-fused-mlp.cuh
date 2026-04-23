@@ -1,6 +1,6 @@
 #pragma once
 
-#include "network-detail.cuh"
+#include "common.cuh"
 
 #if !defined(NGP_DENSITY_NETWORK_WIDTH)
 #error "NGP_DENSITY_NETWORK_WIDTH must be provided by the build system."
@@ -26,9 +26,20 @@ namespace ngp {
 
 namespace ngp::mlp {
 
+    enum class Activation {
+        ReLU,
+        LeakyReLU,
+        Exponential,
+        Sigmoid,
+        Squareplus,
+        Softplus,
+        Tanh,
+        None,
+    };
+
     template <typename T, std::uint32_t WIDTH>
     struct FullyFusedMLP final {
-        FullyFusedMLP(std::uint32_t input_width, std::uint32_t output_width, std::uint32_t n_hidden_layers, network::detail::Activation activation, network::detail::Activation output_activation);
+        FullyFusedMLP(std::uint32_t input_width, std::uint32_t output_width, std::uint32_t n_hidden_layers, Activation activation, Activation output_activation);
 
         struct Scratch {
             std::vector<legacy::GPUMatrixDynamic<T>> forward_hidden  = {};
@@ -50,8 +61,8 @@ namespace ngp::mlp {
         std::uint32_t network_width                                     = WIDTH;
         std::uint32_t output_width                                      = 0u;
         std::uint32_t padded_output_width                               = 0u;
-        network::detail::Activation activation                          = network::detail::Activation::None;
-        network::detail::Activation output_activation                   = network::detail::Activation::None;
+        Activation activation                                           = Activation::None;
+        Activation output_activation                                    = Activation::None;
         std::vector<legacy::GPUMatrix<T, legacy::RM>> weight_matrices   = {};
         std::vector<legacy::GPUMatrix<T, legacy::RM>> gradient_matrices = {};
         std::size_t n_params                                            = 0u;

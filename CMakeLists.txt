@@ -102,7 +102,6 @@ target_sources(
         optimizer.cu
         encoder.cuh
         fully-fused-mlp.cuh
-        network-detail.cuh
         optimizer.cuh
         PUBLIC
         instant-ngp.h
