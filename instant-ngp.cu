@@ -118,10 +118,84 @@ namespace ngp::network::detail {
 
 namespace ngp {
 
+    inline constexpr std::uint32_t NERF_GRIDSIZE                = 128u;
+    inline constexpr std::uint32_t NERF_GRID_N_CELLS            = NERF_GRIDSIZE * NERF_GRIDSIZE * NERF_GRIDSIZE;
     inline constexpr std::uint32_t NERF_STEPS                   = 1024u;
     inline constexpr float MIN_CONE_STEPSIZE                    = 1.73205080757f / static_cast<float>(NERF_STEPS);
     inline constexpr std::uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY = 16u;
     inline constexpr float NERF_MIN_OPTICAL_THICKNESS           = 0.01f;
+
+    struct BoundingBox final {
+        __host__ __device__ BoundingBox() = default;
+        __host__ __device__ BoundingBox(const legacy::math::vec3& min, const legacy::math::vec3& max) : min{min}, max{max} {}
+
+        __device__ legacy::math::vec3 diag() const {
+            return max - min;
+        }
+
+        __device__ legacy::math::vec3 relative_pos(const legacy::math::vec3& pos) const {
+            return (pos - min) / diag();
+        }
+
+        __device__ legacy::math::vec2 ray_intersect(const legacy::math::vec3& pos, const legacy::math::vec3& dir) const {
+            float tmin = (min.x - pos.x) / dir.x;
+            float tmax = (max.x - pos.x) / dir.x;
+
+            if (tmin > tmax) cuda::std::swap(tmin, tmax);
+
+            float tymin = (min.y - pos.y) / dir.y;
+            float tymax = (max.y - pos.y) / dir.y;
+
+            if (tymin > tymax) cuda::std::swap(tymin, tymax);
+            if (tmin > tymax || tymin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+            if (tymin > tmin) tmin = tymin;
+            if (tymax < tmax) tmax = tymax;
+
+            float tzmin = (min.z - pos.z) / dir.z;
+            float tzmax = (max.z - pos.z) / dir.z;
+
+            if (tzmin > tzmax) cuda::std::swap(tzmin, tzmax);
+            if (tmin > tzmax || tzmin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+            if (tzmin > tmin) tmin = tzmin;
+            if (tzmax < tmax) tmax = tzmax;
+
+            return {tmin, tmax};
+        }
+
+        __device__ bool contains(const legacy::math::vec3& pos) const {
+            return pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y && pos.z >= min.z && pos.z <= max.z;
+        }
+
+        legacy::math::vec3 min = legacy::math::vec3(0.0f);
+        legacy::math::vec3 max = legacy::math::vec3(1.0f);
+    };
+
+    struct NerfPosition final {
+        __device__ NerfPosition() = default;
+        __device__ NerfPosition(const legacy::math::vec3& pos, float dt) : p{pos} {}
+        legacy::math::vec3 p = {};
+    };
+
+    struct NerfDirection final {
+        __device__ NerfDirection() = default;
+        __device__ NerfDirection(const legacy::math::vec3& dir, float dt) : d{dir} {}
+        legacy::math::vec3 d = {};
+    };
+
+    struct NerfCoordinate final {
+        __device__ NerfCoordinate() = default;
+        __device__ NerfCoordinate(const legacy::math::vec3& pos, const legacy::math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
+
+        __device__ void set(const legacy::math::vec3& pos, const legacy::math::vec3& dir, float dt) {
+            this->dt  = dt;
+            this->pos = NerfPosition{pos, dt};
+            this->dir = NerfDirection{dir, dt};
+        }
+
+        NerfPosition pos  = {};
+        float dt          = 0.0f;
+        NerfDirection dir = {};
+    };
 
     template <typename T>
     inline constexpr float default_loss_scale = 1.0f;
@@ -208,7 +282,7 @@ namespace ngp {
         }
     };
 
-    inline __device__ legacy::math::vec3 warp_position(const legacy::math::vec3& pos, const legacy::BoundingBox& aabb) {
+    inline __device__ legacy::math::vec3 warp_position(const legacy::math::vec3& pos, const BoundingBox& aabb) {
         return aabb.relative_pos(pos);
     }
 
@@ -217,8 +291,8 @@ namespace ngp {
     }
 
     inline __device__ std::uint32_t density_grid_idx_at(const legacy::math::vec3& pos) {
-        const legacy::math::ivec3 i = pos * static_cast<float>(legacy::NERF_GRIDSIZE);
-        if (i.x < 0 || i.x >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.y < 0 || i.y >= static_cast<int>(legacy::NERF_GRIDSIZE) || i.z < 0 || i.z >= static_cast<int>(legacy::NERF_GRIDSIZE)) return 0xFFFFFFFFu;
+        const legacy::math::ivec3 i = pos * static_cast<float>(NERF_GRIDSIZE);
+        if (i.x < 0 || i.x >= static_cast<int>(NERF_GRIDSIZE) || i.y < 0 || i.y >= static_cast<int>(NERF_GRIDSIZE) || i.z < 0 || i.z >= static_cast<int>(NERF_GRIDSIZE)) return 0xFFFFFFFFu;
         return morton3D(i.x, i.y, i.z);
     }
 
@@ -233,11 +307,11 @@ namespace ngp {
     }
 
     inline __device__ float advance_to_next_voxel(const float t, const legacy::math::vec3& pos, const legacy::math::vec3& dir, const legacy::math::vec3& idir) {
-        const legacy::math::vec3 p = static_cast<float>(legacy::NERF_GRIDSIZE) * (pos - 0.5f);
+        const legacy::math::vec3 p = static_cast<float>(NERF_GRIDSIZE) * (pos - 0.5f);
         const float tx             = (floorf(p.x + 0.5f + 0.5f * legacy::math::sign(dir.x)) - p.x) * idir.x;
         const float ty             = (floorf(p.y + 0.5f + 0.5f * legacy::math::sign(dir.y)) - p.y) * idir.y;
         const float tz             = (floorf(p.z + 0.5f + 0.5f * legacy::math::sign(dir.z)) - p.z) * idir.z;
-        const float t_target       = t + fmaxf(fminf(fminf(tx, ty), tz) / static_cast<float>(legacy::NERF_GRIDSIZE), 0.0f);
+        const float t_target       = t + fmaxf(fminf(fminf(tx, ty), tz) / static_cast<float>(NERF_GRIDSIZE), 0.0f);
         return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE, 0.5f)) * MIN_CONE_STEPSIZE;
     }
 
@@ -397,8 +471,8 @@ namespace ngp {
         const std::uint32_t y = morton3D_invert(i >> 1u);
         const std::uint32_t z = morton3D_invert(i >> 2u);
 
-        constexpr float voxel_size   = 1.0f / static_cast<float>(legacy::NERF_GRIDSIZE);
-        const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(legacy::NERF_GRIDSIZE);
+        constexpr float voxel_size   = 1.0f / static_cast<float>(NERF_GRIDSIZE);
+        const legacy::math::vec3 pos = legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} / static_cast<float>(NERF_GRIDSIZE);
 
         legacy::math::vec3 corners[8] = {
             pos + legacy::math::vec3{0.0f, 0.0f, 0.0f},
@@ -441,21 +515,21 @@ namespace ngp {
         grid_out[i] = count >= min_count ? 0.0f : -1.0f;
     }
 
-    __global__ void generate_grid_samples_nerf_nonuniform(const std::uint32_t n_elements, legacy::math::pcg32 rng, const std::uint32_t step, legacy::BoundingBox aabb, const float* __restrict__ grid_in, legacy::NerfPosition* __restrict__ out, std::uint32_t* __restrict__ indices, const float thresh) {
+    __global__ void generate_grid_samples_nerf_nonuniform(const std::uint32_t n_elements, legacy::math::pcg32 rng, const std::uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, std::uint32_t* __restrict__ indices, const float thresh) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
         rng.advance(i * 4u);
         std::uint32_t idx = 0u;
         for (std::uint32_t j = 0u; j < 10u; ++j) {
-            idx = ((i + step * n_elements) * 56924617u + j * 19349663u + 96925573u) % legacy::NERF_GRID_N_CELLS;
+            idx = ((i + step * n_elements) * 56924617u + j * 19349663u + 96925573u) % NERF_GRID_N_CELLS;
             if (grid_in[idx] > thresh) break;
         }
 
         const std::uint32_t x        = morton3D_invert(idx >> 0u);
         const std::uint32_t y        = morton3D_invert(idx >> 1u);
         const std::uint32_t z        = morton3D_invert(idx >> 2u);
-        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + random_val_3d(rng)) / static_cast<float>(legacy::NERF_GRIDSIZE);
+        const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + random_val_3d(rng)) / static_cast<float>(NERF_GRIDSIZE);
 
         out[i]     = {warp_position(pos, aabb), MIN_CONE_STEPSIZE};
         indices[i] = idx;
@@ -494,8 +568,8 @@ namespace ngp {
         grid_bitfield[i] = bits;
     }
 
-    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const legacy::BoundingBox aabb, const std::uint32_t max_samples, legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, legacy::Ray* __restrict__ rays_out_unnormalized, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<legacy::NerfCoordinate> coords_out,
-        const std::uint32_t n_training_images, const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const std::uint8_t* __restrict__ density_grid, const bool snap_to_pixel_centers) {
+    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const BoundingBox aabb, const std::uint32_t max_samples, legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, legacy::Ray* __restrict__ rays_out_unnormalized, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<NerfCoordinate> coords_out, const std::uint32_t n_training_images,
+        const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const std::uint8_t* __restrict__ density_grid, const bool snap_to_pixel_centers) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_rays) return;
 
@@ -561,8 +635,8 @@ namespace ngp {
         }
     }
 
-    __global__ void compute_loss_kernel_train_nerf(const std::uint32_t n_rays, const legacy::BoundingBox aabb, legacy::math::pcg32 rng, const std::uint32_t max_samples_compacted, const std::uint32_t* __restrict__ rays_counter, float loss_scale, const int padded_output_width, const std::uint32_t n_training_images, const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const __half* network_output, std::uint32_t* __restrict__ numsteps_counter,
-        const std::uint32_t* __restrict__ ray_indices_in, const legacy::Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const legacy::NerfCoordinate> coords_in, legacy::PitchedPtr<legacy::NerfCoordinate> coords_out, __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr, const float near_distance) {
+    __global__ void compute_loss_kernel_train_nerf(const std::uint32_t n_rays, const BoundingBox aabb, legacy::math::pcg32 rng, const std::uint32_t max_samples_compacted, const std::uint32_t* __restrict__ rays_counter, float loss_scale, const int padded_output_width, const std::uint32_t n_training_images, const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const __half* network_output, std::uint32_t* __restrict__ numsteps_counter,
+        const std::uint32_t* __restrict__ ray_indices_in, const legacy::Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const NerfCoordinate> coords_in, legacy::PitchedPtr<NerfCoordinate> coords_out, __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr, const float near_distance) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= *rays_counter) return;
 
@@ -635,9 +709,9 @@ namespace ngp {
         legacy::math::vec3 rgb_ray2 = {0.0f, 0.0f, 0.0f};
         T                           = 1.0f;
         for (std::uint32_t j = 0u; j < compacted_numsteps; ++j) {
-            legacy::NerfCoordinate* coord_out      = coords_out(j);
-            const legacy::NerfCoordinate* coord_in = coords_in(j);
-            *coord_out                             = *coord_in;
+            NerfCoordinate* coord_out      = coords_out(j);
+            const NerfCoordinate* coord_in = coords_in(j);
+            *coord_out                     = *coord_in;
 
             const legacy::math::vec3 pos                              = aabb.min + coord_in->pos.p * aabb.diag();
             const float depth                                         = ngp::legacy::math::distance(pos, ray_o);
@@ -669,7 +743,7 @@ namespace ngp {
         }
     }
 
-    __global__ void generate_validation_samples_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, legacy::BoundingBox aabb, const std::uint32_t max_samples, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<legacy::NerfCoordinate> coords_out, InstantNGP::DatasetState::DeviceData::GpuFrame frame, const std::uint8_t* __restrict__ density_grid) {
+    __global__ void generate_validation_samples_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, BoundingBox aabb, const std::uint32_t max_samples, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<NerfCoordinate> coords_out, InstantNGP::DatasetState::DeviceData::GpuFrame frame, const std::uint8_t* __restrict__ density_grid) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_pixels) return;
 
@@ -733,7 +807,7 @@ namespace ngp {
         }
     }
 
-    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const legacy::NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, const legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
+    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, const legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_pixels) return;
 
@@ -916,11 +990,11 @@ namespace ngp {
         this->network_config                   = network_config;
         train_plan                             = {};
         train_plan.training.batch_size         = 1u << 18;
-        train_plan.training.floats_per_coord   = sizeof(legacy::NerfCoordinate) / sizeof(float);
+        train_plan.training.floats_per_coord   = sizeof(NerfCoordinate) / sizeof(float);
         train_plan.validation.floats_per_coord = train_plan.training.floats_per_coord;
         train_plan.validation.max_samples      = train_plan.validation.tile_rays * train_plan.validation.max_samples_per_ray;
 
-        constexpr std::uint32_t n_pos_dims     = sizeof(legacy::NerfPosition) / sizeof(float);
+        constexpr std::uint32_t n_pos_dims     = sizeof(NerfPosition) / sizeof(float);
         train_plan.network.n_pos_dims          = n_pos_dims;
         train_plan.network.n_dir_dims          = 3u;
         train_plan.network.dir_offset          = n_pos_dims + 1u;
@@ -937,12 +1011,12 @@ namespace ngp {
 
         train_plan.training.padded_output_width     = std::max(legacy::next_multiple(train_plan.network.rgb_output_dims, 16u), 4u);
         train_plan.training.max_samples             = train_plan.training.batch_size * 16u;
-        train_plan.prep.uniform_samples_warmup      = legacy::NERF_GRID_N_CELLS;
-        train_plan.prep.uniform_samples_steady      = legacy::NERF_GRID_N_CELLS / 4u;
-        train_plan.prep.nonuniform_samples_steady   = legacy::NERF_GRID_N_CELLS / 4u;
+        train_plan.prep.uniform_samples_warmup      = NERF_GRID_N_CELLS;
+        train_plan.prep.uniform_samples_steady      = NERF_GRID_N_CELLS / 4u;
+        train_plan.prep.nonuniform_samples_steady   = NERF_GRID_N_CELLS / 4u;
         train_plan.density_grid.padded_output_width = train_plan.network.density_output_dims;
-        train_plan.density_grid.query_batch_size    = legacy::NERF_GRID_N_CELLS * 2u;
-        train_plan.density_grid.n_elements          = legacy::NERF_GRID_N_CELLS;
+        train_plan.density_grid.query_batch_size    = NERF_GRID_N_CELLS * 2u;
+        train_plan.density_grid.n_elements          = NERF_GRID_N_CELLS;
         train_plan.validation.padded_output_width   = train_plan.training.padded_output_width;
 
         cudaStream_t created_stream = {};
@@ -1075,13 +1149,13 @@ namespace ngp {
 
     InstantNGP::~InstantNGP() noexcept {
         try {
-            if (graph_capture.graph) {
-                legacy::cuda_check(cudaGraphDestroy(graph_capture.graph));
-                graph_capture.graph = nullptr;
+            if (graph) {
+                legacy::cuda_check(cudaGraphDestroy(graph));
+                graph = nullptr;
             }
-            if (graph_capture.graph_instance) {
-                legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
-                graph_capture.graph_instance = nullptr;
+            if (graph_instance) {
+                legacy::cuda_check(cudaGraphExecDestroy(graph_instance));
+                graph_instance = nullptr;
             }
         } catch (const std::runtime_error& error) {
             if (std::string{error.what()}.find("driver shutting down") == std::string::npos) std::fprintf(stderr, "Could not destroy cuda graph: %s\n", error.what());
@@ -1117,7 +1191,7 @@ namespace ngp {
             if (n_prep_to_skip > train_plan.prep.max_skip) n_prep_to_skip = train_plan.prep.max_skip;
             if (training.step % n_prep_to_skip == 0u) {
                 const auto prep_start = std::chrono::steady_clock::now();
-                legacy::ScopeGuard prep_timing_guard{[&] { training.last_prep_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - prep_start).count() / static_cast<float>(n_prep_to_skip); }};
+                const BoundingBox aabb{sampling.aabb_min, sampling.aabb_max};
 
                 const std::uint32_t n_uniform_density_grid_samples    = training.step < train_plan.prep.warmup_steps ? train_plan.prep.uniform_samples_warmup : train_plan.prep.uniform_samples_steady;
                 const std::uint32_t n_nonuniform_density_grid_samples = training.step < train_plan.prep.warmup_steps ? 0u : train_plan.prep.nonuniform_samples_steady;
@@ -1127,16 +1201,16 @@ namespace ngp {
                 const std::uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
                 const std::uint32_t padded_output_width    = train_plan.density_grid.padded_output_width;
 
-                const std::size_t positions_bytes   = legacy::align_to_cacheline(n_density_grid_samples * sizeof(legacy::NerfPosition));
-                const std::size_t indices_bytes     = legacy::align_to_cacheline(n_elements * sizeof(std::uint32_t));
-                const std::size_t density_tmp_bytes = legacy::align_to_cacheline(n_elements * sizeof(float));
-                const std::size_t mlp_out_bytes     = legacy::align_to_cacheline(n_density_grid_samples * padded_output_width * sizeof(__half));
+                const std::size_t positions_bytes   = legacy::next_multiple(n_density_grid_samples * sizeof(NerfPosition), static_cast<std::size_t>(128));
+                const std::size_t indices_bytes     = legacy::next_multiple(n_elements * sizeof(std::uint32_t), static_cast<std::size_t>(128));
+                const std::size_t density_tmp_bytes = legacy::next_multiple(n_elements * sizeof(float), static_cast<std::size_t>(128));
+                const std::size_t mlp_out_bytes     = legacy::next_multiple(n_density_grid_samples * padded_output_width * sizeof(__half), static_cast<std::size_t>(128));
                 auto& update_workspace              = sampling.update;
                 update_workspace.arena.enlarge(positions_bytes + indices_bytes + density_tmp_bytes + mlp_out_bytes, stream);
 
                 std::uint8_t* density_grid_base = reinterpret_cast<std::uint8_t*>(update_workspace.arena.data());
                 std::size_t density_grid_offset = 0u;
-                update_workspace.positions      = reinterpret_cast<legacy::NerfPosition*>(density_grid_base + density_grid_offset);
+                update_workspace.positions      = reinterpret_cast<float*>(density_grid_base + density_grid_offset);
                 density_grid_offset += positions_bytes;
                 update_workspace.indices = reinterpret_cast<std::uint32_t*>(density_grid_base + density_grid_offset);
                 density_grid_offset += indices_bytes;
@@ -1156,13 +1230,13 @@ namespace ngp {
 
                 if (n_uniform_density_grid_samples > 0u) {
                     const std::uint32_t blocks = (n_uniform_density_grid_samples + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_uniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, sampling.aabb, sampling.density.values.data(), update_workspace.positions, update_workspace.indices, -0.01f);
+                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_uniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<NerfPosition*>(update_workspace.positions), update_workspace.indices, -0.01f);
                 }
                 sampling.density_rng.advance();
 
                 if (n_nonuniform_density_grid_samples > 0u) {
                     const std::uint32_t blocks = (n_nonuniform_density_grid_samples + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_nonuniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, sampling.aabb, sampling.density.values.data(), update_workspace.positions + n_uniform_density_grid_samples, update_workspace.indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS);
+                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_nonuniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<NerfPosition*>(update_workspace.positions) + n_uniform_density_grid_samples, update_workspace.indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS);
                 }
                 sampling.density_rng.advance();
 
@@ -1170,7 +1244,7 @@ namespace ngp {
                 for (std::size_t density_batch_offset = 0u; density_batch_offset < n_density_grid_samples; density_batch_offset += density_batch_size) {
                     const std::size_t density_query_size = std::min(density_batch_size, static_cast<std::size_t>(n_density_grid_samples) - density_batch_offset);
                     legacy::GPUMatrixDynamic<__half> density_matrix(update_workspace.mlp_out + density_batch_offset, padded_output_width, density_query_size, legacy::RM);
-                    legacy::GPUMatrixDynamic<float> density_position_matrix(reinterpret_cast<float*>(update_workspace.positions + density_batch_offset), sizeof(legacy::NerfPosition) / sizeof(float), density_query_size, legacy::CM);
+                    legacy::GPUMatrixDynamic<float> density_position_matrix(update_workspace.positions + density_batch_offset * (sizeof(NerfPosition) / sizeof(float)), sizeof(NerfPosition) / sizeof(float), density_query_size, legacy::CM);
                     density(stream, density_position_matrix, density_matrix);
                 }
 
@@ -1185,7 +1259,7 @@ namespace ngp {
                 }
                 ++sampling.density.ema_step;
 
-                constexpr std::uint32_t base_grid_elements = legacy::NERF_GRID_N_CELLS;
+                constexpr std::uint32_t base_grid_elements = NERF_GRID_N_CELLS;
                 sampling.density.occupancy.enlarge(base_grid_elements / 8u);
                 sampling.density.reduction.enlarge(reduce_sum_workspace_size(base_grid_elements));
 
@@ -1198,6 +1272,7 @@ namespace ngp {
                 }
 
                 legacy::cuda_check(cudaStreamSynchronize(stream));
+                training.last_prep_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - prep_start).count() / static_cast<float>(n_prep_to_skip);
             }
 
             optimizer->beta1              = network_config.optimizer.beta1;
@@ -1207,7 +1282,7 @@ namespace ngp {
             optimizer->l2_reg             = network_config.optimizer.l2_reg;
             const bool get_loss_scalar    = training.step % 16u == 0u;
             const auto train_start        = std::chrono::steady_clock::now();
-            legacy::ScopeGuard train_timing_guard{[&] { training.last_train_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(); }};
+            const BoundingBox aabb{sampling.aabb_min, sampling.aabb_max};
 
             auto& counters                 = training.counters;
             auto& workspace                = training.workspace;
@@ -1224,14 +1299,14 @@ namespace ngp {
             workspace.floats_per_coord    = train_plan.training.floats_per_coord;
             workspace.max_samples         = train_plan.training.max_samples;
 
-            const std::size_t ray_indices_bytes       = legacy::align_to_cacheline(counters.rays_per_batch * sizeof(std::uint32_t));
-            const std::size_t rays_unnormalized_bytes = legacy::align_to_cacheline(counters.rays_per_batch * sizeof(legacy::Ray));
-            const std::size_t numsteps_bytes          = legacy::align_to_cacheline(counters.rays_per_batch * 2u * sizeof(std::uint32_t));
-            const std::size_t coords_bytes            = legacy::align_to_cacheline(workspace.max_samples * workspace.floats_per_coord * sizeof(float));
-            const std::size_t mlp_out_bytes           = legacy::align_to_cacheline(std::max(batch_size, workspace.max_samples) * workspace.padded_output_width * sizeof(__half));
-            const std::size_t dloss_bytes             = legacy::align_to_cacheline(batch_size * workspace.padded_output_width * sizeof(__half));
-            const std::size_t compacted_coords_bytes  = legacy::align_to_cacheline(batch_size * workspace.floats_per_coord * sizeof(float));
-            const std::size_t ray_counter_bytes       = legacy::align_to_cacheline(sizeof(std::uint32_t));
+            const std::size_t ray_indices_bytes       = legacy::next_multiple(counters.rays_per_batch * sizeof(std::uint32_t), static_cast<std::size_t>(128));
+            const std::size_t rays_unnormalized_bytes = legacy::next_multiple(counters.rays_per_batch * sizeof(legacy::Ray), static_cast<std::size_t>(128));
+            const std::size_t numsteps_bytes          = legacy::next_multiple(counters.rays_per_batch * 2u * sizeof(std::uint32_t), static_cast<std::size_t>(128));
+            const std::size_t coords_bytes            = legacy::next_multiple(workspace.max_samples * workspace.floats_per_coord * sizeof(float), static_cast<std::size_t>(128));
+            const std::size_t mlp_out_bytes           = legacy::next_multiple(std::max(batch_size, workspace.max_samples) * workspace.padded_output_width * sizeof(__half), static_cast<std::size_t>(128));
+            const std::size_t dloss_bytes             = legacy::next_multiple(batch_size * workspace.padded_output_width * sizeof(__half), static_cast<std::size_t>(128));
+            const std::size_t compacted_coords_bytes  = legacy::next_multiple(batch_size * workspace.floats_per_coord * sizeof(float), static_cast<std::size_t>(128));
+            const std::size_t ray_counter_bytes       = legacy::next_multiple(sizeof(std::uint32_t), static_cast<std::size_t>(128));
             const std::size_t total_bytes             = ray_indices_bytes + rays_unnormalized_bytes + numsteps_bytes + coords_bytes + mlp_out_bytes + dloss_bytes + compacted_coords_bytes + ray_counter_bytes;
 
             workspace.arena.enlarge(total_bytes, stream);
@@ -1266,15 +1341,15 @@ namespace ngp {
             legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), stream));
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, sampling.aabb, workspace.max_inference, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, static_cast<legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u},
+                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, static_cast<legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords), 1u},
                     static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), sampling.density.occupancy.data(), sampling.snap_to_pixel_centers);
             }
             inference(stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
 
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, sampling.aabb, training.rng, batch_size, workspace.ray_counter, default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
-                    static_cast<const legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampling.snap_to_pixel_centers, sampling.density.reduction.data(), sampling.near_distance);
+                compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, training.rng, batch_size, workspace.ray_counter, default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
+                    static_cast<const legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampling.snap_to_pixel_centers, sampling.density.reduction.data(), sampling.near_distance);
             }
 
             const std::uint32_t dloss_elements  = batch_size * workspace.padded_output_width;
@@ -1282,8 +1357,7 @@ namespace ngp {
             fill_rollover_and_rescale<__half><<<((dloss_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.padded_output_width, counters.numsteps_counter_compacted.data(), workspace.dloss_dmlp_out);
             fill_rollover<float><<<((coords_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear), network::detail::n_threads_linear, 0, stream>>>(batch_size, workspace.floats_per_coord, counters.numsteps_counter_compacted.data(), workspace.coords_compacted);
 
-            auto& graph_capture = this->graph_capture;
-            bool launch_direct  = stream == nullptr || stream == cudaStreamLegacy;
+            bool launch_direct = stream == nullptr || stream == cudaStreamLegacy;
             if (!launch_direct) {
                 cudaStreamCaptureStatus capture_status;
                 legacy::cuda_check(cudaStreamIsCapturing(stream, &capture_status));
@@ -1298,21 +1372,21 @@ namespace ngp {
                         if (capture_status != cudaStreamCaptureStatusNone) {
                             launch_direct = true;
                         } else {
-                            if (graph_capture.graph) {
-                                legacy::cuda_check(cudaGraphDestroy(graph_capture.graph));
-                                graph_capture.graph = nullptr;
+                            if (graph) {
+                                legacy::cuda_check(cudaGraphDestroy(graph));
+                                graph = nullptr;
                             }
 
                             legacy::cuda_check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
-                            legacy::current_graph_captures().push_back(&graph_capture);
+                            legacy::current_graph_capture_sync_flags().push_back(&synchronize_when_capture_done);
                             try {
                                 forward(stream, workspace.compacted_coords_matrix, &workspace.compacted_output);
                                 backward(stream, workspace.compacted_coords_matrix, workspace.compacted_output, workspace.gradient_matrix);
-                                legacy::cuda_check(cudaStreamEndCapture(stream, &graph_capture.graph));
-                                if (legacy::current_graph_captures().back() != &graph_capture) throw std::runtime_error{"Graph capture must end in reverse order of creation."};
-                                legacy::current_graph_captures().pop_back();
+                                legacy::cuda_check(cudaStreamEndCapture(stream, &graph));
+                                if (legacy::current_graph_capture_sync_flags().back() != &synchronize_when_capture_done) throw std::runtime_error{"Graph capture must end in reverse order of creation."};
+                                legacy::current_graph_capture_sync_flags().pop_back();
                             } catch (...) {
-                                if (!legacy::current_graph_captures().empty() && legacy::current_graph_captures().back() == &graph_capture) legacy::current_graph_captures().pop_back();
+                                if (!legacy::current_graph_capture_sync_flags().empty() && legacy::current_graph_capture_sync_flags().back() == &synchronize_when_capture_done) legacy::current_graph_capture_sync_flags().pop_back();
 
                                 cudaGraph_t aborted_graph      = nullptr;
                                 cudaError_t end_capture_result = cudaStreamEndCapture(stream, &aborted_graph);
@@ -1321,31 +1395,31 @@ namespace ngp {
                                 else
                                     cudaGetLastError();
 
-                                graph_capture.graph = nullptr;
+                                graph = nullptr;
                                 throw;
                             }
 
-                            if (graph_capture.synchronize_when_capture_done) {
+                            if (synchronize_when_capture_done) {
                                 legacy::cuda_check(cudaDeviceSynchronize());
-                                graph_capture.synchronize_when_capture_done = false;
+                                synchronize_when_capture_done = false;
                             }
 
-                            if (!graph_capture.graph) {
-                                if (graph_capture.graph_instance) legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
-                                graph_capture.graph          = nullptr;
-                                graph_capture.graph_instance = nullptr;
+                            if (!graph) {
+                                if (graph_instance) legacy::cuda_check(cudaGraphExecDestroy(graph_instance));
+                                graph          = nullptr;
+                                graph_instance = nullptr;
                             } else {
-                                if (graph_capture.graph_instance) {
+                                if (graph_instance) {
                                     cudaGraphExecUpdateResultInfo update_result;
-                                    legacy::cuda_check(cudaGraphExecUpdate(graph_capture.graph_instance, graph_capture.graph, &update_result));
+                                    legacy::cuda_check(cudaGraphExecUpdate(graph_instance, graph, &update_result));
                                     if (update_result.result != cudaGraphExecUpdateSuccess) {
-                                        legacy::cuda_check(cudaGraphExecDestroy(graph_capture.graph_instance));
-                                        graph_capture.graph_instance = nullptr;
+                                        legacy::cuda_check(cudaGraphExecDestroy(graph_instance));
+                                        graph_instance = nullptr;
                                     }
                                 }
 
-                                if (!graph_capture.graph_instance) legacy::cuda_check(cudaGraphInstantiate(&graph_capture.graph_instance, graph_capture.graph, nullptr, nullptr, 0));
-                                legacy::cuda_check(cudaGraphLaunch(graph_capture.graph_instance, stream));
+                                if (!graph_instance) legacy::cuda_check(cudaGraphInstantiate(&graph_instance, graph, nullptr, nullptr, 0));
+                                legacy::cuda_check(cudaGraphLaunch(graph_instance, stream));
                             }
                         }
                     }
@@ -1393,6 +1467,7 @@ namespace ngp {
             }
 
             training.rng.advance();
+            training.last_train_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count();
         }
 
         TrainResult result{};
@@ -1430,6 +1505,7 @@ namespace ngp {
         double total_squared_error = 0.0;
         double total_psnr          = 0.0;
         const auto benchmark_start = std::chrono::steady_clock::now();
+        const BoundingBox aabb{sampling.aabb_min, sampling.aabb_max};
 
         for (std::size_t validation_image_index = 0u; validation_image_index < validation_count; ++validation_image_index) {
             const DatasetState::HostData::Frame& source = dataset.host.validation[validation_image_index];
@@ -1463,7 +1539,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, sampling.aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
                 }
 
                 std::uint32_t used_samples    = 0u;
@@ -1490,7 +1566,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<const legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
                 }
             }
 
@@ -1554,7 +1630,8 @@ namespace ngp {
         const std::uint32_t padded_output_width = train_plan.validation.padded_output_width;
         const std::uint32_t floats_per_coord    = train_plan.validation.floats_per_coord;
         const std::uint32_t max_samples         = train_plan.validation.max_samples;
-        auto& workspace                         = render_workspace;
+        const BoundingBox aabb{sampling.aabb_min, sampling.aabb_max};
+        auto& workspace = render_workspace;
         workspace.rendered.resize(total_pixels);
         workspace.tile_numsteps.resize(train_plan.validation.tile_rays * 2u);
         workspace.tile_coords.resize(max_samples * floats_per_coord);
@@ -1570,7 +1647,7 @@ namespace ngp {
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, sampling.aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
             }
 
             std::uint32_t used_samples    = 0u;
@@ -1597,7 +1674,7 @@ namespace ngp {
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<const legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
             }
         }
 
@@ -1651,6 +1728,7 @@ namespace ngp {
         double total_squared_error = 0.0;
         double total_psnr          = 0.0;
         const auto benchmark_start = std::chrono::steady_clock::now();
+        const BoundingBox aabb{sampling.aabb_min, sampling.aabb_max};
 
         for (std::size_t test_image_index = 0u; test_image_index < test_count; ++test_image_index) {
             const DatasetState::HostData::Frame& source = dataset.host.test[test_image_index];
@@ -1684,7 +1762,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, sampling.aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<legacy::NerfCoordinate>{reinterpret_cast<legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
                 }
 
                 std::uint32_t used_samples    = 0u;
@@ -1711,7 +1789,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const legacy::NerfCoordinate>{reinterpret_cast<const legacy::NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
                 }
             }
 

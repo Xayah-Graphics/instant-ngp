@@ -2,10 +2,10 @@
 #define NGP_LEGACY_CUH
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cuda.h>
 #include <cuda/std/algorithm>
 #include <cuda/std/cmath>
@@ -13,14 +13,13 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <numeric>
 #include <source_location>
 #include <sstream>
-#include <stack>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if defined(__CUDA_ARCH__)
@@ -30,9 +29,6 @@
 #endif
 
 namespace ngp::legacy {
-
-    inline constexpr std::uint32_t NERF_GRIDSIZE     = 128u;
-    inline constexpr std::uint32_t NERF_GRID_N_CELLS = NERF_GRIDSIZE * NERF_GRIDSIZE * NERF_GRIDSIZE;
 
     namespace math {
 #define PCG32_DEFAULT_STATE  0x853c49e6748fea9bULL
@@ -894,83 +890,33 @@ namespace ngp::legacy {
         throw_runtime_error(stream.str(), location);
     }
 
-
-    struct GraphCaptureState {
-        cudaGraph_t graph                  = nullptr;
-        cudaGraphExec_t graph_instance     = nullptr;
-        bool synchronize_when_capture_done = false;
-    };
-
-
-    inline std::deque<GraphCaptureState*>& current_graph_captures() {
-        static thread_local std::deque<GraphCaptureState*> s_current_captures;
+    inline std::deque<bool*>& current_graph_capture_sync_flags() {
+        static thread_local std::deque<bool*> s_current_captures;
         return s_current_captures;
     }
 
-    inline std::atomic<size_t>& total_n_bytes_allocated() {
-        static std::atomic<size_t> s_total_n_bytes_allocated{0};
-        return s_total_n_bytes_allocated;
-    }
-
-    inline size_t align_to_cacheline(size_t bytes) {
-        return next_multiple(bytes, static_cast<size_t>(128));
-    }
-
-    class ScopeGuard {
-    public:
-        explicit ScopeGuard(std::function<void()> callback) : m_callback{std::move(callback)} {}
-        ScopeGuard& operator=(const ScopeGuard&) = delete;
-        ScopeGuard(const ScopeGuard&)            = delete;
-        ScopeGuard& operator=(ScopeGuard&& other) noexcept {
-            std::swap(m_callback, other.m_callback);
-            return *this;
-        }
-        ScopeGuard(ScopeGuard&& other) noexcept {
-            *this = std::move(other);
-        }
-        ~ScopeGuard() {
-            if (m_callback) m_callback();
-        }
-
-    private:
-        std::function<void()> m_callback;
-    };
-
-    template <typename T>
-    struct Interval {
-        T start, end;
-
-        bool operator<(const Interval& other) const {
-            return end < other.end || (end == other.end && start < other.start);
-        }
-
-        [[nodiscard]] bool overlaps(const Interval& other) const {
-            return !intersect(other).empty();
-        }
-
-        [[nodiscard]] Interval intersect(const Interval& other) const {
-            return {std::max(start, other.start), std::min(end, other.end)};
-        }
-
-        [[nodiscard]] bool valid() const {
-            return end >= start;
-        }
-
-        [[nodiscard]] bool empty() const {
-            return end <= start;
-        }
-
-        [[nodiscard]] T size() const {
-            return end - start;
-        }
-    };
-
-
     class GpuHeap {
+    private:
+        template <typename T>
+        struct Interval final {
+            T start, end;
+
+            [[nodiscard]] Interval intersect(const Interval& other) const {
+                return {std::max(start, other.start), std::min(end, other.end)};
+            }
+
+            [[nodiscard]] bool empty() const {
+                return end <= start;
+            }
+
+            [[nodiscard]] T size() const {
+                return end - start;
+            }
+        };
+
     public:
         GpuHeap() {
             cuda_check(cudaGetDevice(&m_device));
-            m_alignment = static_cast<size_t>(128);
 
             CUmemAllocationProp prop = {};
             prop.type                = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -1001,17 +947,20 @@ namespace ngp::legacy {
                     int previous_device;
                     cuda_check(cudaGetDevice(&previous_device));
                     cuda_check(cudaSetDevice(m_device));
-                    ScopeGuard revert_device{[&]() { cuda_check(cudaSetDevice(previous_device)); }};
-
-                    cuda_check(cudaDeviceSynchronize());
-                    if (m_mapped_bytes) {
-                        total_n_bytes_allocated() -= m_mapped_bytes;
-                        cu_check(cuMemUnmap(m_base_address, m_mapped_bytes));
+                    try {
+                        cuda_check(cudaDeviceSynchronize());
+                        if (m_mapped_bytes) {
+                            cu_check(cuMemUnmap(m_base_address, m_mapped_bytes));
+                        }
+                        for (const auto& handle : m_handles) {
+                            cu_check(cuMemRelease(handle));
+                        }
+                        cu_check(cuMemAddressFree(m_base_address, m_max_size));
+                    } catch (...) {
+                        if (cudaSetDevice(previous_device) != cudaSuccess) std::terminate();
+                        throw;
                     }
-                    for (const auto& handle : m_handles) {
-                        cu_check(cuMemRelease(handle));
-                    }
-                    cu_check(cuMemAddressFree(m_base_address, m_max_size));
+                    cuda_check(cudaSetDevice(previous_device));
                 }
             } catch (const std::runtime_error& error) {
                 if (std::string{error.what()}.find("driver shutting down") == std::string::npos) std::fprintf(stderr, "Could not free gpu heap: %s\n", error.what());
@@ -1025,7 +974,7 @@ namespace ngp::legacy {
         size_t allocate(size_t n_bytes, cudaStream_t stream) {
             if (n_bytes == 0) return 0;
 
-            n_bytes = align_to_cacheline(n_bytes);
+            n_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
 
             if (stream && stream != cudaStreamLegacy) {
                 auto& free_intervals             = m_stream_free_intervals[stream];
@@ -1064,7 +1013,7 @@ namespace ngp::legacy {
         void release(size_t offset, size_t n_bytes, cudaStream_t stream) {
             if (n_bytes == 0) return;
 
-            n_bytes = align_to_cacheline(n_bytes);
+            n_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
 
             if (stream && stream != cudaStreamLegacy) {
                 auto& free_intervals = m_stream_free_intervals[stream];
@@ -1132,10 +1081,9 @@ namespace ngp::legacy {
             cu_check(cuMemMap(m_base_address + m_mapped_bytes, n_bytes_to_allocate, 0, m_handles.back(), 0));
             cu_check(cuMemSetAccess(m_base_address + m_mapped_bytes, n_bytes_to_allocate, &access_desc, 1));
             m_mapped_bytes += n_bytes_to_allocate;
-            total_n_bytes_allocated() += n_bytes_to_allocate;
 
-            if (!current_graph_captures().empty())
-                current_graph_captures().front()->synchronize_when_capture_done = true;
+            if (!current_graph_capture_sync_flags().empty())
+                *current_graph_capture_sync_flags().front() = true;
             else
                 cuda_check(cudaDeviceSynchronize());
         }
@@ -1143,7 +1091,6 @@ namespace ngp::legacy {
         int m_device               = 0;
         CUdeviceptr m_base_address = {};
         size_t m_mapped_bytes      = 0;
-        size_t m_alignment         = 0;
         size_t m_granularity       = 0;
         size_t m_max_size          = 0;
         std::vector<CUmemGenericAllocationHandle> m_handles;
@@ -1186,7 +1133,7 @@ namespace ngp::legacy {
                 m_handle          = acquire_handle();
                 m_handle->heap    = gpu_heap();
                 m_handle->stream  = stream;
-                m_handle->n_bytes = align_to_cacheline(n_bytes);
+                m_handle->n_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
                 m_handle->offset  = m_handle->heap->allocate(m_handle->n_bytes, stream);
             }
         }
@@ -1718,102 +1665,6 @@ namespace ngp::legacy {
 
     template <typename T>
     using GPUMatrixDynamic = GPUMatrix<T, MatrixLayout::Dynamic>;
-
-
-    struct BoundingBox {
-        __host__ __device__ BoundingBox() {}
-
-        __host__ __device__ BoundingBox(const math::vec3& a, const math::vec3& b) : min{a}, max{b} {}
-
-        __host__ __device__ void enlarge(const BoundingBox& other) {
-            min = math::min(min, other.min);
-            max = math::max(max, other.max);
-        }
-
-        __host__ __device__ void enlarge(const math::vec3& point) {
-            min = math::min(min, point);
-            max = math::max(max, point);
-        }
-
-        __host__ __device__ void inflate(float amount) {
-            min -= math::vec3(amount);
-            max += math::vec3(amount);
-        }
-
-        __device__ math::vec3 diag() const {
-            return max - min;
-        }
-
-        __device__ math::vec3 relative_pos(const math::vec3& pos) const {
-            return (pos - min) / diag();
-        }
-
-        __device__ math::vec2 ray_intersect(const math::vec3& pos, const math::vec3& dir) const {
-            float tmin = (min.x - pos.x) / dir.x;
-            float tmax = (max.x - pos.x) / dir.x;
-
-            if (tmin > tmax) cuda::std::swap(tmin, tmax);
-
-            float tymin = (min.y - pos.y) / dir.y;
-            float tymax = (max.y - pos.y) / dir.y;
-
-            if (tymin > tymax) cuda::std::swap(tymin, tymax);
-
-            if (tmin > tymax || tymin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-
-            if (tymin > tmin) tmin = tymin;
-
-            if (tymax < tmax) tmax = tymax;
-
-            float tzmin = (min.z - pos.z) / dir.z;
-            float tzmax = (max.z - pos.z) / dir.z;
-
-            if (tzmin > tzmax) cuda::std::swap(tzmin, tzmax);
-
-            if (tmin > tzmax || tzmin > tmax) return {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-
-            if (tzmin > tmin) tmin = tzmin;
-
-            if (tzmax < tmax) tmax = tzmax;
-
-            return {tmin, tmax};
-        }
-
-        __host__ __device__ bool is_empty() const {
-            return max.x < min.x || max.y < min.y || max.z < min.z;
-        }
-
-        __device__ bool contains(const math::vec3& p) const {
-            return p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y && p.z >= min.z && p.z <= max.z;
-        }
-
-        math::vec3 min = math::vec3(std::numeric_limits<float>::infinity());
-        math::vec3 max = math::vec3(-std::numeric_limits<float>::infinity());
-    };
-
-    struct NerfPosition {
-        __device__ NerfPosition(const math::vec3& pos, float dt) : p{pos} {}
-        math::vec3 p;
-    };
-
-    struct NerfDirection {
-        __device__ NerfDirection(const math::vec3& dir, float dt) : d{dir} {}
-        math::vec3 d;
-    };
-
-    struct NerfCoordinate {
-        __device__ NerfCoordinate(const math::vec3& pos, const math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
-
-        __device__ void set(const math::vec3& pos, const math::vec3& dir, float dt) {
-            this->dt  = dt;
-            this->pos = NerfPosition(pos, dt);
-            this->dir = NerfDirection(dir, dt);
-        }
-
-        NerfPosition pos;
-        float dt;
-        NerfDirection dir;
-    };
 
 } // namespace ngp::legacy
 

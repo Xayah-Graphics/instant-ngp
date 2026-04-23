@@ -195,14 +195,15 @@ namespace ngp {
             } density = {};
 
             struct UpdateWorkspace final {
-                legacy::GpuBuffer<char> arena   = {};
-                legacy::NerfPosition* positions = nullptr;
-                std::uint32_t* indices          = nullptr;
-                float* density_scratch          = nullptr;
-                __half* mlp_out                 = nullptr;
+                legacy::GpuBuffer<char> arena = {};
+                float* positions              = nullptr;
+                std::uint32_t* indices        = nullptr;
+                float* density_scratch        = nullptr;
+                __half* mlp_out               = nullptr;
             } update = {};
 
-            legacy::BoundingBox aabb        = legacy::BoundingBox{legacy::math::vec3(0.0f), legacy::math::vec3(1.0f)};
+            legacy::math::vec3 aabb_min     = legacy::math::vec3(0.0f);
+            legacy::math::vec3 aabb_max     = legacy::math::vec3(1.0f);
             bool snap_to_pixel_centers      = true;
             float near_distance             = 0.1f;
             legacy::math::pcg32 density_rng = {};
@@ -271,7 +272,9 @@ namespace ngp {
         ModelState* model                        = nullptr;
         ModelScratch* model_scratch              = nullptr;
         Optimizer* optimizer                     = nullptr;
-        legacy::GraphCaptureState graph_capture  = {};
+        cudaGraph_t graph                        = nullptr;
+        cudaGraphExec_t graph_instance           = nullptr;
+        bool synchronize_when_capture_done       = false;
     };
 
 } // namespace ngp
