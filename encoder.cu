@@ -376,7 +376,7 @@ namespace ngp::encoding {
         }
 
         for (std::uint32_t i = 0u; i < n_levels; ++i) {
-            const std::uint32_t resolution = grid_resolution(grid_scale(i, std::log2(per_level_scale), base_resolution));
+            const std::uint32_t resolution     = grid_resolution(grid_scale(i, std::log2(per_level_scale), base_resolution));
             constexpr std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
             std::uint32_t params_in_level      = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : powi(resolution, N_POS_DIMS);
 
@@ -479,7 +479,7 @@ namespace ngp::encoding {
         }
 
         std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>* grid_gradient = nullptr;
-        legacy::GpuAllocation grid_gradient_tmp                                  = {};
+        legacy::GpuAllocation grid_gradient_tmp                                 = {};
 
         if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
             grid_gradient_tmp = legacy::GpuAllocation{n_params * sizeof(std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>), stream};
@@ -511,7 +511,7 @@ namespace ngp::encoding {
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL> make_hash_grid_encoding(const InstantNGP::NetworkConfig::HashGridConfig& config) {
-        const GridType grid_type = config.storage == InstantNGP::GridStorage::Hash ? GridType::Hash : (config.storage == InstantNGP::GridStorage::Dense ? GridType::Dense : (config.storage == InstantNGP::GridStorage::Tiled ? GridType::Tiled : throw std::runtime_error{"Unsupported grid storage mode."}));
+        const GridType grid_type       = config.storage == InstantNGP::GridStorage::Hash ? GridType::Hash : (config.storage == InstantNGP::GridStorage::Dense ? GridType::Dense : (config.storage == InstantNGP::GridStorage::Tiled ? GridType::Tiled : throw std::runtime_error{"Unsupported grid storage mode."}));
         const std::uint32_t n_features = N_FEATURES_PER_LEVEL * config.n_levels;
         const float per_level_scale    = config.per_level_scale.has_value() ? *config.per_level_scale : (grid_type == GridType::Dense && config.n_levels > 1u && config.base_resolution > 0u ? std::exp(std::log(256.0f / static_cast<float>(config.base_resolution)) / (config.n_levels - 1u)) : 2.0f);
         return {n_features, config.log2_hashmap_size, config.base_resolution, per_level_scale, config.stochastic_interpolation, grid_type};
