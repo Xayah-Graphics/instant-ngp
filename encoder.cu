@@ -102,8 +102,8 @@ namespace ngp::encoding {
         return rng.next_float();
     }
 
-    template <typename T, typename Array>
-    __device__ void sh_enc(const std::uint32_t degree, const float x, const float y, const float z, Array& data_out) {
+    template <typename T>
+    __device__ void sh_enc(const std::uint32_t degree, const float x, const float y, const float z, T* __restrict__ data_out, const std::uint32_t output_stride) {
         const float xy = x * y;
         const float xz = x * z;
         const float yz = y * z;
@@ -117,81 +117,81 @@ namespace ngp::encoding {
         const float y6 = y4 * y2;
         const float z6 = z4 * z2;
 
-        data_out(0) = static_cast<T>(0.28209479177387814f);
+        data_out[0u * output_stride] = static_cast<T>(0.28209479177387814f);
         if (degree <= 1u) return;
-        data_out(1) = static_cast<T>(-0.48860251190291987f * y);
-        data_out(2) = static_cast<T>(0.48860251190291987f * z);
-        data_out(3) = static_cast<T>(-0.48860251190291987f * x);
+        data_out[1u * output_stride] = static_cast<T>(-0.48860251190291987f * y);
+        data_out[2u * output_stride] = static_cast<T>(0.48860251190291987f * z);
+        data_out[3u * output_stride] = static_cast<T>(-0.48860251190291987f * x);
         if (degree <= 2u) return;
-        data_out(4) = static_cast<T>(1.0925484305920792f * xy);
-        data_out(5) = static_cast<T>(-1.0925484305920792f * yz);
-        data_out(6) = static_cast<T>(0.94617469575755997f * z2 - 0.31539156525251999f);
-        data_out(7) = static_cast<T>(-1.0925484305920792f * xz);
-        data_out(8) = static_cast<T>(0.54627421529603959f * x2 - 0.54627421529603959f * y2);
+        data_out[4u * output_stride] = static_cast<T>(1.0925484305920792f * xy);
+        data_out[5u * output_stride] = static_cast<T>(-1.0925484305920792f * yz);
+        data_out[6u * output_stride] = static_cast<T>(0.94617469575755997f * z2 - 0.31539156525251999f);
+        data_out[7u * output_stride] = static_cast<T>(-1.0925484305920792f * xz);
+        data_out[8u * output_stride] = static_cast<T>(0.54627421529603959f * x2 - 0.54627421529603959f * y2);
         if (degree <= 3u) return;
-        data_out(9)  = static_cast<T>(0.59004358992664352f * y * (-3.0f * x2 + y2));
-        data_out(10) = static_cast<T>(2.8906114426405538f * xy * z);
-        data_out(11) = static_cast<T>(0.45704579946446572f * y * (1.0f - 5.0f * z2));
-        data_out(12) = static_cast<T>(0.3731763325901154f * z * (5.0f * z2 - 3.0f));
-        data_out(13) = static_cast<T>(0.45704579946446572f * x * (1.0f - 5.0f * z2));
-        data_out(14) = static_cast<T>(1.4453057213202769f * z * (x2 - y2));
-        data_out(15) = static_cast<T>(0.59004358992664352f * x * (-x2 + 3.0f * y2));
+        data_out[9u * output_stride]  = static_cast<T>(0.59004358992664352f * y * (-3.0f * x2 + y2));
+        data_out[10u * output_stride] = static_cast<T>(2.8906114426405538f * xy * z);
+        data_out[11u * output_stride] = static_cast<T>(0.45704579946446572f * y * (1.0f - 5.0f * z2));
+        data_out[12u * output_stride] = static_cast<T>(0.3731763325901154f * z * (5.0f * z2 - 3.0f));
+        data_out[13u * output_stride] = static_cast<T>(0.45704579946446572f * x * (1.0f - 5.0f * z2));
+        data_out[14u * output_stride] = static_cast<T>(1.4453057213202769f * z * (x2 - y2));
+        data_out[15u * output_stride] = static_cast<T>(0.59004358992664352f * x * (-x2 + 3.0f * y2));
         if (degree <= 4u) return;
-        data_out(16) = static_cast<T>(2.5033429417967046f * xy * (x2 - y2));
-        data_out(17) = static_cast<T>(1.7701307697799304f * yz * (-3.0f * x2 + y2));
-        data_out(18) = static_cast<T>(0.94617469575756008f * xy * (7.0f * z2 - 1.0f));
-        data_out(19) = static_cast<T>(0.66904654355728921f * yz * (3.0f - 7.0f * z2));
-        data_out(20) = static_cast<T>(-3.1735664074561294f * z2 + 3.7024941420321507f * z4 + 0.31735664074561293f);
-        data_out(21) = static_cast<T>(0.66904654355728921f * xz * (3.0f - 7.0f * z2));
-        data_out(22) = static_cast<T>(0.47308734787878004f * (x2 - y2) * (7.0f * z2 - 1.0f));
-        data_out(23) = static_cast<T>(1.7701307697799304f * xz * (-x2 + 3.0f * y2));
-        data_out(24) = static_cast<T>(-3.7550144126950569f * x2 * y2 + 0.62583573544917614f * x4 + 0.62583573544917614f * y4);
+        data_out[16u * output_stride] = static_cast<T>(2.5033429417967046f * xy * (x2 - y2));
+        data_out[17u * output_stride] = static_cast<T>(1.7701307697799304f * yz * (-3.0f * x2 + y2));
+        data_out[18u * output_stride] = static_cast<T>(0.94617469575756008f * xy * (7.0f * z2 - 1.0f));
+        data_out[19u * output_stride] = static_cast<T>(0.66904654355728921f * yz * (3.0f - 7.0f * z2));
+        data_out[20u * output_stride] = static_cast<T>(-3.1735664074561294f * z2 + 3.7024941420321507f * z4 + 0.31735664074561293f);
+        data_out[21u * output_stride] = static_cast<T>(0.66904654355728921f * xz * (3.0f - 7.0f * z2));
+        data_out[22u * output_stride] = static_cast<T>(0.47308734787878004f * (x2 - y2) * (7.0f * z2 - 1.0f));
+        data_out[23u * output_stride] = static_cast<T>(1.7701307697799304f * xz * (-x2 + 3.0f * y2));
+        data_out[24u * output_stride] = static_cast<T>(-3.7550144126950569f * x2 * y2 + 0.62583573544917614f * x4 + 0.62583573544917614f * y4);
         if (degree <= 5u) return;
-        data_out(25) = static_cast<T>(0.65638205684017015f * y * (10.0f * x2 * y2 - 5.0f * x4 - y4));
-        data_out(26) = static_cast<T>(8.3026492595241645f * xy * z * (x2 - y2));
-        data_out(27) = static_cast<T>(-0.48923829943525038f * y * (3.0f * x2 - y2) * (9.0f * z2 - 1.0f));
-        data_out(28) = static_cast<T>(4.7935367849733241f * xy * z * (3.0f * z2 - 1.0f));
-        data_out(29) = static_cast<T>(0.45294665119569694f * y * (14.0f * z2 - 21.0f * z4 - 1.0f));
-        data_out(30) = static_cast<T>(0.1169503224534236f * z * (-70.0f * z2 + 63.0f * z4 + 15.0f));
-        data_out(31) = static_cast<T>(0.45294665119569694f * x * (14.0f * z2 - 21.0f * z4 - 1.0f));
-        data_out(32) = static_cast<T>(2.3967683924866621f * z * (x2 - y2) * (3.0f * z2 - 1.0f));
-        data_out(33) = static_cast<T>(-0.48923829943525038f * x * (x2 - 3.0f * y2) * (9.0f * z2 - 1.0f));
-        data_out(34) = static_cast<T>(2.0756623148810411f * z * (-6.0f * x2 * y2 + x4 + y4));
-        data_out(35) = static_cast<T>(0.65638205684017015f * x * (10.0f * x2 * y2 - x4 - 5.0f * y4));
+        data_out[25u * output_stride] = static_cast<T>(0.65638205684017015f * y * (10.0f * x2 * y2 - 5.0f * x4 - y4));
+        data_out[26u * output_stride] = static_cast<T>(8.3026492595241645f * xy * z * (x2 - y2));
+        data_out[27u * output_stride] = static_cast<T>(-0.48923829943525038f * y * (3.0f * x2 - y2) * (9.0f * z2 - 1.0f));
+        data_out[28u * output_stride] = static_cast<T>(4.7935367849733241f * xy * z * (3.0f * z2 - 1.0f));
+        data_out[29u * output_stride] = static_cast<T>(0.45294665119569694f * y * (14.0f * z2 - 21.0f * z4 - 1.0f));
+        data_out[30u * output_stride] = static_cast<T>(0.1169503224534236f * z * (-70.0f * z2 + 63.0f * z4 + 15.0f));
+        data_out[31u * output_stride] = static_cast<T>(0.45294665119569694f * x * (14.0f * z2 - 21.0f * z4 - 1.0f));
+        data_out[32u * output_stride] = static_cast<T>(2.3967683924866621f * z * (x2 - y2) * (3.0f * z2 - 1.0f));
+        data_out[33u * output_stride] = static_cast<T>(-0.48923829943525038f * x * (x2 - 3.0f * y2) * (9.0f * z2 - 1.0f));
+        data_out[34u * output_stride] = static_cast<T>(2.0756623148810411f * z * (-6.0f * x2 * y2 + x4 + y4));
+        data_out[35u * output_stride] = static_cast<T>(0.65638205684017015f * x * (10.0f * x2 * y2 - x4 - 5.0f * y4));
         if (degree <= 6u) return;
-        data_out(36) = static_cast<T>(1.3663682103838286f * xy * (-10.0f * x2 * y2 + 3.0f * x4 + 3.0f * y4));
-        data_out(37) = static_cast<T>(2.3666191622317521f * yz * (10.0f * x2 * y2 - 5.0f * x4 - y4));
-        data_out(38) = static_cast<T>(2.0182596029148963f * xy * (x2 - y2) * (11.0f * z2 - 1.0f));
-        data_out(39) = static_cast<T>(-0.92120525951492349f * yz * (3.0f * x2 - y2) * (11.0f * z2 - 3.0f));
-        data_out(40) = static_cast<T>(0.92120525951492349f * xy * (-18.0f * z2 + 33.0f * z4 + 1.0f));
-        data_out(41) = static_cast<T>(0.58262136251873131f * yz * (30.0f * z2 - 33.0f * z4 - 5.0f));
-        data_out(42) = static_cast<T>(6.6747662381009842f * z2 - 20.024298714302954f * z4 + 14.684485723822165f * z6 - 0.31784601133814211f);
-        data_out(43) = static_cast<T>(0.58262136251873131f * xz * (30.0f * z2 - 33.0f * z4 - 5.0f));
-        data_out(44) = static_cast<T>(0.46060262975746175f * (x2 - y2) * (11.0f * z2 * (3.0f * z2 - 1.0f) - 7.0f * z2 + 1.0f));
-        data_out(45) = static_cast<T>(-0.92120525951492349f * xz * (x2 - 3.0f * y2) * (11.0f * z2 - 3.0f));
-        data_out(46) = static_cast<T>(0.50456490072872406f * (11.0f * z2 - 1.0f) * (-6.0f * x2 * y2 + x4 + y4));
-        data_out(47) = static_cast<T>(2.3666191622317521f * xz * (10.0f * x2 * y2 - x4 - 5.0f * y4));
-        data_out(48) = static_cast<T>(10.247761577878714f * x2 * y4 - 10.247761577878714f * x4 * y2 + 0.6831841051919143f * x6 - 0.6831841051919143f * y6);
+        data_out[36u * output_stride] = static_cast<T>(1.3663682103838286f * xy * (-10.0f * x2 * y2 + 3.0f * x4 + 3.0f * y4));
+        data_out[37u * output_stride] = static_cast<T>(2.3666191622317521f * yz * (10.0f * x2 * y2 - 5.0f * x4 - y4));
+        data_out[38u * output_stride] = static_cast<T>(2.0182596029148963f * xy * (x2 - y2) * (11.0f * z2 - 1.0f));
+        data_out[39u * output_stride] = static_cast<T>(-0.92120525951492349f * yz * (3.0f * x2 - y2) * (11.0f * z2 - 3.0f));
+        data_out[40u * output_stride] = static_cast<T>(0.92120525951492349f * xy * (-18.0f * z2 + 33.0f * z4 + 1.0f));
+        data_out[41u * output_stride] = static_cast<T>(0.58262136251873131f * yz * (30.0f * z2 - 33.0f * z4 - 5.0f));
+        data_out[42u * output_stride] = static_cast<T>(6.6747662381009842f * z2 - 20.024298714302954f * z4 + 14.684485723822165f * z6 - 0.31784601133814211f);
+        data_out[43u * output_stride] = static_cast<T>(0.58262136251873131f * xz * (30.0f * z2 - 33.0f * z4 - 5.0f));
+        data_out[44u * output_stride] = static_cast<T>(0.46060262975746175f * (x2 - y2) * (11.0f * z2 * (3.0f * z2 - 1.0f) - 7.0f * z2 + 1.0f));
+        data_out[45u * output_stride] = static_cast<T>(-0.92120525951492349f * xz * (x2 - 3.0f * y2) * (11.0f * z2 - 3.0f));
+        data_out[46u * output_stride] = static_cast<T>(0.50456490072872406f * (11.0f * z2 - 1.0f) * (-6.0f * x2 * y2 + x4 + y4));
+        data_out[47u * output_stride] = static_cast<T>(2.3666191622317521f * xz * (10.0f * x2 * y2 - x4 - 5.0f * y4));
+        data_out[48u * output_stride] = static_cast<T>(10.247761577878714f * x2 * y4 - 10.247761577878714f * x4 * y2 + 0.6831841051919143f * x6 - 0.6831841051919143f * y6);
         if (degree <= 7u) return;
-        data_out(49) = static_cast<T>(0.70716273252459627f * y * (-21.0f * x2 * y4 + 35.0f * x4 * y2 - 7.0f * x6 + y6));
-        data_out(50) = static_cast<T>(5.2919213236038001f * xy * z * (-10.0f * x2 * y2 + 3.0f * x4 + 3.0f * y4));
-        data_out(51) = static_cast<T>(-0.51891557872026028f * y * (13.0f * z2 - 1.0f) * (-10.0f * x2 * y2 + 5.0f * x4 + y4));
-        data_out(52) = static_cast<T>(4.1513246297620823f * xy * z * (x2 - y2) * (13.0f * z2 - 3.0f));
-        data_out(53) = static_cast<T>(-0.15645893386229404f * y * (3.0f * x2 - y2) * (13.0f * z2 * (11.0f * z2 - 3.0f) - 27.0f * z2 + 3.0f));
-        data_out(54) = static_cast<T>(0.44253269244498261f * xy * z * (-110.0f * z2 + 143.0f * z4 + 15.0f));
-        data_out(55) = static_cast<T>(0.090331607582517306f * y * (-135.0f * z2 + 495.0f * z4 - 429.0f * z6 + 5.0f));
-        data_out(56) = static_cast<T>(0.068284276912004949f * z * (315.0f * z2 - 693.0f * z4 + 429.0f * z6 - 35.0f));
-        data_out(57) = static_cast<T>(0.090331607582517306f * x * (-135.0f * z2 + 495.0f * z4 - 429.0f * z6 + 5.0f));
-        data_out(58) = static_cast<T>(0.07375544874083044f * z * (x2 - y2) * (143.0f * z2 * (3.0f * z2 - 1.0f) - 187.0f * z2 + 45.0f));
-        data_out(59) = static_cast<T>(-0.15645893386229404f * x * (x2 - 3.0f * y2) * (13.0f * z2 * (11.0f * z2 - 3.0f) - 27.0f * z2 + 3.0f));
-        data_out(60) = static_cast<T>(1.0378311574405206f * z * (13.0f * z2 - 3.0f) * (-6.0f * x2 * y2 + x4 + y4));
-        data_out(61) = static_cast<T>(-0.51891557872026028f * x * (13.0f * z2 - 1.0f) * (-10.0f * x2 * y2 + x4 + 5.0f * y4));
-        data_out(62) = static_cast<T>(2.6459606618019f * z * (15.0f * x2 * y4 - 15.0f * x4 * y2 + x6 - y6));
-        data_out(63) = static_cast<T>(0.70716273252459627f * x * (-35.0f * x2 * y4 + 21.0f * x4 * y2 - x6 + 7.0f * y6));
+        data_out[49u * output_stride] = static_cast<T>(0.70716273252459627f * y * (-21.0f * x2 * y4 + 35.0f * x4 * y2 - 7.0f * x6 + y6));
+        data_out[50u * output_stride] = static_cast<T>(5.2919213236038001f * xy * z * (-10.0f * x2 * y2 + 3.0f * x4 + 3.0f * y4));
+        data_out[51u * output_stride] = static_cast<T>(-0.51891557872026028f * y * (13.0f * z2 - 1.0f) * (-10.0f * x2 * y2 + 5.0f * x4 + y4));
+        data_out[52u * output_stride] = static_cast<T>(4.1513246297620823f * xy * z * (x2 - y2) * (13.0f * z2 - 3.0f));
+        data_out[53u * output_stride] = static_cast<T>(-0.15645893386229404f * y * (3.0f * x2 - y2) * (13.0f * z2 * (11.0f * z2 - 3.0f) - 27.0f * z2 + 3.0f));
+        data_out[54u * output_stride] = static_cast<T>(0.44253269244498261f * xy * z * (-110.0f * z2 + 143.0f * z4 + 15.0f));
+        data_out[55u * output_stride] = static_cast<T>(0.090331607582517306f * y * (-135.0f * z2 + 495.0f * z4 - 429.0f * z6 + 5.0f));
+        data_out[56u * output_stride] = static_cast<T>(0.068284276912004949f * z * (315.0f * z2 - 693.0f * z4 + 429.0f * z6 - 35.0f));
+        data_out[57u * output_stride] = static_cast<T>(0.090331607582517306f * x * (-135.0f * z2 + 495.0f * z4 - 429.0f * z6 + 5.0f));
+        data_out[58u * output_stride] = static_cast<T>(0.07375544874083044f * z * (x2 - y2) * (143.0f * z2 * (3.0f * z2 - 1.0f) - 187.0f * z2 + 45.0f));
+        data_out[59u * output_stride] = static_cast<T>(-0.15645893386229404f * x * (x2 - 3.0f * y2) * (13.0f * z2 * (11.0f * z2 - 3.0f) - 27.0f * z2 + 3.0f));
+        data_out[60u * output_stride] = static_cast<T>(1.0378311574405206f * z * (13.0f * z2 - 3.0f) * (-6.0f * x2 * y2 + x4 + y4));
+        data_out[61u * output_stride] = static_cast<T>(-0.51891557872026028f * x * (13.0f * z2 - 1.0f) * (-10.0f * x2 * y2 + x4 + 5.0f * y4));
+        data_out[62u * output_stride] = static_cast<T>(2.6459606618019f * z * (15.0f * x2 * y4 - 15.0f * x4 * y2 + x6 - y6));
+        data_out[63u * output_stride] = static_cast<T>(0.70716273252459627f * x * (-35.0f * x2 * y4 + 21.0f * x4 * y2 - x6 + 7.0f * y6));
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    __global__ void kernel_grid(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
+    __global__ void kernel_grid(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const T* __restrict__ grid, const float* __restrict__ positions_in, const std::uint32_t positions_stride_i, const std::uint32_t positions_stride_j, T* __restrict__ encoded_positions) {
         static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= num_elements) return;
@@ -207,7 +207,7 @@ namespace ngp::encoding {
         legacy::math::uvec3 pos_grid = {};
 
         TCNN_PRAGMA_UNROLL
-        for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in(dim, i), &pos[dim], &pos_grid[dim], scale);
+        for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in[dim * positions_stride_i + i * positions_stride_j], &pos[dim], &pos_grid[dim], scale);
 
         auto grid_val = [&](const legacy::math::uvec3& local_pos) {
             const std::uint32_t index = grid_index(hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
@@ -256,7 +256,7 @@ namespace ngp::encoding {
     }
 
     template <typename T, typename GradT, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL, std::uint32_t N_FEATURES_PER_THREAD>
-    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const bool stochastic_interpolation, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
+    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const bool stochastic_interpolation, GradT* __restrict__ grid_gradient, const float* __restrict__ positions_in, const std::uint32_t positions_stride_i, const std::uint32_t positions_stride_j, const T* __restrict__ dL_dy) {
         static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = ((blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD) / N_FEATURES_PER_LEVEL;
         if (i >= num_elements) return;
@@ -278,7 +278,7 @@ namespace ngp::encoding {
         legacy::math::uvec3 pos_grid = {};
 
         TCNN_PRAGMA_UNROLL
-        for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in(dim, i), &pos[dim], &pos_grid[dim], scale);
+        for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in[dim * positions_stride_i + i * positions_stride_j], &pos[dim], &pos_grid[dim], scale);
 
         legacy::math::tvec<GradT, N_FEATURES_PER_THREAD> grad = {};
 
@@ -378,7 +378,7 @@ namespace ngp::encoding {
             encoded_positions_soa = reinterpret_cast<T*>(workspace.data());
         }
 
-        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), params, input.view(), encoded_positions_soa);
+        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), params, input.data(), input.layout() == legacy::CM ? 1u : input.stride(), input.layout() == legacy::CM ? input.stride() : 1u, encoded_positions_soa);
 
         if (output.layout() == legacy::AoS) {
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
@@ -429,7 +429,7 @@ namespace ngp::encoding {
         static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
 
         const dim3 blocks_hashgrid = {((num_elements * N_FEATURES_PER_LEVEL / n_features_per_thread) + n_threads_hashgrid - 1u) / n_threads_hashgrid, n_levels, 1u};
-        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), stochastic_interpolation, grid_gradient, input.view(), dL_dy_rm);
+        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), stochastic_interpolation, grid_gradient, input.data(), input.layout() == legacy::CM ? 1u : input.stride(), input.layout() == legacy::CM ? input.stride() : 1u, dL_dy_rm);
 
         if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
             if (n_params > 0u) {
@@ -474,12 +474,11 @@ namespace ngp::encoding {
     }
 
     template <typename T>
-    __global__ void kernel_sh(const std::uint32_t num_elements, const std::uint32_t degree, legacy::MatrixView<const float> data_in, legacy::MatrixView<T> data_out) {
+    __global__ void kernel_sh(const std::uint32_t num_elements, const std::uint32_t degree, const float* __restrict__ data_in, const std::uint32_t input_stride_i, const std::uint32_t input_stride_j, T* __restrict__ data_out, const std::uint32_t output_stride_i, const std::uint32_t output_stride_j) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= num_elements) return;
 
-        data_out.data += static_cast<std::size_t>(i) * data_out.stride_j;
-        sh_enc<T, legacy::MatrixView<T>>(degree, data_in(0u, i) * 2.0f - 1.0f, data_in(1u, i) * 2.0f - 1.0f, data_in(2u, i) * 2.0f - 1.0f, data_out);
+        sh_enc<T>(degree, data_in[0u * input_stride_i + i * input_stride_j] * 2.0f - 1.0f, data_in[1u * input_stride_i + i * input_stride_j] * 2.0f - 1.0f, data_in[2u * input_stride_i + i * input_stride_j] * 2.0f - 1.0f, data_out + static_cast<std::size_t>(i) * output_stride_j, output_stride_i);
     }
 
     template <typename T>
@@ -502,7 +501,7 @@ namespace ngp::encoding {
         const std::uint32_t num_elements = input.n();
         if (num_elements > 0u) {
             const std::uint32_t blocks = (num_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            kernel_sh<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(num_elements, degree, input.view(), output.view());
+            kernel_sh<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(num_elements, degree, input.data(), input.layout() == legacy::CM ? 1u : input.stride(), input.layout() == legacy::CM ? input.stride() : 1u, output.data(), output.layout() == legacy::CM ? 1u : output.stride(), output.layout() == legacy::CM ? output.stride() : 1u);
         }
     }
 

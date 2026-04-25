@@ -18,7 +18,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -900,20 +899,6 @@ namespace ngp::legacy {
         size_t stride_in_bytes;
     };
 
-    template <typename T, typename STRIDE_T = uint32_t>
-    struct MatrixView {
-        __host__ __device__ MatrixView() : data{nullptr}, stride_i{0}, stride_j{0} {}
-        __host__ __device__ MatrixView(T* data, STRIDE_T stride_i, STRIDE_T stride_j) : data{data}, stride_i{stride_i}, stride_j{stride_j} {}
-        __host__ __device__ MatrixView(const MatrixView<std::remove_const_t<T>>& other) : data{other.data}, stride_i{other.stride_i}, stride_j{other.stride_j} {}
-
-        __host__ __device__ T& operator()(STRIDE_T i, STRIDE_T j = 0) const {
-            return data[i * (size_t) stride_i + j * (size_t) stride_j];
-        }
-
-        T* data;
-        STRIDE_T stride_i, stride_j;
-    };
-
     template <typename T, MatrixLayout _layout>
     class GPUMatrix {
     public:
@@ -974,10 +959,6 @@ namespace ngp::legacy {
 
         GPUMatrix<T, _layout> slice_rows(uint32_t offset, uint32_t size) const {
             return GPUMatrix<T, _layout>{data() + (layout() == CM ? offset : offset * stride()), size, n(), layout(), stride(), m_allocation};
-        }
-
-        MatrixView<T> view() const {
-            return {data(), layout() == CM ? 1u : stride(), layout() == CM ? stride() : 1u};
         }
 
         uint32_t m() const {
