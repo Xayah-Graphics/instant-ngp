@@ -4,11 +4,8 @@
 #include "optimizer.cuh"
 #include <algorithm>
 #include <limits>
-#include <memory>
 #include <sstream>
-#include <stack>
 #include <type_traits>
-#include <unordered_map>
 #include <variant>
 
 namespace ngp::network {
@@ -44,77 +41,6 @@ namespace ngp::network {
 #include <fstream>
 #include <iomanip>
 #include <utility>
-
-namespace ngp::network::detail {
-
-    struct AuxStreamSlot final {
-        AuxStreamSlot() {
-            legacy::cuda_check(cudaStreamCreate(&stream));
-            legacy::cuda_check(cudaEventCreate(&event));
-        }
-
-        ~AuxStreamSlot() {
-            if (event) cudaEventDestroy(event);
-            if (stream) cudaStreamDestroy(stream);
-        }
-
-        AuxStreamSlot& operator=(const AuxStreamSlot&) = delete;
-        AuxStreamSlot(const AuxStreamSlot&)            = delete;
-
-        cudaStream_t stream = {};
-        cudaEvent_t event   = {};
-    };
-
-    std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot>>>& aux_stream_pools() {
-        static auto* pools = new std::unordered_map<cudaStream_t, std::stack<std::unique_ptr<AuxStreamSlot>>>{};
-        return *pools;
-    }
-
-    void free_aux_stream_pool(const cudaStream_t parent_stream) {
-        legacy::check_or_throw(parent_stream != nullptr);
-        aux_stream_pools().erase(parent_stream);
-    }
-
-    SyncedStreamReservation::SyncedStreamReservation(const cudaStream_t stream, const std::size_t n_streams) : main_stream{stream} {
-        if (n_streams == 0u) throw std::runtime_error{"SyncedStreamReservation: must request at least one stream"};
-        if (n_streams == 1u) return;
-        if (n_streams != 2u) throw std::runtime_error{"SyncedStreamReservation: this repository only supports a single auxiliary stream"};
-
-        legacy::check_or_throw(main_stream != nullptr);
-        auto& pool = aux_stream_pools()[main_stream];
-        if (pool.empty()) pool.push(std::make_unique<AuxStreamSlot>());
-        aux_stream_slot = pool.top().release();
-        pool.pop();
-        aux_stream = aux_stream_slot->stream;
-        legacy::cuda_check(cudaEventRecord(aux_stream_slot->event, main_stream));
-        legacy::cuda_check(cudaStreamWaitEvent(aux_stream_slot->stream, aux_stream_slot->event, 0));
-    }
-
-    SyncedStreamReservation::~SyncedStreamReservation() {
-        if (!aux_stream_slot) return;
-
-        legacy::cuda_check(cudaEventRecord(aux_stream_slot->event, aux_stream_slot->stream));
-        legacy::cuda_check(cudaStreamWaitEvent(main_stream, aux_stream_slot->event, 0));
-        auto& pools = aux_stream_pools();
-        if (!pools.contains(main_stream)) std::terminate();
-        pools[main_stream].push(std::unique_ptr<AuxStreamSlot>{aux_stream_slot});
-        aux_stream_slot = nullptr;
-        aux_stream      = nullptr;
-    }
-
-    SyncedStreamReservation& SyncedStreamReservation::operator=(SyncedStreamReservation&& other) noexcept {
-        std::swap(aux_stream_slot, other.aux_stream_slot);
-        std::swap(aux_stream, other.aux_stream);
-        std::swap(main_stream, other.main_stream);
-        return *this;
-    }
-
-    SyncedStreamReservation::SyncedStreamReservation(SyncedStreamReservation&& other) noexcept {
-        *this = std::move(other);
-    }
-
-} // namespace ngp::network::detail
-
 
 namespace ngp {
 
@@ -954,7 +880,7 @@ namespace ngp {
         }
 
         const legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic> rgb_output{reinterpret_cast<__half*>(output.data()), current_model.rgb_network.padded_output_width, batch_size, output.layout()};
-        current_model.rgb_network.backward(stream, scratch.rgb_network, scratch.rgb_network_input, rgb_output, scratch.dL_drgb, &scratch.dL_drgb_input, model_gradient_mode);
+        current_model.rgb_network.backward(stream, aux_streams.data(), aux_events.data(), static_cast<std::uint32_t>(aux_streams.size()), scratch.rgb_network, scratch.rgb_network_input, rgb_output, scratch.dL_drgb, &scratch.dL_drgb_input, model_gradient_mode);
 
         auto dL_ddensity_output = scratch.dL_drgb_input.slice_rows(0u, current_model.density_network.padded_output_width);
         if (batch_size > 0u) {
@@ -963,10 +889,10 @@ namespace ngp {
         }
 
         if (current_model.layout.pos_param_count > 0u) {
-            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, &scratch.dL_ddensity_input, model_gradient_mode);
+            current_model.density_network.backward(stream, aux_streams.data(), aux_events.data(), static_cast<std::uint32_t>(aux_streams.size()), scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, &scratch.dL_ddensity_input, model_gradient_mode);
             std::visit([&](auto& impl) { impl.backward(stream, input.slice_rows(0u, current_model.layout.pos_input_width), scratch.dL_ddensity_input, model_gradient_mode); }, current_model.pos_encoding);
         } else {
-            current_model.density_network.backward(stream, scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, nullptr, model_gradient_mode);
+            current_model.density_network.backward(stream, aux_streams.data(), aux_events.data(), static_cast<std::uint32_t>(aux_streams.size()), scratch.density_network, scratch.density_network_input, scratch.density_network_output, dL_ddensity_output, nullptr, model_gradient_mode);
         }
     }
 
@@ -1049,6 +975,14 @@ namespace ngp {
             optimizer     = new Optimizer{};
 
             auto& current_model                   = *model;
+            const std::uint32_t n_aux_streams     = std::max(current_model.density_network.n_hidden_matmuls, current_model.rgb_network.n_hidden_matmuls) + 2u;
+            aux_streams.resize(n_aux_streams);
+            aux_events.resize(n_aux_streams);
+            for (std::uint32_t i = 0u; i < n_aux_streams; ++i) {
+                legacy::cuda_check(cudaStreamCreate(&aux_streams[i]));
+                legacy::cuda_check(cudaEventCreate(&aux_events[i]));
+            }
+
             current_model.layout.pos_input_width  = std::visit([](const auto& impl) { return impl.input_width; }, current_model.pos_encoding);
             current_model.layout.pos_output_width = std::visit([](const auto& impl) { return impl.output_width; }, current_model.pos_encoding);
             current_model.layout.pos_layout       = legacy::SoA;
@@ -1138,8 +1072,11 @@ namespace ngp {
             training                = {};
             sampling                = {};
             dataset                 = {};
+            for (cudaEvent_t aux_event : aux_events) if (aux_event) cudaEventDestroy(aux_event);
+            for (cudaStream_t aux_stream : aux_streams) if (aux_stream) cudaStreamDestroy(aux_stream);
+            aux_events  = {};
+            aux_streams = {};
             if (stream) {
-                network::detail::free_aux_stream_pool(stream);
                 cudaStreamDestroy(stream);
                 stream = nullptr;
             }
@@ -1175,8 +1112,11 @@ namespace ngp {
         training                = {};
         sampling                = {};
         dataset                 = {};
+        for (cudaEvent_t aux_event : aux_events) if (aux_event) cudaEventDestroy(aux_event);
+        for (cudaStream_t aux_stream : aux_streams) if (aux_stream) cudaStreamDestroy(aux_stream);
+        aux_events  = {};
+        aux_streams = {};
         if (stream) {
-            network::detail::free_aux_stream_pool(stream);
             cudaStreamDestroy(stream);
             stream = nullptr;
         }

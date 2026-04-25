@@ -260,6 +260,8 @@ namespace ngp {
         TrainingState training                   = {};
         mutable RenderWorkspace render_workspace = {};
         cudaStream_t stream                      = {};
+        std::vector<cudaStream_t> aux_streams    = {};
+        std::vector<cudaEvent_t> aux_events      = {};
         legacy::GpuBuffer<char> parameter_buffer = {};
         float* full_precision_params             = nullptr;
         __half* network_params                   = nullptr;

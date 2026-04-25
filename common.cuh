@@ -1029,22 +1029,6 @@ namespace ngp::network::detail {
     }
 #endif
 
-    struct AuxStreamSlot;
-
-    struct SyncedStreamReservation final {
-        SyncedStreamReservation() = default;
-        SyncedStreamReservation(cudaStream_t stream, std::size_t n_streams);
-        ~SyncedStreamReservation();
-        SyncedStreamReservation& operator=(const SyncedStreamReservation&) = delete;
-        SyncedStreamReservation(const SyncedStreamReservation&)            = delete;
-        SyncedStreamReservation& operator=(SyncedStreamReservation&& other) noexcept;
-        SyncedStreamReservation(SyncedStreamReservation&& other) noexcept;
-
-        AuxStreamSlot* aux_stream_slot = nullptr;
-        cudaStream_t aux_stream        = nullptr;
-        cudaStream_t main_stream       = nullptr;
-    };
-
 } // namespace ngp::network::detail
 
 #endif // NGP_LEGACY_CUH

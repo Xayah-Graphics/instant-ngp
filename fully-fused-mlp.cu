@@ -947,7 +947,7 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const network::detail::GradientMode param_gradients_mode) {
+    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, const cudaStream_t* aux_streams, const cudaEvent_t* aux_events, const std::uint32_t n_aux_streams, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const network::detail::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == padded_output_width);
         legacy::check_or_throw(dL_doutput.m() == padded_output_width);
@@ -958,12 +958,15 @@ namespace ngp::mlp {
         legacy::check_or_throw(!dL_dinput || input.n() == dL_dinput->n());
         legacy::check_or_throw(params != nullptr);
         if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
+        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(aux_streams != nullptr);
+        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(aux_events != nullptr);
+        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(n_aux_streams >= n_hidden_matmuls + 2u);
 
         const std::uint32_t batch_size = dL_doutput.n();
         if (output_activation != Activation::None) activation_backward_output_gpu(stream, dL_doutput.n_elements(), output_activation, output.data(), dL_doutput.data(), scratch.backward_output.data());
 
         const float param_gradient_beta = param_gradients_mode == network::detail::GradientMode::Accumulate ? 1.0f : 0.0f;
-        std::vector<network::detail::SyncedStreamReservation> multi_streams;
+        std::uint32_t aux_stream_index = 0u;
         const std::uint32_t split_k_factor                = batch_size / std::min(1u << 12u, batch_size);
         const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& tmp_dL_doutput = output_activation == Activation::None ? dL_doutput : scratch.backward_output;
 
@@ -971,9 +974,11 @@ namespace ngp::mlp {
         std::uint32_t backward_tmp_idx = 0u;
 
         if (param_gradients_mode != network::detail::GradientMode::Ignore) {
-            multi_streams.emplace_back(stream, 2u);
             legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> output_gradient{gradient_matrices.back().data(), gradient_matrices.back().m(), gradient_matrices.back().n(), gradient_matrices.back().layout(), gradient_matrices.back().stride()};
-            fc_multiply_split_k<LastLayerK>(multi_streams.back().aux_stream, tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx).transposed(), output_gradient, split_k_factor, param_gradient_beta);
+            legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
+            legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));
+            fc_multiply_split_k<LastLayerK>(aux_streams[aux_stream_index], tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx).transposed(), output_gradient, split_k_factor, param_gradient_beta);
+            ++aux_stream_index;
         }
 
         if (output_width > 16u) fc_multiply<FullLayer>(stream, weight_matrices.back().transposed(), tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx), scratch.backward_hidden.at(backward_tmp_idx), activation, true);
@@ -999,9 +1004,11 @@ namespace ngp::mlp {
             const std::uint32_t matrix_idx = n_hidden_matmuls - i - 1u;
 
             if (param_gradients_mode != network::detail::GradientMode::Ignore) {
-                multi_streams.emplace_back(stream, 2u);
                 legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> gradient_matrix{gradient_matrices.at(1u + matrix_idx).data(), gradient_matrices.at(1u + matrix_idx).m(), gradient_matrices.at(1u + matrix_idx).n(), gradient_matrices.at(1u + matrix_idx).layout(), gradient_matrices.at(1u + matrix_idx).stride()};
-                fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), scratch.forward_hidden.at(tmp_idx).transposed(), gradient_matrix, split_k_factor, param_gradient_beta);
+                legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
+                legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));
+                fc_multiply_split_k<FullLayerK>(aux_streams[aux_stream_index], scratch.backward_hidden.at(backward_tmp_idx - 1u), scratch.forward_hidden.at(tmp_idx).transposed(), gradient_matrix, split_k_factor, param_gradient_beta);
+                ++aux_stream_index;
             }
 
             tmp_idx -= 1u;
@@ -1009,12 +1016,18 @@ namespace ngp::mlp {
         }
 
         if (param_gradients_mode != network::detail::GradientMode::Ignore) {
-            multi_streams.emplace_back(stream, 2u);
             legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> input_gradient{gradient_matrices.front().data(), gradient_matrices.front().m(), gradient_matrices.front().n(), gradient_matrices.front().layout(), gradient_matrices.front().stride()};
-            fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), input.transposed(), input_gradient, split_k_factor, param_gradient_beta);
+            legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
+            legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));
+            fc_multiply_split_k<FullLayerK>(aux_streams[aux_stream_index], scratch.backward_hidden.at(backward_tmp_idx - 1u), input.transposed(), input_gradient, split_k_factor, param_gradient_beta);
+            ++aux_stream_index;
         }
 
         if (dL_dinput && !dL_dinput_fused) fc_multiply<FullLayer>(stream, weight_matrices.front().transposed(), scratch.backward_hidden.at(backward_tmp_idx - 1u), *dL_dinput);
+        for (std::uint32_t i = 0u; i < aux_stream_index; ++i) {
+            legacy::cuda_check(cudaEventRecord(aux_events[i], aux_streams[i]));
+            legacy::cuda_check(cudaStreamWaitEvent(stream, aux_events[i], 0));
+        }
     }
 
     template <typename T, std::uint32_t WIDTH>

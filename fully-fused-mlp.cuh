@@ -40,7 +40,7 @@ namespace ngp::mlp {
         void inference(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output);
         void prepare_scratch(cudaStream_t stream, std::uint32_t batch_size, legacy::MatrixLayout output_layout, Scratch& scratch);
         void forward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* output, Scratch& scratch);
-        void backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput = nullptr, network::detail::GradientMode param_gradients_mode = network::detail::GradientMode::Overwrite);
+        void backward(cudaStream_t stream, const cudaStream_t* aux_streams, const cudaEvent_t* aux_events, std::uint32_t n_aux_streams, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, network::detail::GradientMode param_gradients_mode);
         void initialize_params(legacy::math::pcg32& rnd, float* params_full_precision, float scale = 1.0f);
 
         std::uint32_t n_hidden_layers                                   = 0u;
