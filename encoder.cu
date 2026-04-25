@@ -1,7 +1,6 @@
 #include "encoder.cuh"
 #include <algorithm>
 #include <limits>
-#include <numeric>
 #include <sstream>
 #include <type_traits>
 
@@ -31,15 +30,6 @@ namespace ngp::encoding {
         const std::uint32_t elem_idx                      = i;
         const std::uint32_t dim_idx                       = threadIdx.x;
         transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy(elem_idx)[dim_idx];
-    }
-
-    template <typename T>
-    __global__ void zero_padded_output_aos(const std::uint32_t n_elements, const std::uint32_t n_output_dims, const std::uint32_t n_to_pad, legacy::PitchedPtr<T> output) {
-        const std::uint32_t elem = threadIdx.y + blockIdx.x * blockDim.y;
-        const std::uint32_t dim  = threadIdx.x;
-        if (elem >= n_elements || dim >= n_to_pad) return;
-
-        output(elem)[n_output_dims + dim] = static_cast<T>(0);
     }
 
     inline std::uint32_t powi(const std::uint32_t base, const std::uint32_t exponent) {
@@ -391,7 +381,6 @@ namespace ngp::encoding {
         offset_table.data[n_levels] = offset;
         n_params                    = static_cast<std::size_t>(offset_table.data[n_levels]) * N_FEATURES_PER_LEVEL;
         output_width                = this->n_features;
-        padded_output_width         = output_width;
 
         if (this->n_features % N_FEATURES_PER_LEVEL != 0u) {
             std::ostringstream stream;
@@ -403,28 +392,13 @@ namespace ngp::encoding {
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::encode(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<T>& output) {
         legacy::check_or_throw(input.m() == input_width);
-        legacy::check_or_throw(output.m() == padded_output_width);
+        legacy::check_or_throw(output.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
         if (n_params > 0u) legacy::check_or_throw(params != nullptr);
 
         const std::uint32_t num_elements = input.n();
-        if (padded_output_width == 0u || num_elements == 0u) return;
-        const std::uint32_t n_to_pad = padded_output_width - output_width;
-
-        network::detail::SyncedStreamReservation synced_streams{stream, n_to_pad > 0u ? 2u : 1u};
-        const cudaStream_t main_stream = synced_streams.main_stream;
-        const cudaStream_t aux_stream  = synced_streams.aux_stream ? synced_streams.aux_stream : synced_streams.main_stream;
-
-        if (n_to_pad > 0u) {
-            if (output.layout() == legacy::AoS) {
-                const dim3 threads         = {n_to_pad, (network::detail::n_threads_linear + n_to_pad - 1u) / n_to_pad, 1u};
-                const std::uint32_t blocks = (num_elements + threads.y - 1u) / threads.y;
-                zero_padded_output_aos<T><<<blocks, threads, 0, aux_stream>>>(num_elements, output_width, n_to_pad, output.pitched_ptr());
-            } else {
-                legacy::cuda_check(cudaMemsetAsync(output.data() + num_elements * output_width, 0, sizeof(T) * num_elements * n_to_pad, aux_stream));
-            }
-        }
+        if (output_width == 0u || num_elements == 0u) return;
 
         static constexpr std::uint32_t n_threads_hashgrid = 512u;
         const dim3 blocks_hashgrid                        = {(num_elements + n_threads_hashgrid - 1u) / n_threads_hashgrid, n_levels, 1u};
@@ -432,23 +406,23 @@ namespace ngp::encoding {
         T* encoded_positions_soa        = output.data();
         legacy::GpuAllocation workspace = {};
         if (output.layout() == legacy::AoS) {
-            workspace             = legacy::GpuAllocation{static_cast<std::size_t>(num_elements) * n_features * sizeof(T), main_stream};
+            workspace             = legacy::GpuAllocation{static_cast<std::size_t>(num_elements) * n_features * sizeof(T), stream};
             encoded_positions_soa = reinterpret_cast<T*>(workspace.data());
         }
 
-        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, main_stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, grid_type, params, input.view(), encoded_positions_soa);
+        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, grid_type, params, input.view(), encoded_positions_soa);
 
         if (output.layout() == legacy::AoS) {
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
             const std::uint32_t blocks_transpose = (num_elements + threads_transpose.y - 1u) / threads_transpose.y;
-            transpose_encoded_position<T><<<blocks_transpose, threads_transpose, 0, main_stream>>>(num_elements, encoded_positions_soa, output.pitched_ptr());
+            transpose_encoded_position<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, encoded_positions_soa, output.pitched_ptr());
         }
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<T>& dL_doutput, const network::detail::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
-        legacy::check_or_throw(dL_doutput.m() == padded_output_width);
+        legacy::check_or_throw(dL_doutput.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == dL_doutput.n());
         if (n_params > 0u) {
@@ -511,57 +485,36 @@ namespace ngp::encoding {
     }
 
     template <typename T>
-    std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> create_position_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config, const std::uint32_t alignment) {
+    std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> create_position_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config) {
         if (config.n_levels == 0u) throw std::runtime_error{"HashGrid encoding requires at least one level."};
         if (config.base_resolution == 0u) throw std::runtime_error{"HashGrid encoding base_resolution must be greater than zero."};
         if (n_dims_to_encode != 3u) throw std::runtime_error{"HashGrid encoding in this repository only supports 3D positions."};
 
         switch (config.n_features_per_level) {
         case 1u:
-            {
-                auto encoding = make_hash_grid_encoding<T, 3u, 1u>(config);
-                if (alignment > 0u) encoding.padded_output_width = legacy::next_multiple(encoding.output_width, std::lcm(alignment, encoding.required_output_alignment));
-                return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{std::move(encoding)};
-            }
+            return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 1u>(config)};
         case 2u:
-            {
-                auto encoding = make_hash_grid_encoding<T, 3u, 2u>(config);
-                if (alignment > 0u) encoding.padded_output_width = legacy::next_multiple(encoding.output_width, std::lcm(alignment, encoding.required_output_alignment));
-                return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{std::move(encoding)};
-            }
+            return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 2u>(config)};
         case 4u:
-            {
-                auto encoding = make_hash_grid_encoding<T, 3u, 4u>(config);
-                if (alignment > 0u) encoding.padded_output_width = legacy::next_multiple(encoding.output_width, std::lcm(alignment, encoding.required_output_alignment));
-                return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{std::move(encoding)};
-            }
+            return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 4u>(config)};
         case 8u:
-            {
-                auto encoding = make_hash_grid_encoding<T, 3u, 8u>(config);
-                if (alignment > 0u) encoding.padded_output_width = legacy::next_multiple(encoding.output_width, std::lcm(alignment, encoding.required_output_alignment));
-                return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{std::move(encoding)};
-            }
+            return std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>>{make_hash_grid_encoding<T, 3u, 8u>(config)};
         default: throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
         }
     }
 
     template <typename T>
-    __global__ void kernel_sh(const std::uint32_t num_elements, const std::uint32_t degree, const std::uint32_t num_to_pad, legacy::MatrixView<const float> data_in, legacy::MatrixView<T> data_out) {
+    __global__ void kernel_sh(const std::uint32_t num_elements, const std::uint32_t degree, legacy::MatrixView<const float> data_in, legacy::MatrixView<T> data_out) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= num_elements) return;
 
         data_out.advance_cols(i);
-        TCNN_PRAGMA_UNROLL
-        for (std::uint32_t j = 0u; j < num_to_pad; ++j) data_out(j) = static_cast<T>(1.0f);
-
-        data_out.advance_rows(num_to_pad);
         sh_enc<T, legacy::MatrixView<T>>(degree, data_in(0u, i) * 2.0f - 1.0f, data_in(1u, i) * 2.0f - 1.0f, data_in(2u, i) * 2.0f - 1.0f, data_out);
     }
 
     template <typename T>
     SphericalHarmonicsEncoding<T>::SphericalHarmonicsEncoding(const std::uint32_t degree, const std::uint32_t n_dims_to_encode) : degree{degree} {
-        output_width        = degree * degree;
-        padded_output_width = output_width;
+        output_width = degree * degree;
 
         if (n_dims_to_encode != 3u) throw std::runtime_error{"Can only encode 3D directions in spherical harmonics."};
         if (this->degree <= 0u) throw std::runtime_error{"Spherical harmonics must have positive degree."};
@@ -571,31 +524,29 @@ namespace ngp::encoding {
     template <typename T>
     void SphericalHarmonicsEncoding<T>::encode(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<T>& output) {
         legacy::check_or_throw(input.m() == input_width);
-        legacy::check_or_throw(output.m() == padded_output_width);
+        legacy::check_or_throw(output.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
-        if (padded_output_width == 0u) return;
+        if (output_width == 0u) return;
 
         const std::uint32_t num_elements = input.n();
         if (num_elements > 0u) {
             const std::uint32_t blocks = (num_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            kernel_sh<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(num_elements, degree, padded_output_width - output_width, input.view(), output.view());
+            kernel_sh<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(num_elements, degree, input.view(), output.view());
         }
     }
 
     template <typename T>
-    SphericalHarmonicsEncoding<T> create_direction_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config, const std::uint32_t alignment) {
-        auto result = SphericalHarmonicsEncoding<T>{config.sh_degree, n_dims_to_encode};
-        if (alignment > 0u) result.padded_output_width = legacy::next_multiple(result.output_width, std::lcm(alignment, result.required_output_alignment));
-        return result;
+    SphericalHarmonicsEncoding<T> create_direction_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config) {
+        return SphericalHarmonicsEncoding<T>{config.sh_degree, n_dims_to_encode};
     }
 
     template struct GridEncodingTemplated<__half, 3u, 1u>;
     template struct GridEncodingTemplated<__half, 3u, 2u>;
     template struct GridEncodingTemplated<__half, 3u, 4u>;
     template struct GridEncodingTemplated<__half, 3u, 8u>;
-    template std::variant<GridEncodingTemplated<__half, 3u, 1u>, GridEncodingTemplated<__half, 3u, 2u>, GridEncodingTemplated<__half, 3u, 4u>, GridEncodingTemplated<__half, 3u, 8u>> create_position_encoding<__half>(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config, std::uint32_t alignment);
+    template std::variant<GridEncodingTemplated<__half, 3u, 1u>, GridEncodingTemplated<__half, 3u, 2u>, GridEncodingTemplated<__half, 3u, 4u>, GridEncodingTemplated<__half, 3u, 8u>> create_position_encoding<__half>(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config);
     template struct SphericalHarmonicsEncoding<__half>;
-    template SphericalHarmonicsEncoding<__half> create_direction_encoding<__half>(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config, std::uint32_t alignment);
+    template SphericalHarmonicsEncoding<__half> create_direction_encoding<__half>(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config);
 
 } // namespace ngp::encoding

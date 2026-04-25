@@ -145,11 +145,8 @@ namespace ngp {
                 std::uint32_t n_pos_dims               = 0u;
                 std::uint32_t n_dir_dims               = 0u;
                 std::uint32_t dir_offset               = 0u;
-                std::uint32_t density_alignment        = 0u;
                 std::uint32_t density_input_dims       = 0u;
                 std::uint32_t density_output_dims      = 0u;
-                std::uint32_t dir_encoding_output_dims = 0u;
-                std::uint32_t rgb_alignment            = 0u;
                 std::uint32_t rgb_input_dims           = 0u;
                 std::uint32_t rgb_output_dims          = 3u;
             } network = {};

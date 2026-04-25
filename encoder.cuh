@@ -32,8 +32,6 @@ namespace ngp::encoding {
         std::uint32_t base_resolution                = 0u;
         std::uint32_t input_width                    = N_POS_DIMS;
         std::uint32_t output_width                   = 0u;
-        std::uint32_t padded_output_width            = 0u;
-        std::uint32_t required_output_alignment      = N_FEATURES_PER_LEVEL;
         legacy::MatrixLayout preferred_output_layout = legacy::SoA;
         float per_level_scale                        = 0.0f;
         bool stochastic_interpolation                = false;
@@ -44,7 +42,7 @@ namespace ngp::encoding {
     };
 
     template <typename T>
-    std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> create_position_encoding(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config, std::uint32_t alignment);
+    std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> create_position_encoding(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config);
 
     template <typename T>
     struct SphericalHarmonicsEncoding final {
@@ -55,12 +53,10 @@ namespace ngp::encoding {
         std::uint32_t degree                         = 0u;
         std::uint32_t input_width                    = 3u;
         std::uint32_t output_width                   = 0u;
-        std::uint32_t padded_output_width            = 0u;
-        std::uint32_t required_output_alignment      = 1u;
         legacy::MatrixLayout preferred_output_layout = legacy::SoA;
     };
 
     template <typename T>
-    SphericalHarmonicsEncoding<T> create_direction_encoding(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config, std::uint32_t alignment);
+    SphericalHarmonicsEncoding<T> create_direction_encoding(std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::DirectionEncodingConfig& config);
 
 } // namespace ngp::encoding

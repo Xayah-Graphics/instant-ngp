@@ -907,7 +907,7 @@ namespace ngp {
         std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, current_model.layout.pos_input_width), density_input); }, current_model.pos_encoding);
         current_model.density_network.inference(stream, density_input, density_output);
 
-        auto dir_output = rgb_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.padded_output_width);
+        auto dir_output = rgb_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.output_width);
         current_model.dir_encoding.encode(stream, input.slice_rows(train_plan.network.dir_offset, current_model.dir_encoding.input_width), dir_output);
         current_model.rgb_network.inference(stream, rgb_input, rgb_output);
 
@@ -933,7 +933,7 @@ namespace ngp {
         std::visit([&](auto& impl) { impl.encode(stream, input.slice_rows(0u, current_model.layout.pos_input_width), scratch.density_network_input); }, current_model.pos_encoding);
         current_model.density_network.forward(stream, scratch.density_network_input, &scratch.density_network_output, scratch.density_network);
 
-        auto dir_output = scratch.rgb_network_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.padded_output_width);
+        auto dir_output = scratch.rgb_network_input.slice_rows(current_model.density_network.padded_output_width, current_model.dir_encoding.output_width);
         current_model.dir_encoding.encode(stream, input.slice_rows(train_plan.network.dir_offset, current_model.dir_encoding.input_width), dir_output);
 
         if (output) scratch.rgb_network_output = ngp::legacy::GPUMatrixDynamic<__half>{output->data(), current_model.rgb_network.padded_output_width, batch_size, output->layout()};
@@ -998,16 +998,31 @@ namespace ngp {
         train_plan.network.n_pos_dims          = n_pos_dims;
         train_plan.network.n_dir_dims          = 3u;
         train_plan.network.dir_offset          = n_pos_dims + 1u;
-        train_plan.network.density_alignment   = 16u;
         train_plan.network.density_output_dims = 16u;
-        train_plan.network.rgb_alignment       = 16u;
         train_plan.network.rgb_output_dims     = 3u;
 
-        const std::uint32_t encoding_output_dims    = this->network_config.encoding.n_levels * this->network_config.encoding.n_features_per_level;
-        train_plan.network.density_input_dims       = legacy::next_multiple(encoding_output_dims, std::lcm(train_plan.network.density_alignment, this->network_config.encoding.n_features_per_level));
-        const std::uint32_t dir_output_dims         = this->network_config.direction_encoding.sh_degree * this->network_config.direction_encoding.sh_degree;
-        train_plan.network.dir_encoding_output_dims = legacy::next_multiple(dir_output_dims, train_plan.network.rgb_alignment);
-        train_plan.network.rgb_input_dims           = legacy::next_multiple(train_plan.network.density_output_dims + train_plan.network.dir_encoding_output_dims, train_plan.network.rgb_alignment);
+        if (this->network_config.encoding.n_levels == 0u) throw std::runtime_error{"HashGrid encoding requires at least one level."};
+        if (this->network_config.encoding.n_levels > encoding::max_n_levels) throw std::runtime_error{"HashGrid encoding n_levels exceeds the supported maximum."};
+        if (this->network_config.encoding.n_features_per_level != 1u && this->network_config.encoding.n_features_per_level != 2u && this->network_config.encoding.n_features_per_level != 4u && this->network_config.encoding.n_features_per_level != 8u) throw std::runtime_error{"HashGrid encoding n_features_per_level must be 1, 2, 4, or 8."};
+        const std::uint64_t encoding_output_dims_64 = static_cast<std::uint64_t>(this->network_config.encoding.n_levels) * this->network_config.encoding.n_features_per_level;
+        if (encoding_output_dims_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"HashGrid encoding output width exceeds uint32 range."};
+        const std::uint32_t encoding_output_dims = static_cast<std::uint32_t>(encoding_output_dims_64);
+        if (encoding_output_dims % 16u != 0u) {
+            std::ostringstream stream;
+            stream << "HashGrid encoding output width must be a multiple of 16 after encoder padding removal: n_levels=" << this->network_config.encoding.n_levels << " n_features_per_level=" << this->network_config.encoding.n_features_per_level << " output_width=" << encoding_output_dims << '.';
+            throw std::runtime_error{stream.str()};
+        }
+
+        if (this->network_config.direction_encoding.sh_degree == 0u || this->network_config.direction_encoding.sh_degree > 8u) throw std::runtime_error{"Spherical harmonics degree must be in [1, 8]."};
+        const std::uint32_t dir_output_dims = this->network_config.direction_encoding.sh_degree * this->network_config.direction_encoding.sh_degree;
+        if (dir_output_dims % 16u != 0u) {
+            std::ostringstream stream;
+            stream << "Spherical harmonics output width must be a multiple of 16 after encoder padding removal: sh_degree=" << this->network_config.direction_encoding.sh_degree << " output_width=" << dir_output_dims << '.';
+            throw std::runtime_error{stream.str()};
+        }
+
+        train_plan.network.density_input_dims = encoding_output_dims;
+        train_plan.network.rgb_input_dims     = train_plan.network.density_output_dims + dir_output_dims;
 
         train_plan.training.padded_output_width     = std::max(legacy::next_multiple(train_plan.network.rgb_output_dims, 16u), 4u);
         train_plan.training.max_samples             = train_plan.training.batch_size * 16u;
@@ -1027,8 +1042,8 @@ namespace ngp {
         sampling.density_rng = legacy::math::pcg32{training.rng.next_uint()};
         try {
             model = new ModelState{
-                ngp::encoding::create_position_encoding<__half>(train_plan.network.n_pos_dims, this->network_config.encoding, train_plan.network.density_alignment),
-                ngp::encoding::create_direction_encoding<__half>(train_plan.network.n_dir_dims, this->network_config.direction_encoding, train_plan.network.rgb_alignment),
+                ngp::encoding::create_position_encoding<__half>(train_plan.network.n_pos_dims, this->network_config.encoding),
+                ngp::encoding::create_direction_encoding<__half>(train_plan.network.n_dir_dims, this->network_config.direction_encoding),
                 mlp::FullyFusedMLP<__half, density_network_width>{
                     train_plan.network.density_input_dims,
                     train_plan.network.density_output_dims,
@@ -1050,7 +1065,7 @@ namespace ngp {
 
             auto& current_model                   = *model;
             current_model.layout.pos_input_width  = std::visit([](const auto& impl) { return impl.input_width; }, current_model.pos_encoding);
-            current_model.layout.pos_output_width = std::visit([](const auto& impl) { return impl.padded_output_width; }, current_model.pos_encoding);
+            current_model.layout.pos_output_width = std::visit([](const auto& impl) { return impl.output_width; }, current_model.pos_encoding);
             current_model.layout.pos_layout       = std::visit([](const auto& impl) { return impl.preferred_output_layout; }, current_model.pos_encoding);
             current_model.layout.pos_param_count  = std::visit([](const auto& impl) { return impl.n_params; }, current_model.pos_encoding);
 
