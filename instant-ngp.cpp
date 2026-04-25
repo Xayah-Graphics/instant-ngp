@@ -87,11 +87,14 @@ namespace ngp {
 
                 frame.camera[1] *= -1.0f;
                 frame.camera[2] *= -1.0f;
-                frame.camera[3]                      = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
-                const legacy::math::vec4 camera_row0 = ngp::legacy::math::row(frame.camera, 0);
-                frame.camera                         = ngp::legacy::math::row(frame.camera, 0, ngp::legacy::math::row(frame.camera, 1));
-                frame.camera                         = ngp::legacy::math::row(frame.camera, 1, ngp::legacy::math::row(frame.camera, 2));
-                frame.camera                         = ngp::legacy::math::row(frame.camera, 2, camera_row0);
+                frame.camera[3]                       = frame.camera[3] * 0.33f + legacy::math::vec3(0.5f);
+                const legacy::math::vec4 camera_row0  = {frame.camera[0].x, frame.camera[1].x, frame.camera[2].x, frame.camera[3].x};
+                const legacy::math::vec4 camera_row1  = {frame.camera[0].y, frame.camera[1].y, frame.camera[2].y, frame.camera[3].y};
+                const legacy::math::vec4 camera_row2  = {frame.camera[0].z, frame.camera[1].z, frame.camera[2].z, frame.camera[3].z};
+                frame.camera[0]                       = {camera_row1.x, camera_row2.x, camera_row0.x};
+                frame.camera[1]                       = {camera_row1.y, camera_row2.y, camera_row0.y};
+                frame.camera[2]                       = {camera_row1.z, camera_row2.z, camera_row0.z};
+                frame.camera[3]                       = {camera_row1.w, camera_row2.w, camera_row0.w};
             }
         }
 

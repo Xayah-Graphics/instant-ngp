@@ -38,33 +38,25 @@ namespace ngp::encoding {
         return result;
     }
 
-    template <std::uint32_t N_DIMS, std::uint32_t N_PRIMES>
-    __device__ std::uint32_t lcg_hash(const legacy::math::uvec<N_DIMS>& pos_grid, const std::uint32_t primes[N_PRIMES]) {
-        static_assert(N_DIMS <= N_PRIMES, "lcg_hash can only hash up to N_PRIMES dimensions.");
-
+    __device__ std::uint32_t lcg_hash(const legacy::math::uvec3& pos_grid, const std::uint32_t primes[3]) {
         std::uint32_t result = 0u;
         TCNN_PRAGMA_UNROLL
-        for (std::uint32_t i = 0u; i < N_DIMS; ++i) result ^= pos_grid[i] * primes[i];
+        for (std::uint32_t i = 0u; i < 3u; ++i) result ^= pos_grid[i] * primes[i];
         return result;
     }
 
-    template <std::uint32_t N_DIMS>
-    __device__ std::uint32_t coherent_prime_hash(const legacy::math::uvec<N_DIMS>& pos_grid) {
-        constexpr std::uint32_t factors[7] = {1u, 2654435761u, 805459861u, 3674653429u, 2097192037u, 1434869437u, 2165219737u};
-        return lcg_hash<N_DIMS, 7u>(pos_grid, factors);
+    __device__ std::uint32_t coherent_prime_hash(const legacy::math::uvec3& pos_grid) {
+        constexpr std::uint32_t factors[3] = {1u, 2654435761u, 805459861u};
+        return lcg_hash(pos_grid, factors);
     }
 
-    template <std::uint32_t N_DIMS>
-    __device__ std::uint32_t grid_index(const GridType grid_type, const std::uint32_t hashmap_size, const std::uint32_t grid_resolution_value, const legacy::math::uvec<N_DIMS>& pos_grid) {
+    __device__ std::uint32_t grid_index(const GridType grid_type, const std::uint32_t hashmap_size, const std::uint32_t grid_resolution_value, const legacy::math::uvec3& pos_grid) {
         std::uint32_t stride = 1u;
         std::uint32_t index  = 0u;
 
-        constexpr std::uint32_t max_bases[] = {0x0u, 0xFFFFFFFFu, 0xFFFFu, 0x659u, 0xFFu, 0x54u, 0x28u, 0x17u, 0xFu, 0xBu, 0x9u};
-        static_assert(N_DIMS <= std::size(max_bases), "grid_index can only be used for N_DIMS <= 10");
-
-        if (grid_resolution_value <= max_bases[N_DIMS]) {
+        if (grid_resolution_value <= 0x659u) {
             TCNN_PRAGMA_UNROLL
-            for (std::uint32_t dim = 0u; dim < N_DIMS; ++dim) {
+            for (std::uint32_t dim = 0u; dim < 3u; ++dim) {
                 index += pos_grid[dim] * stride;
                 stride *= grid_resolution_value;
             }
@@ -72,7 +64,7 @@ namespace ngp::encoding {
             stride = 0xFFFFFFFFu;
         }
 
-        if (grid_type == GridType::Hash && hashmap_size < stride) index = coherent_prime_hash<N_DIMS>(pos_grid);
+        if (grid_type == GridType::Hash && hashmap_size < stride) index = coherent_prime_hash(pos_grid);
         return index % hashmap_size;
     }
 
@@ -205,6 +197,7 @@ namespace ngp::encoding {
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const GridType grid_type, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
+        static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= num_elements) return;
 
@@ -226,13 +219,13 @@ namespace ngp::encoding {
         const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
 
         float pos[N_POS_DIMS];
-        legacy::math::uvec<N_POS_DIMS> pos_grid = {};
+        legacy::math::uvec3 pos_grid = {};
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in(dim, i), &pos[dim], &pos_grid[dim], scale);
 
-        auto grid_val = [&](const legacy::math::uvec<N_POS_DIMS>& local_pos) {
-            const std::uint32_t index = grid_index<N_POS_DIMS>(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
+        auto grid_val = [&](const legacy::math::uvec3& local_pos) {
+            const std::uint32_t index = grid_index(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
             return *reinterpret_cast<const legacy::math::tvec<T, N_FEATURES_PER_LEVEL, params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*>(&grid[index]);
         };
 
@@ -241,8 +234,8 @@ namespace ngp::encoding {
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t idx = 0u; idx < (1u << N_POS_DIMS); ++idx) {
-                float weight                                  = 1.0f;
-                legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
+                float weight = 1.0f;
+                legacy::math::uvec3 pos_grid_local = {};
 
                 TCNN_PRAGMA_UNROLL
                 for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) {
@@ -279,6 +272,7 @@ namespace ngp::encoding {
 
     template <typename T, typename GradT, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL, std::uint32_t N_FEATURES_PER_THREAD>
     __global__ void kernel_grid_backward(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const bool stochastic_interpolation, const GridType grid_type, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
+        static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = ((blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD) / N_FEATURES_PER_LEVEL;
         if (i >= num_elements) return;
 
@@ -294,25 +288,25 @@ namespace ngp::encoding {
         const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
         const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
 
-        auto add_grid_gradient = [&](const legacy::math::uvec<N_POS_DIMS>& local_pos, const legacy::math::tvec<GradT, N_FEATURES_PER_THREAD>& grad, const float weight) {
-            const std::uint32_t index = grid_index<N_POS_DIMS>(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL + feature;
+        auto add_grid_gradient = [&](const legacy::math::uvec3& local_pos, const legacy::math::tvec<GradT, N_FEATURES_PER_THREAD>& grad, const float weight) {
+            const std::uint32_t index = grid_index(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL + feature;
             legacy::math::atomic_add_gmem(grid_gradient + index, static_cast<GradT>(weight) * grad);
         };
 
         float pos[N_POS_DIMS];
-        legacy::math::uvec<N_POS_DIMS> pos_grid = {};
+        legacy::math::uvec3 pos_grid = {};
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in(dim, i), &pos[dim], &pos_grid[dim], scale);
 
-        legacy::math::tvec<T, N_FEATURES_PER_THREAD> grad = {};
+        legacy::math::tvec<GradT, N_FEATURES_PER_THREAD> grad = {};
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t f = 0u; f < N_FEATURES_PER_THREAD; ++f) grad[f] = dL_dy[i + (level * N_FEATURES_PER_LEVEL + feature + f) * num_elements];
 
         if (stochastic_interpolation) {
-            const float sample                            = random_val(1337u, i + level * num_elements);
-            legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
+            const float sample = random_val(1337u, i + level * num_elements);
+            legacy::math::uvec3 pos_grid_local = {};
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) {
@@ -328,8 +322,8 @@ namespace ngp::encoding {
 
         TCNN_PRAGMA_UNROLL
         for (std::uint32_t idx = 0u; idx < (1u << N_POS_DIMS); ++idx) {
-            float weight                                  = 1.0f;
-            legacy::math::uvec<N_POS_DIMS> pos_grid_local = {};
+            float weight = 1.0f;
+            legacy::math::uvec3 pos_grid_local = {};
 
             TCNN_PRAGMA_UNROLL
             for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) {

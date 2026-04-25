@@ -19,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -135,63 +136,18 @@ namespace ngp::legacy {
         };
 
         template <typename T, uint32_t N, size_t ALIGNMENT = sizeof(T)>
-        struct tvec;
-
-        template <size_t Requested, typename T>
-        inline constexpr size_t vector_alignment_v = Requested != 0 && (Requested & (Requested - 1)) == 0 ? Requested : alignof(T);
-
-        template <typename Vec>
-        using vec_value_t = typename Vec::underlying_type;
-
-        template <typename Vec>
-        __host__ __device__ inline void fill_vec(Vec& out, vec_value_t<Vec> value) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < Vec::size(); ++i) {
-                out[i] = value;
-            }
-        }
-
-        template <typename ToVec, typename FromVec>
-        __host__ __device__ inline void copy_vec(ToVec& out, const FromVec& in) {
-            using To = vec_value_t<ToVec>;
-
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < ToVec::size(); ++i) {
-                out[i] = i < FromVec::size() ? (To) in[i] : (To) 0;
-            }
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        struct alignas(vector_alignment_v<ALIGNMENT, T>) tvec {
-            using underlying_type = T;
-
+        struct alignas(ALIGNMENT != 0 && (ALIGNMENT & (ALIGNMENT - 1)) == 0 ? ALIGNMENT : alignof(T)) tvec final {
             static constexpr uint32_t size() {
                 return N;
             }
 
-            T elems[N];
+            T elems[N] = {};
 
             __host__ __device__ tvec() = default;
 
-            __host__ __device__ tvec(T scalar) {
-                fill_vec(*this, scalar);
-            }
-
-            template <typename U, uint32_t M, size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<U, M, OTHER_ALIGNMENT>& other) {
-                copy_vec(*this, other);
-            }
-
-            template <typename... Args>
-                requires (sizeof...(Args) == N && (... && std::convertible_to<Args, T>) )
-            __host__ __device__ tvec(Args... args) : elems{(T) args...} {}
-
-            __host__ __device__ T* data() {
-                return elems;
-            }
-
-            __host__ __device__ const T* data() const {
-                return elems;
+            __host__ __device__ tvec(T value) {
+                TCNN_PRAGMA_UNROLL
+                for (uint32_t i = 0u; i < N; ++i) elems[i] = value;
             }
 
             __host__ __device__ T& operator[](uint32_t index) {
@@ -203,659 +159,315 @@ namespace ngp::legacy {
             }
         };
 
-        template <typename T, size_t ALIGNMENT>
-        struct alignas(vector_alignment_v<ALIGNMENT, T>) tvec<T, 1, ALIGNMENT> {
-            using underlying_type = T;
+        template <typename T, uint32_t N, size_t ALIGNMENT>
+        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator*(T value, const tvec<T, N, ALIGNMENT>& vector) {
+            tvec<T, N, ALIGNMENT> result;
+            TCNN_PRAGMA_UNROLL
+            for (uint32_t i = 0u; i < N; ++i) result[i] = value * vector[i];
+            return result;
+        }
 
-            static constexpr uint32_t size() {
-                return 1;
+        struct vec2;
+        struct vec3;
+
+        struct ivec2 final {
+            int x = 0;
+            int y = 0;
+
+            __host__ __device__ ivec2() = default;
+            __host__ __device__ ivec2(int value) : x{value}, y{value} {}
+            __host__ __device__ ivec2(int x, int y) : x{x}, y{y} {}
+            __host__ __device__ ivec2(const vec2& value);
+
+            __host__ __device__ int& operator[](uint32_t index) {
+                return index == 0u ? x : y;
             }
 
-            union {
-                T x;
-                T r;
-            };
-
-            __host__ __device__ tvec() = default;
-
-            __host__ __device__ tvec(T scalar) : x{scalar} {}
-
-            template <typename U, uint32_t M, size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<U, M, OTHER_ALIGNMENT>& other) {
-                copy_vec(*this, other);
-            }
-
-            __host__ __device__ T* data() {
-                return &x;
-            }
-
-            __host__ __device__ const T* data() const {
-                return &x;
-            }
-
-            __host__ __device__ T& operator[](uint32_t index) {
-                return data()[index];
-            }
-
-            __host__ __device__ const T& operator[](uint32_t index) const {
-                return data()[index];
+            __host__ __device__ const int& operator[](uint32_t index) const {
+                return index == 0u ? x : y;
             }
         };
 
-        template <typename T, size_t ALIGNMENT>
-        struct alignas(vector_alignment_v<ALIGNMENT, T>) tvec<T, 2, ALIGNMENT> {
-            using underlying_type = T;
+        struct ivec3 final {
+            int x = 0;
+            int y = 0;
+            int z = 0;
 
-            static constexpr uint32_t size() {
-                return 2;
+            __host__ __device__ ivec3() = default;
+            __host__ __device__ ivec3(int value) : x{value}, y{value}, z{value} {}
+            __host__ __device__ ivec3(int x, int y, int z) : x{x}, y{y}, z{z} {}
+            __host__ __device__ ivec3(const vec3& value);
+        };
+
+        struct uvec3 final {
+            uint32_t x = 0u;
+            uint32_t y = 0u;
+            uint32_t z = 0u;
+
+            __host__ __device__ uvec3() = default;
+            __host__ __device__ uvec3(uint32_t value) : x{value}, y{value}, z{value} {}
+            __host__ __device__ uvec3(uint32_t x, uint32_t y, uint32_t z) : x{x}, y{y}, z{z} {}
+
+            __host__ __device__ uint32_t& operator[](uint32_t index) {
+                return index == 0u ? x : (index == 1u ? y : z);
             }
 
-            union {
-                T x;
-                T r;
-            };
-            union {
-                T y;
-                T g;
-            };
-
-            __host__ __device__ tvec() = default;
-
-            __host__ __device__ tvec(T scalar) {
-                fill_vec(*this, scalar);
-            }
-
-            __host__ __device__ tvec(T a, T b) : x{a}, y{b} {}
-
-            template <typename U, uint32_t M, size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<U, M, OTHER_ALIGNMENT>& other) {
-                copy_vec(*this, other);
-            }
-
-            __host__ __device__ T* data() {
-                return &x;
-            }
-
-            __host__ __device__ const T* data() const {
-                return &x;
-            }
-
-            __host__ __device__ T& operator[](uint32_t index) {
-                return data()[index];
-            }
-
-            __host__ __device__ const T& operator[](uint32_t index) const {
-                return data()[index];
-            }
-
-            __host__ __device__ tvec<T, 2, ALIGNMENT>& xy() {
-                return *this;
-            }
-
-            __host__ __device__ const tvec<T, 2, ALIGNMENT>& xy() const {
-                return *this;
+            __host__ __device__ const uint32_t& operator[](uint32_t index) const {
+                return index == 0u ? x : (index == 1u ? y : z);
             }
         };
 
-        template <typename T, size_t ALIGNMENT>
-        struct alignas(vector_alignment_v<ALIGNMENT, T>) tvec<T, 3, ALIGNMENT> {
-            using underlying_type = T;
+        struct vec2 final {
+            float x = 0.0f;
+            float y = 0.0f;
 
-            static constexpr uint32_t size() {
-                return 3;
+            __host__ __device__ vec2() = default;
+            __host__ __device__ vec2(float value) : x{value}, y{value} {}
+            __host__ __device__ vec2(float x, float y) : x{x}, y{y} {}
+            __host__ __device__ vec2(const ivec2& value) : x{static_cast<float>(value.x)}, y{static_cast<float>(value.y)} {}
+
+            __host__ __device__ float& operator[](uint32_t index) {
+                return index == 0u ? x : y;
             }
 
-            union {
-                T x;
-                T r;
-            };
-            union {
-                T y;
-                T g;
-            };
-            union {
-                T z;
-                T b;
-            };
-
-            __host__ __device__ tvec() = default;
-
-            __host__ __device__ tvec(T scalar) {
-                fill_vec(*this, scalar);
-            }
-
-            __host__ __device__ tvec(T a, T b, T c) : x{a}, y{b}, z{c} {}
-
-            template <typename U, uint32_t M, size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<U, M, OTHER_ALIGNMENT>& other) {
-                copy_vec(*this, other);
-            }
-
-            template <size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<T, 2, OTHER_ALIGNMENT>& a, T b) : x{a.x}, y{a.y}, z{b} {}
-
-            template <size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(T a, const tvec<T, 2, OTHER_ALIGNMENT>& b) : x{a}, y{b.x}, z{b.y} {}
-
-            __host__ __device__ T* data() {
-                return &x;
-            }
-
-            __host__ __device__ const T* data() const {
-                return &x;
-            }
-
-            __host__ __device__ T& operator[](uint32_t index) {
-                return data()[index];
-            }
-
-            __host__ __device__ const T& operator[](uint32_t index) const {
-                return data()[index];
-            }
-
-            __host__ __device__ tvec<T, 2>& xy() {
-                return *reinterpret_cast<tvec<T, 2>*>(&x);
-            }
-
-            __host__ __device__ const tvec<T, 2>& xy() const {
-                return *reinterpret_cast<const tvec<T, 2>*>(&x);
-            }
-
-            __host__ __device__ tvec<T, 3, ALIGNMENT>& rgb() {
-                return *this;
-            }
-
-            __host__ __device__ const tvec<T, 3, ALIGNMENT>& rgb() const {
-                return *this;
+            __host__ __device__ const float& operator[](uint32_t index) const {
+                return index == 0u ? x : y;
             }
         };
 
-        template <typename T, size_t ALIGNMENT>
-        struct alignas(vector_alignment_v<ALIGNMENT, T>) tvec<T, 4, ALIGNMENT> {
-            using underlying_type = T;
+        struct vec3 final {
+            float x = 0.0f;
+            float y = 0.0f;
+            float z = 0.0f;
 
-            static constexpr uint32_t size() {
-                return 4;
+            __host__ __device__ vec3() = default;
+            __host__ __device__ vec3(float value) : x{value}, y{value}, z{value} {}
+            __host__ __device__ vec3(float x, float y, float z) : x{x}, y{y}, z{z} {}
+            __host__ __device__ vec3(const ivec3& value) : x{static_cast<float>(value.x)}, y{static_cast<float>(value.y)}, z{static_cast<float>(value.z)} {}
+
+            __host__ __device__ float& operator[](uint32_t index) {
+                return index == 0u ? x : (index == 1u ? y : z);
             }
 
-            union {
-                T x;
-                T r;
-            };
-            union {
-                T y;
-                T g;
-            };
-            union {
-                T z;
-                T b;
-            };
-            union {
-                T w;
-                T a;
-            };
-
-            __host__ __device__ tvec() = default;
-
-            __host__ __device__ tvec(T scalar) {
-                fill_vec(*this, scalar);
-            }
-
-            __host__ __device__ tvec(T a0, T a1, T a2, T a3) : x{a0}, y{a1}, z{a2}, w{a3} {}
-
-            template <typename U, uint32_t M, size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<U, M, OTHER_ALIGNMENT>& other) {
-                copy_vec(*this, other);
-            }
-
-            template <size_t OTHER_ALIGNMENT>
-            __host__ __device__ tvec(const tvec<T, 3, OTHER_ALIGNMENT>& a0, T a1) : x{a0.x}, y{a0.y}, z{a0.z}, w{a1} {}
-
-            template <size_t ALIGNMENT_A, size_t ALIGNMENT_B>
-            __host__ __device__ tvec(const tvec<T, 2, ALIGNMENT_A>& a0, const tvec<T, 2, ALIGNMENT_B>& a1) : x{a0.x}, y{a0.y}, z{a1.x}, w{a1.y} {}
-
-            __host__ __device__ T* data() {
-                return &x;
-            }
-
-            __host__ __device__ const T* data() const {
-                return &x;
-            }
-
-            __host__ __device__ T& operator[](uint32_t index) {
-                return data()[index];
-            }
-
-            __host__ __device__ const T& operator[](uint32_t index) const {
-                return data()[index];
-            }
-
-            __host__ __device__ tvec<T, 2>& xy() {
-                return *reinterpret_cast<tvec<T, 2>*>(&x);
-            }
-
-            __host__ __device__ const tvec<T, 2>& xy() const {
-                return *reinterpret_cast<const tvec<T, 2>*>(&x);
-            }
-
-            __host__ __device__ tvec<T, 3>& rgb() {
-                return *reinterpret_cast<tvec<T, 3>*>(&x);
-            }
-
-            __host__ __device__ const tvec<T, 3>& rgb() const {
-                return *reinterpret_cast<const tvec<T, 3>*>(&x);
+            __host__ __device__ const float& operator[](uint32_t index) const {
+                return index == 0u ? x : (index == 1u ? y : z);
             }
         };
 
-        template <typename T>
-        __host__ __device__ inline T sign(T value) {
-            return value >= (T) 0 ? (T) 1 : (T) -1;
-        }
+        struct vec4 final {
+            union {
+                float x = 0.0f;
+                float r;
+            };
+            union {
+                float y;
+                float g;
+            };
+            union {
+                float z;
+                float b;
+            };
+            union {
+                float w;
+                float a;
+            };
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator+(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] + b[i];
+            __host__ __device__ vec4() : x{0.0f}, y{0.0f}, z{0.0f}, w{0.0f} {}
+            __host__ __device__ vec4(float value) : x{value}, y{value}, z{value}, w{value} {}
+            __host__ __device__ vec4(float x, float y, float z, float w) : x{x}, y{y}, z{z}, w{w} {}
+
+            __host__ __device__ float& operator[](uint32_t index) {
+                return index == 0u ? x : (index == 1u ? y : (index == 2u ? z : w));
             }
-            return result;
-        }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator+(const tvec<T, N, ALIGNMENT>& a, T b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] + b;
+            __host__ __device__ const float& operator[](uint32_t index) const {
+                return index == 0u ? x : (index == 1u ? y : (index == 2u ? z : w));
             }
-            return result;
-        }
+        };
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator+(T a, const tvec<T, N, ALIGNMENT>& b) {
-            return b + a;
-        }
+        __host__ __device__ inline ivec2::ivec2(const vec2& value) : x{static_cast<int>(value.x)}, y{static_cast<int>(value.y)} {}
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator-(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] - b[i];
+        __host__ __device__ inline ivec3::ivec3(const vec3& value) : x{static_cast<int>(value.x)}, y{static_cast<int>(value.y)}, z{static_cast<int>(value.z)} {}
+
+        struct mat4x3 final {
+            vec3 columns[4] = {};
+
+            __host__ __device__ vec3& operator[](uint32_t index) {
+                return columns[index];
             }
-            return result;
-        }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator-(const tvec<T, N, ALIGNMENT>& a, T b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] - b;
+            __host__ __device__ const vec3& operator[](uint32_t index) const {
+                return columns[index];
             }
-            return result;
+        };
+
+        static_assert(sizeof(vec2) == sizeof(float) * 2u);
+        static_assert(sizeof(vec3) == sizeof(float) * 3u);
+        static_assert(sizeof(vec4) == sizeof(float) * 4u);
+        static_assert(sizeof(ivec2) == sizeof(int) * 2u);
+        static_assert(sizeof(ivec3) == sizeof(int) * 3u);
+        static_assert(sizeof(uvec3) == sizeof(uint32_t) * 3u);
+        static_assert(sizeof(mat4x3) == sizeof(float) * 12u);
+
+        __host__ __device__ inline float sign(float value) {
+            return value >= 0.0f ? 1.0f : -1.0f;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator-(T a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a - b[i];
-            }
-            return result;
+        __host__ __device__ inline vec2 operator+(const vec2& a, const vec2& b) {
+            return {a.x + b.x, a.y + b.y};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator*(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] * b[i];
-            }
-            return result;
+        __host__ __device__ inline vec2 operator+(const vec2& a, float b) {
+            return {a.x + b, a.y + b};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator*(const tvec<T, N, ALIGNMENT>& a, T b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] * b;
-            }
-            return result;
+        __host__ __device__ inline vec2 operator-(const vec2& a, const vec2& b) {
+            return {a.x - b.x, a.y - b.y};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator*(T a, const tvec<T, N, ALIGNMENT>& b) {
+        __host__ __device__ inline vec2 operator*(const vec2& a, const vec2& b) {
+            return {a.x * b.x, a.y * b.y};
+        }
+
+        __host__ __device__ inline vec2 operator*(const vec2& a, float b) {
+            return {a.x * b, a.y * b};
+        }
+
+        __host__ __device__ inline vec2 operator*(float a, const vec2& b) {
             return b * a;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator/(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] / b[i];
-            }
-            return result;
+        __host__ __device__ inline vec2 operator/(const vec2& a, const vec2& b) {
+            return {a.x / b.x, a.y / b.y};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator/(const tvec<T, N, ALIGNMENT>& a, T b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = a[i] / b;
-            }
-            return result;
+        __host__ __device__ inline ivec2 operator-(const ivec2& a, int b) {
+            return {a.x - b, a.y - b};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> operator-(const tvec<T, N, ALIGNMENT>& value) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = -value[i];
-            }
-            return result;
+        __host__ __device__ inline vec3 operator+(const vec3& a, const vec3& b) {
+            return {a.x + b.x, a.y + b.y, a.z + b.z};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT>& operator+=(tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                a[i] += b[i];
-            }
-            return a;
+        __host__ __device__ inline vec3 operator+(const vec3& a, float b) {
+            return {a.x + b, a.y + b, a.z + b};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT>& operator-=(tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                a[i] -= b[i];
-            }
-            return a;
+        __host__ __device__ inline vec3 operator+(float a, const vec3& b) {
+            return b + a;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT>& operator*=(tvec<T, N, ALIGNMENT>& a, T b) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                a[i] *= b;
-            }
-            return a;
+        __host__ __device__ inline vec3 operator-(const vec3& a, const vec3& b) {
+            return {a.x - b.x, a.y - b.y, a.z - b.z};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT>& operator/=(tvec<T, N, ALIGNMENT>& a, T b) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                a[i] /= b;
-            }
-            return a;
+        __host__ __device__ inline vec3 operator-(const vec3& a, float b) {
+            return {a.x - b, a.y - b, a.z - b};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline bool operator==(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                if (a[i] != b[i]) return false;
-            }
-            return true;
+        __host__ __device__ inline vec3 operator*(const vec3& a, const vec3& b) {
+            return {a.x * b.x, a.y * b.y, a.z * b.z};
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline bool operator!=(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
+        __host__ __device__ inline vec3 operator*(const vec3& a, float b) {
+            return {a.x * b, a.y * b, a.z * b};
+        }
+
+        __host__ __device__ inline vec3 operator*(float a, const vec3& b) {
+            return b * a;
+        }
+
+        __host__ __device__ inline vec3 operator/(const vec3& a, const vec3& b) {
+            return {a.x / b.x, a.y / b.y, a.z / b.z};
+        }
+
+        __host__ __device__ inline vec3 operator/(const vec3& a, float b) {
+            return {a.x / b, a.y / b, a.z / b};
+        }
+
+        __host__ __device__ inline bool operator==(const vec3& a, const vec3& b) {
+            return a.x == b.x && a.y == b.y && a.z == b.z;
+        }
+
+        __host__ __device__ inline bool operator!=(const vec3& a, const vec3& b) {
             return !(a == b);
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> min(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = cuda::std::min(a[i], b[i]);
-            }
-            return result;
+        __host__ __device__ inline vec3& operator+=(vec3& a, const vec3& b) {
+            a.x += b.x;
+            a.y += b.y;
+            a.z += b.z;
+            return a;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> max(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = cuda::std::max(a[i], b[i]);
-            }
-            return result;
+        __host__ __device__ inline vec3& operator*=(vec3& a, float b) {
+            a.x *= b;
+            a.y *= b;
+            a.z *= b;
+            return a;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> clamp(const tvec<T, N, ALIGNMENT>& value, T low, T high) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = cuda::std::clamp(value[i], low, high);
-            }
-            return result;
+        __host__ __device__ inline vec3& operator/=(vec3& a, float b) {
+            a.x /= b;
+            a.y /= b;
+            a.z /= b;
+            return a;
         }
 
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> clamp(const tvec<T, N, ALIGNMENT>& value, T low, const tvec<T, N, ALIGNMENT>& high) {
-            tvec<T, N, ALIGNMENT> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result[i] = cuda::std::clamp(value[i], low, high[i]);
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T dot(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            T result = (T) 0;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result += a[i] * b[i];
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T sum(const tvec<T, N, ALIGNMENT>& value) {
-            T result = (T) 0;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result += value[i];
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T mean(const tvec<T, N, ALIGNMENT>& value) {
-            return sum(value) / (T) N;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T product(const tvec<T, N, ALIGNMENT>& value) {
-            T result = (T) 1;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                result *= value[i];
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T length2(const tvec<T, N, ALIGNMENT>& value) {
-            return dot(value, value);
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T length(const tvec<T, N, ALIGNMENT>& value) {
-            return static_cast<T>(cuda::std::sqrt(static_cast<double>(length2(value))));
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline T distance(const tvec<T, N, ALIGNMENT>& a, const tvec<T, N, ALIGNMENT>& b) {
-            return length(a - b);
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, N, ALIGNMENT> normalize(const tvec<T, N, ALIGNMENT>& value) {
-            const T len = length(value);
-            return len > (T) 0 ? value / len : tvec<T, N, ALIGNMENT>{(T) 0};
-        }
-
-        template <typename T, size_t ALIGNMENT>
-        __host__ __device__ inline tvec<T, 3, ALIGNMENT> cross(const tvec<T, 3, ALIGNMENT>& a, const tvec<T, 3, ALIGNMENT>& b) {
+        __host__ __device__ inline ivec2 clamp(const ivec2& value, int low, const ivec2& high) {
             return {
-                a.y * b.z - a.z * b.y,
-                a.z * b.x - a.x * b.z,
-                a.x * b.y - a.y * b.x,
+                cuda::std::clamp(value.x, low, high.x),
+                cuda::std::clamp(value.y, low, high.y),
             };
         }
 
-        template <uint32_t N>
-        using vec = tvec<float, N>;
+        __host__ __device__ inline float dot(const vec3& a, const vec3& b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        }
 
-        template <uint32_t N>
-        using ivec = tvec<int, N>;
+        __host__ __device__ inline float mean(const vec3& value) {
+            return (value.x + value.y + value.z) / 3.0f;
+        }
 
-        template <uint32_t N>
-        using uvec = tvec<uint32_t, N>;
+        __host__ __device__ inline int product(const ivec2& value) {
+            return value.x * value.y;
+        }
 
-        using vec2  = vec<2>;
-        using vec3  = vec<3>;
-        using vec4  = vec<4>;
-        using ivec2 = ivec<2>;
-        using ivec3 = ivec<3>;
-        using ivec4 = ivec<4>;
-        using uvec2 = uvec<2>;
-        using uvec3 = uvec<3>;
-        using uvec4 = uvec<4>;
+        __host__ __device__ inline float length(const vec3& value) {
+            return static_cast<float>(cuda::std::sqrt(static_cast<double>(dot(value, value))));
+        }
+
+        __host__ __device__ inline float distance(const vec3& a, const vec3& b) {
+            return length(a - b);
+        }
+
+        __host__ __device__ inline vec3 normalize(const vec3& value) {
+            const float len = length(value);
+            return len > 0.0f ? value / len : vec3{0.0f};
+        }
 
 #if defined(__CUDACC__)
         template <typename T, uint32_t N, size_t ALIGNMENT>
-        __device__ inline void atomic_add(T* dst, const tvec<T, N, ALIGNMENT>& value) {
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; ++i) {
-                atomicAdd(dst + i, value[i]);
-            }
-        }
-
-        template <typename T, uint32_t N, size_t ALIGNMENT>
         __device__ inline void atomic_add_gmem(T* dst, const tvec<T, N, ALIGNMENT>& value) {
-            atomic_add(dst, value);
-        }
-
-        template <uint32_t N, size_t ALIGNMENT>
-        __device__ inline void atomic_add(__half* dst, const tvec<__half, N, ALIGNMENT>& value) {
-            static_assert(N % 2 == 0, "Half vector atomics require an even number of elements.");
-
             TCNN_PRAGMA_UNROLL
-            for (uint32_t i = 0; i < N; i += 2) {
-                atomicAdd(reinterpret_cast<__half2*>(dst + i), __halves2half2(value[i], value[i + 1]));
-            }
+            for (uint32_t i = 0u; i < N; ++i) atomicAdd(dst + i, value[i]);
         }
 
         template <uint32_t N, size_t ALIGNMENT>
         __device__ inline void atomic_add_gmem(__half* dst, const tvec<__half, N, ALIGNMENT>& value) {
-            atomic_add(dst, value);
+            static_assert(N % 2u == 0u, "Half vector atomics require an even number of elements.");
+
+            TCNN_PRAGMA_UNROLL
+            for (uint32_t i = 0u; i < N; i += 2u) atomicAdd(reinterpret_cast<__half2*>(dst + i), __halves2half2(value[i], value[i + 1u]));
         }
 #endif
-
-        template <typename T, uint32_t N, uint32_t M>
-        struct tmat {
-            using value_type = T;
-
-            tvec<T, M> cols[N];
-
-            __host__ __device__ tmat() = default;
-
-            __host__ __device__ explicit tmat(T diagonal) {
-                TCNN_PRAGMA_UNROLL
-                for (uint32_t col = 0; col < N; ++col) {
-                    TCNN_PRAGMA_UNROLL
-                    for (uint32_t row_index = 0; row_index < M; ++row_index) {
-                        cols[col][row_index] = col == row_index ? diagonal : (T) 0;
-                    }
-                }
-            }
-
-            template <typename... Args>
-                requires (sizeof...(Args) == N * M && (... && std::convertible_to<Args, T>) )
-            __host__ __device__ tmat(Args... args) {
-                const T values[] = {(T) args...};
-                TCNN_PRAGMA_UNROLL
-                for (uint32_t col = 0; col < N; ++col) {
-                    TCNN_PRAGMA_UNROLL
-                    for (uint32_t row_index = 0; row_index < M; ++row_index) {
-                        cols[col][row_index] = values[col * M + row_index];
-                    }
-                }
-            }
-
-            template <typename U, uint32_t OTHER_N, uint32_t OTHER_M>
-            __host__ __device__ tmat(const tmat<U, OTHER_N, OTHER_M>& other) {
-                TCNN_PRAGMA_UNROLL
-                for (uint32_t col = 0; col < N; ++col) {
-                    TCNN_PRAGMA_UNROLL
-                    for (uint32_t row_index = 0; row_index < M; ++row_index) {
-                        cols[col][row_index] = col < OTHER_N && row_index < OTHER_M ? (T) other[col][row_index] : (col == row_index ? (T) 1 : (T) 0);
-                    }
-                }
-            }
-
-            __host__ __device__ tvec<T, M>& operator[](uint32_t index) {
-                return cols[index];
-            }
-
-            __host__ __device__ const tvec<T, M>& operator[](uint32_t index) const {
-                return cols[index];
-            }
-
-            template <size_t ALIGNMENT>
-            __host__ __device__ tvec<T, M> operator*(const tvec<T, N, ALIGNMENT>& value) const {
-                tvec<T, M> result{(T) 0};
-                TCNN_PRAGMA_UNROLL
-                for (uint32_t col = 0; col < N; ++col) {
-                    result += cols[col] * value[col];
-                }
-                return result;
-            }
-        };
-
-        template <typename T, uint32_t N, uint32_t M>
-        inline tvec<T, N> row(const tmat<T, N, M>& matrix, int row_index) {
-            tvec<T, N> result;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t col = 0; col < N; ++col) {
-                result[col] = matrix[col][row_index];
-            }
-            return result;
-        }
-
-        template <typename T, uint32_t N, uint32_t M, typename U, size_t ALIGNMENT>
-        inline tmat<T, N, M> row(const tmat<T, N, M>& matrix, int row_index, const tvec<U, N, ALIGNMENT>& value) {
-            tmat<T, N, M> result = matrix;
-            TCNN_PRAGMA_UNROLL
-            for (uint32_t col = 0; col < N; ++col) {
-                result[col][row_index] = (T) value[col];
-            }
-            return result;
-        }
-
-        using mat3x3 = tmat<float, 3, 3>;
-        using mat4x3 = tmat<float, 4, 3>;
-        using mat3   = mat3x3;
     } // namespace math
 
     struct Ray final {
         math::vec3 o = {};
         math::vec3 d = {};
     };
+    static_assert(sizeof(Ray) == sizeof(float) * 6u);
 
     template <typename T>
     T next_multiple(T val, T divisor) {
@@ -1411,42 +1023,6 @@ namespace ngp::legacy {
 
         __host__ __device__ void advance_cols(unsigned_index_t n) {
             advance((unsigned_index_t) 0, n);
-        }
-
-        template <uint32_t N>
-        __host__ __device__ math::tvec<std::remove_const_t<T>, N> row(unsigned_index_t m) const {
-            math::tvec<std::remove_const_t<T>, N> result;
-            TCNN_PRAGMA_UNROLL
-            for (unsigned_index_t i = 0; i < N; ++i) {
-                result[i] = (*this)(m, i);
-            }
-            return result;
-        }
-
-        template <uint32_t N>
-        __host__ __device__ math::tvec<std::remove_const_t<T>, N> col(unsigned_index_t n) const {
-            math::tvec<std::remove_const_t<T>, N> result;
-            TCNN_PRAGMA_UNROLL
-            for (unsigned_index_t i = 0; i < N; ++i) {
-                result[i] = (*this)(i, n);
-            }
-            return result;
-        }
-
-        template <typename U, uint32_t N, size_t A>
-        __host__ __device__ void set_row(unsigned_index_t m, const math::tvec<U, N, A>& val) {
-            TCNN_PRAGMA_UNROLL
-            for (unsigned_index_t i = 0; i < N; ++i) {
-                (*this)(m, i) = val[i];
-            }
-        }
-
-        template <typename U, uint32_t N, size_t A>
-        __host__ __device__ void set_col(unsigned_index_t n, const math::tvec<U, N, A>& val) {
-            TCNN_PRAGMA_UNROLL
-            for (unsigned_index_t i = 0; i < N; ++i) {
-                (*this)(i, n) = val[i];
-            }
         }
 
         __host__ __device__ explicit operator bool() const {

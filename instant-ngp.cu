@@ -258,7 +258,7 @@ namespace ngp {
 
     inline __device__ legacy::Ray uv_to_ray(const legacy::math::vec2& uv, const legacy::math::ivec2& resolution, const float focal_length, const legacy::math::mat4x3& camera_matrix, const float near_distance = 0.0f) {
         legacy::math::vec3 dir    = {(uv.x - 0.5f) * static_cast<float>(resolution.x) / focal_length, (uv.y - 0.5f) * static_cast<float>(resolution.y) / focal_length, 1.0f};
-        dir                       = legacy::math::mat3(camera_matrix) * dir;
+        dir                       = camera_matrix[0] * dir.x + camera_matrix[1] * dir.y + camera_matrix[2] * dir.z;
         legacy::math::vec3 origin = camera_matrix[3];
         origin += dir * near_distance;
         return {origin, dir};
@@ -349,7 +349,10 @@ namespace ngp {
             static_cast<float>((rgba32 & 0x00FF0000u) >> 16u) * (1.0f / 255.0f),
             static_cast<float>((rgba32 & 0xFF000000u) >> 24u) * (1.0f / 255.0f),
         };
-        result.rgb() = srgb_to_linear(result.rgb()) * result.a;
+        const legacy::math::vec3 linear_rgb = srgb_to_linear({result.x, result.y, result.z}) * result.a;
+        result.x                            = linear_rgb.x;
+        result.y                            = linear_rgb.y;
+        result.z                            = linear_rgb.z;
         return result;
     }
 
@@ -503,7 +506,7 @@ namespace ngp {
                     ngp::legacy::math::dot(xform[2], offset),
                 };
                 camera_dir /= camera_dir.z;
-                const legacy::math::vec2 uv = camera_dir.xy() * frame.focal_length / legacy::math::vec2(frame.resolution) + legacy::math::vec2(0.5f);
+                const legacy::math::vec2 uv = legacy::math::vec2{camera_dir.x, camera_dir.y} * frame.focal_length / legacy::math::vec2(frame.resolution) + legacy::math::vec2(0.5f);
                 const legacy::Ray ray       = uv_to_ray(uv, frame.resolution, frame.focal_length, xform);
                 if (ngp::legacy::math::distance(ngp::legacy::math::normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
                     ++count;
@@ -680,7 +683,7 @@ namespace ngp {
         const legacy::math::vec3 background_color = random_val_3d(rng);
         const legacy::math::ivec2 texel           = ngp::legacy::math::clamp(legacy::math::ivec2(uv * legacy::math::vec2(resolution)), 0, resolution - 1);
         const legacy::math::vec4 texsamp          = read_rgba(texel, resolution, frame.pixels);
-        const legacy::math::vec3 rgbtarget        = linear_to_srgb(texsamp.rgb() + (1.0f - texsamp.a) * srgb_to_linear(background_color));
+        const legacy::math::vec3 rgbtarget        = linear_to_srgb(legacy::math::vec3{texsamp.x, texsamp.y, texsamp.z} + (1.0f - texsamp.a) * srgb_to_linear(background_color));
 
         if (compacted_numsteps == numsteps) rgb_ray += T * background_color;
 
@@ -1596,7 +1599,7 @@ namespace ngp {
                     const std::size_t pixel_index       = static_cast<std::size_t>(x) + static_cast<std::size_t>(y) * static_cast<std::size_t>(resolution.x);
                     const legacy::math::vec3 prediction = clamp_rgb01(rendered_host[pixel_index]);
                     const legacy::math::vec4 gt         = read_rgba(legacy::math::ivec2{x, y}, resolution, source.rgba.data());
-                    const legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(gt.rgb() + (1.0f - gt.a) * background));
+                    const legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(legacy::math::vec3{gt.x, gt.y, gt.z} + (1.0f - gt.a) * background));
                     const legacy::math::vec3 diff       = prediction - target;
                     image_squared_error += static_cast<double>(ngp::legacy::math::mean(diff * diff));
                 }
@@ -1819,7 +1822,7 @@ namespace ngp {
                     const std::size_t pixel_index       = static_cast<std::size_t>(x) + static_cast<std::size_t>(y) * static_cast<std::size_t>(resolution.x);
                     const legacy::math::vec3 prediction = clamp_rgb01(rendered_host[pixel_index]);
                     const legacy::math::vec4 gt         = read_rgba(legacy::math::ivec2{x, y}, resolution, source.rgba.data());
-                    const legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(gt.rgb() + (1.0f - gt.a) * background));
+                    const legacy::math::vec3 target     = clamp_rgb01(linear_to_srgb(legacy::math::vec3{gt.x, gt.y, gt.z} + (1.0f - gt.a) * background));
                     const legacy::math::vec3 diff       = prediction - target;
                     image_squared_error += static_cast<double>(ngp::legacy::math::mean(diff * diff));
                 }
