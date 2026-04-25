@@ -14,7 +14,6 @@
 #include <cuda_runtime.h>
 #include <deque>
 #include <memory>
-#include <numeric>
 #include <source_location>
 #include <sstream>
 #include <stdexcept>
@@ -59,16 +58,6 @@ namespace ngp::legacy {
                 return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31));
             }
 
-            __host__ __device__ uint32_t next_uint(uint32_t bound) {
-
-                uint32_t threshold = (~bound + 1u) % bound;
-
-                for (;;) {
-                    uint32_t r = next_uint();
-                    if (r >= threshold) return r % bound;
-                }
-            }
-
             __host__ __device__ float next_float() {
 
                 union {
@@ -77,16 +66,6 @@ namespace ngp::legacy {
                 } x;
                 x.u = (next_uint() >> 9) | 0x3f800000u;
                 return x.f - 1.0f;
-            }
-
-            __host__ __device__ double next_double() {
-
-                union {
-                    uint64_t u;
-                    double d;
-                } x;
-                x.u = ((uint64_t) next_uint() << 20) | 0x3ff0000000000000ULL;
-                return x.d - 1.0;
             }
 
             __host__ __device__ void advance(int64_t delta_ = (1ll << 32)) {
@@ -104,31 +83,6 @@ namespace ngp::legacy {
                     delta /= 2;
                 }
                 state = acc_mult * state + acc_plus;
-            }
-
-            __host__ __device__ int64_t operator-(const pcg32& other) const {
-                uint64_t cur_mult = PCG32_MULT, cur_plus = inc, cur_state = other.state, the_bit = 1u, distance = 0u;
-
-                while (state != cur_state) {
-                    if ((state & the_bit) != (cur_state & the_bit)) {
-                        cur_state = cur_state * cur_mult + cur_plus;
-                        distance |= the_bit;
-                    }
-
-                    the_bit <<= 1;
-                    cur_plus = (cur_mult + 1ULL) * cur_plus;
-                    cur_mult *= cur_mult;
-                }
-
-                return (int64_t) distance;
-            }
-
-            __host__ __device__ bool operator==(const pcg32& other) const {
-                return state == other.state && inc == other.inc;
-            }
-
-            __host__ __device__ bool operator!=(const pcg32& other) const {
-                return state != other.state || inc != other.inc;
             }
 
             uint64_t state; // RNG state.  All values are possible.
@@ -387,10 +341,6 @@ namespace ngp::legacy {
 
         __host__ __device__ inline bool operator==(const vec3& a, const vec3& b) {
             return a.x == b.x && a.y == b.y && a.z == b.z;
-        }
-
-        __host__ __device__ inline bool operator!=(const vec3& a, const vec3& b) {
-            return !(a == b);
         }
 
         __host__ __device__ inline vec3& operator+=(vec3& a, const vec3& b) {
@@ -793,10 +743,6 @@ namespace ngp::legacy {
             return m_handle ? m_handle->n_bytes : 0;
         }
 
-        explicit operator bool() const {
-            return m_handle != nullptr;
-        }
-
     private:
         struct Handle {
             uint32_t refs       = 0;
@@ -885,18 +831,8 @@ namespace ngp::legacy {
             if (size > m_size) resize(size, stream);
         }
 
-        void memset(int value, size_t num_elements, size_t offset = 0) {
-            if (num_elements + offset > m_size) {
-                std::ostringstream stream;
-                stream << "Could not set memory: Number of elements " << num_elements << '+' << offset << " larger than allocated memory " << m_size << '.';
-                throw std::runtime_error{stream.str()};
-            }
-
-            cuda_check(cudaMemset(data() + offset, value, num_elements * sizeof(T)));
-        }
-
         void memset(int value) {
-            memset(value, m_size);
+            cuda_check(cudaMemset(data(), value, m_size * sizeof(T)));
         }
 
         void copy_from_host(const T* host_data, size_t num_elements) {
@@ -906,10 +842,6 @@ namespace ngp::legacy {
                 throw std::runtime_error{stream.str()};
             }
             cuda_check(cudaMemcpy(data(), host_data, num_elements * sizeof(T), cudaMemcpyHostToDevice));
-        }
-
-        void copy_from_host(const T* host_data) {
-            copy_from_host(host_data, m_size);
         }
 
         void copy_from_host(const std::vector<T>& host_data) {
@@ -928,10 +860,6 @@ namespace ngp::legacy {
                 throw std::runtime_error{stream.str()};
             }
             cuda_check(cudaMemcpy(host_data, data(), num_elements * sizeof(T), cudaMemcpyDeviceToHost));
-        }
-
-        void copy_to_host(T* host_data) const {
-            copy_to_host(host_data, m_size);
         }
 
         void copy_to_host(std::vector<T>& host_data) const {
@@ -968,18 +896,6 @@ namespace ngp::legacy {
             return (T*) ((const char*) ptr + y * stride_in_bytes);
         }
 
-        __host__ __device__ void operator+=(uint32_t y) {
-            ptr = (T*) ((const char*) ptr + y * stride_in_bytes);
-        }
-
-        __host__ __device__ void operator-=(uint32_t y) {
-            ptr = (T*) ((const char*) ptr - y * stride_in_bytes);
-        }
-
-        __host__ __device__ explicit operator bool() const {
-            return ptr;
-        }
-
         T* ptr;
         size_t stride_in_bytes;
     };
@@ -990,43 +906,8 @@ namespace ngp::legacy {
         __host__ __device__ MatrixView(T* data, STRIDE_T stride_i, STRIDE_T stride_j) : data{data}, stride_i{stride_i}, stride_j{stride_j} {}
         __host__ __device__ MatrixView(const MatrixView<std::remove_const_t<T>>& other) : data{other.data}, stride_i{other.stride_i}, stride_j{other.stride_j} {}
 
-        using signed_index_t   = std::make_signed_t<STRIDE_T>;
-        using unsigned_index_t = std::make_unsigned_t<STRIDE_T>;
-
-        __host__ __device__ T& operator()(signed_index_t i, signed_index_t j = 0) const {
-            return data[i * (std::ptrdiff_t) stride_i + j * (std::ptrdiff_t) stride_j];
-        }
-
-        __host__ __device__ void advance(signed_index_t m, signed_index_t n) {
-            data += m * (std::ptrdiff_t) stride_i + n * (std::ptrdiff_t) stride_j;
-        }
-
-        __host__ __device__ void advance_rows(signed_index_t m) {
-            advance(m, 0);
-        }
-
-        __host__ __device__ void advance_cols(signed_index_t n) {
-            advance(0, n);
-        }
-
-        __host__ __device__ T& operator()(unsigned_index_t i, unsigned_index_t j = 0) const {
+        __host__ __device__ T& operator()(STRIDE_T i, STRIDE_T j = 0) const {
             return data[i * (size_t) stride_i + j * (size_t) stride_j];
-        }
-
-        __host__ __device__ void advance(unsigned_index_t m, unsigned_index_t n) {
-            data += m * (size_t) stride_i + n * (size_t) stride_j;
-        }
-
-        __host__ __device__ void advance_rows(unsigned_index_t m) {
-            advance(m, (unsigned_index_t) 0);
-        }
-
-        __host__ __device__ void advance_cols(unsigned_index_t n) {
-            advance((unsigned_index_t) 0, n);
-        }
-
-        __host__ __device__ explicit operator bool() const {
-            return data;
         }
 
         T* data;
@@ -1040,22 +921,23 @@ namespace ngp::legacy {
         static constexpr bool has_static_layout                = static_layout != MatrixLayout::Dynamic;
         static constexpr MatrixLayout static_transposed_layout = has_static_layout ? (static_layout == RM ? CM : RM) : MatrixLayout::Dynamic;
 
-        using Type = T;
-
-        GPUMatrix(uint32_t m, uint32_t n, MatrixLayout layout = CM) : m_rows{m}, m_cols{n}, m_layout{resolve_layout(layout)} {
+        GPUMatrix(uint32_t m, uint32_t n, MatrixLayout layout = CM) : m_rows{m}, m_cols{n}, m_layout{has_static_layout ? static_layout : layout} {
             m_allocation = GpuAllocation{m * n * sizeof(T)};
             m_data       = (T*) m_allocation.data();
-            set_stride_contiguous();
+            m_stride     = m_layout == CM ? m_rows : m_cols;
         }
 
-        GPUMatrix(uint32_t m, uint32_t n, cudaStream_t stream, MatrixLayout layout = CM) : m_rows{m}, m_cols{n}, m_layout{resolve_layout(layout)} {
+        GPUMatrix(uint32_t m, uint32_t n, cudaStream_t stream, MatrixLayout layout = CM) : m_rows{m}, m_cols{n}, m_layout{has_static_layout ? static_layout : layout} {
             m_allocation = GpuAllocation{m * n * sizeof(T), stream};
             m_data       = (T*) m_allocation.data();
-            set_stride_contiguous();
+            m_stride     = m_layout == CM ? m_rows : m_cols;
         }
 
-        explicit GPUMatrix(T* data, uint32_t m, uint32_t n, MatrixLayout layout = CM, uint32_t stride = 0, GpuAllocation allocation = {}) : m_data{data}, m_layout{resolve_layout(layout)}, m_allocation{std::move(allocation)} {
-            set(data, m, n, stride);
+        explicit GPUMatrix(T* data, uint32_t m, uint32_t n, MatrixLayout layout = CM, uint32_t stride = 0, GpuAllocation allocation = {}) : m_data{data}, m_rows{m}, m_cols{n}, m_layout{has_static_layout ? static_layout : layout}, m_allocation{std::move(allocation)} {
+            if (stride == 0)
+                m_stride = m_layout == CM ? m_rows : m_cols;
+            else
+                m_stride = stride;
         }
 
         GPUMatrix() : GPUMatrix{nullptr, 0, 0} {}
@@ -1077,8 +959,6 @@ namespace ngp::legacy {
         GPUMatrix(const GPUMatrix<T, _layout>& other)                        = delete;
         GPUMatrix<T, _layout>& operator=(const GPUMatrix<T, _layout>& other) = delete;
 
-        ~GPUMatrix() {}
-
         void set_data_unsafe(void* data) {
             m_data = (T*) data;
         }
@@ -1087,75 +967,23 @@ namespace ngp::legacy {
             m_cols = cols;
 
             if (stride == 0)
-                set_stride_contiguous();
+                m_stride = m_layout == CM ? m_rows : m_cols;
             else
                 m_stride = stride;
         }
 
-        void set(T* data, uint32_t rows, uint32_t cols, uint32_t stride = 0) {
-            set_data_unsafe(data);
-            set_size_unsafe(rows, cols, stride);
-        }
-
-        void resize(uint32_t rows, uint32_t cols) {
-            if (m_allocation || !data()) {
-                cudaStream_t stream = m_allocation.stream();
-                m_allocation        = GpuAllocation{rows * cols * sizeof(T), stream};
-                m_data              = (T*) m_allocation.data();
-            } else {
-                throw std::runtime_error{"GPUMatrix::resize is not permitted when the underlying memory is not owned. Use GPUMatrix::set instead."};
-            }
-
-            set_size_unsafe(rows, cols);
-        }
-
-        uint32_t stride_contiguous() const {
-            return m_layout == CM ? m() : n();
-        }
-
-        bool is_contiguous() const {
-            return m_stride == stride_contiguous();
-        }
-
-        void set_stride_contiguous() {
-            m_stride = stride_contiguous();
-        }
-
-        GPUMatrix<T, _layout> slice(uint32_t offset_rows, uint32_t new_rows, uint32_t offset_cols, uint32_t new_cols) const {
-            return GPUMatrix<T, _layout>{
-                data() + (layout() == CM ? (offset_rows + offset_cols * stride()) : (offset_cols + offset_rows * stride())),
-                new_rows,
-                new_cols,
-                layout(),
-                stride(),
-                m_allocation,
-            };
-        }
-
         GPUMatrix<T, _layout> slice_rows(uint32_t offset, uint32_t size) const {
-            return slice(offset, size, 0, cols());
+            return GPUMatrix<T, _layout>{data() + (layout() == CM ? offset : offset * stride()), size, n(), layout(), stride(), m_allocation};
         }
 
         MatrixView<T> view() const {
             return {data(), layout() == CM ? 1u : stride(), layout() == CM ? stride() : 1u};
         }
 
-        uint32_t rows() const {
-            return m_rows;
-        }
-        uint32_t fan_out() const {
-            return m_rows;
-        }
         uint32_t m() const {
             return m_rows;
         }
 
-        uint32_t cols() const {
-            return m_cols;
-        }
-        uint32_t fan_in() const {
-            return m_cols;
-        }
         uint32_t n() const {
             return m_cols;
         }
@@ -1180,25 +1008,15 @@ namespace ngp::legacy {
         MatrixLayout layout() const {
             return m_layout;
         }
-        MatrixLayout transposed_layout() const {
-            return m_layout == RM ? CM : RM;
-        }
-
         T* data() const {
             return m_data;
         }
 
-        void memset(int value) {
-            check_or_throw(data());
-            check_or_throw(is_contiguous());
-            cuda_check(cudaMemset(data(), value, n_bytes()));
-        }
-
         void initialize_xavier_uniform(math::pcg32& rnd, float scale = 1) {
             check_or_throw(data());
-            check_or_throw(is_contiguous());
+            check_or_throw(m_stride == (m_layout == CM ? m_rows : m_cols));
 
-            scale *= std::sqrt(6.0f / (float) (fan_in() + fan_out()));
+            scale *= std::sqrt(6.0f / (float) (m_cols + m_rows));
 
             std::vector<T> new_data(n_elements());
 
@@ -1210,7 +1028,7 @@ namespace ngp::legacy {
         }
 
         GPUMatrix<T, static_transposed_layout> transposed() const {
-            return GPUMatrix<T, static_transposed_layout>(data(), n(), m(), transposed_layout(), stride(), m_allocation);
+            return GPUMatrix<T, static_transposed_layout>(data(), n(), m(), m_layout == RM ? CM : RM, stride(), m_allocation);
         }
 
         GPUMatrix<T, RM> rm() const {
@@ -1224,23 +1042,12 @@ namespace ngp::legacy {
         }
 
     private:
-        static constexpr MatrixLayout resolve_layout(MatrixLayout layout) {
-            if constexpr (has_static_layout) {
-                return static_layout;
-            } else {
-                return layout;
-            }
-        }
-
         T* m_data;
         uint32_t m_rows, m_cols, m_stride;
         MatrixLayout m_layout;
 
         GpuAllocation m_allocation;
     };
-
-    template <typename T>
-    using GPUMatrixDynamic = GPUMatrix<T, MatrixLayout::Dynamic>;
 
 } // namespace ngp::legacy
 

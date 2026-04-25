@@ -46,7 +46,6 @@ int main(int argc, char* argv[]) {
                 std::println("  --validation-interval <count>   Benchmark the whole validation split every N steps. Default: {}", options.validation_interval);
                 std::println("  --validation-dir <path>         Validation report directory. Default: {}", options.validation_dir.string());
                 std::println("  --test-report <path>            Run one final whole-split test after training and write the CSV report here");
-                std::println("  --grid-storage <hash|dense|tiled>");
                 std::println("  --hash-levels <count>");
                 std::println("  --hash-features <count>");
                 std::println("  --hash-log2-size <count>");
@@ -77,17 +76,7 @@ int main(int argc, char* argv[]) {
                 options.validation_dir = std::filesystem::path{std::string{require_value(i, arg)}};
             else if (arg == "--test-report")
                 options.test_report = std::filesystem::path{std::string{require_value(i, arg)}};
-            else if (arg == "--grid-storage") {
-                const std::string_view value = require_value(i, arg);
-                if (value == "hash")
-                    options.network.encoding.storage = ngp::InstantNGP::GridStorage::Hash;
-                else if (value == "dense")
-                    options.network.encoding.storage = ngp::InstantNGP::GridStorage::Dense;
-                else if (value == "tiled")
-                    options.network.encoding.storage = ngp::InstantNGP::GridStorage::Tiled;
-                else
-                    throw std::runtime_error{std::format("Unknown grid storage: '{}'.", value)};
-            } else if (arg == "--hash-levels")
+            else if (arg == "--hash-levels")
                 options.network.encoding.n_levels = parse_u32(arg, require_value(i, arg));
             else if (arg == "--hash-features")
                 options.network.encoding.n_features_per_level = parse_u32(arg, require_value(i, arg));
@@ -128,8 +117,7 @@ int main(int argc, char* argv[]) {
         std::println("steps={} log_interval={} validation_interval={}", options.steps, options.log_interval, options.validation_interval);
         if (options.validation_interval > 0u) std::println("validation_dir={}", options.validation_dir.string());
         if (!options.test_report.empty()) std::println("test_report={}", options.test_report.string());
-        std::println(
-            "grid={} levels={} features={} hash_log2={} base_res={} sh_degree={}", options.network.encoding.storage == ngp::InstantNGP::GridStorage::Hash ? "hash" : (options.network.encoding.storage == ngp::InstantNGP::GridStorage::Dense ? "dense" : "tiled"), options.network.encoding.n_levels, options.network.encoding.n_features_per_level, options.network.encoding.log2_hashmap_size, options.network.encoding.base_resolution, options.network.direction_encoding.sh_degree);
+        std::println("grid=hash levels={} features={} hash_log2={} base_res={} sh_degree={}", options.network.encoding.n_levels, options.network.encoding.n_features_per_level, options.network.encoding.log2_hashmap_size, options.network.encoding.base_resolution, options.network.direction_encoding.sh_degree);
         std::println("density_layers={} rgb_layers={} lr={} beta1={} beta2={} epsilon={} l2_reg={}", options.network.density_network.n_hidden_layers, options.network.rgb_network.n_hidden_layers, options.network.optimizer.learning_rate, options.network.optimizer.beta1, options.network.optimizer.beta2, options.network.optimizer.epsilon, options.network.optimizer.l2_reg);
 
         ngp::InstantNGP ngp{options.network};

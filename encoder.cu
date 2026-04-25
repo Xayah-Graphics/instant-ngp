@@ -1,5 +1,6 @@
 #include "encoder.cuh"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <sstream>
 #include <type_traits>
@@ -32,12 +33,6 @@ namespace ngp::encoding {
         transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy(elem_idx)[dim_idx];
     }
 
-    inline std::uint32_t powi(const std::uint32_t base, const std::uint32_t exponent) {
-        std::uint32_t result = 1u;
-        for (std::uint32_t i = 0u; i < exponent; ++i) result *= base;
-        return result;
-    }
-
     __device__ std::uint32_t lcg_hash(const legacy::math::uvec3& pos_grid, const std::uint32_t primes[3]) {
         std::uint32_t result = 0u;
         TCNN_PRAGMA_UNROLL
@@ -50,7 +45,7 @@ namespace ngp::encoding {
         return lcg_hash(pos_grid, factors);
     }
 
-    __device__ std::uint32_t grid_index(const GridType grid_type, const std::uint32_t hashmap_size, const std::uint32_t grid_resolution_value, const legacy::math::uvec3& pos_grid) {
+    __device__ std::uint32_t grid_index(const std::uint32_t hashmap_size, const std::uint32_t grid_resolution_value, const legacy::math::uvec3& pos_grid) {
         std::uint32_t stride = 1u;
         std::uint32_t index  = 0u;
 
@@ -64,7 +59,7 @@ namespace ngp::encoding {
             stride = 0xFFFFFFFFu;
         }
 
-        if (grid_type == GridType::Hash && hashmap_size < stride) index = coherent_prime_hash(pos_grid);
+        if (hashmap_size < stride) index = coherent_prime_hash(pos_grid);
         return index % hashmap_size;
     }
 
@@ -196,22 +191,12 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    __global__ void kernel_grid(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const GridType grid_type, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
+    __global__ void kernel_grid(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const T* __restrict__ grid, legacy::MatrixView<const float> positions_in, T* __restrict__ encoded_positions) {
         static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
         if (i >= num_elements) return;
 
         const std::uint32_t level = blockIdx.y;
-
-        max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
-
-        if (level >= max_level + 1e-3f) {
-            if (encoded_positions) {
-                TCNN_PRAGMA_UNROLL
-                for (std::uint32_t f = 0u; f < N_FEATURES_PER_LEVEL; ++f) encoded_positions[i + (level * N_FEATURES_PER_LEVEL + f) * num_elements] = static_cast<T>(0.0f);
-            }
-            return;
-        }
 
         grid += offset_table.data[level] * N_FEATURES_PER_LEVEL;
         const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
@@ -225,7 +210,7 @@ namespace ngp::encoding {
         for (std::uint32_t dim = 0u; dim < N_POS_DIMS; ++dim) pos_fract(positions_in(dim, i), &pos[dim], &pos_grid[dim], scale);
 
         auto grid_val = [&](const legacy::math::uvec3& local_pos) {
-            const std::uint32_t index = grid_index(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
+            const std::uint32_t index = grid_index(hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL;
             return *reinterpret_cast<const legacy::math::tvec<T, N_FEATURES_PER_LEVEL, params_aligned ? sizeof(T) * N_FEATURES_PER_LEVEL : sizeof(T)>*>(&grid[index]);
         };
 
@@ -271,7 +256,7 @@ namespace ngp::encoding {
     }
 
     template <typename T, typename GradT, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL, std::uint32_t N_FEATURES_PER_THREAD>
-    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const std::uint32_t num_grid_features, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, float max_level, const bool stochastic_interpolation, const GridType grid_type, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
+    __global__ void kernel_grid_backward(const std::uint32_t num_elements, const ParamsOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const bool stochastic_interpolation, GradT* __restrict__ grid_gradient, legacy::MatrixView<const float> positions_in, const T* __restrict__ dL_dy) {
         static_assert(N_POS_DIMS == 3u, "HashGrid encoding in this repository only supports 3D positions.");
         const std::uint32_t i = ((blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD) / N_FEATURES_PER_LEVEL;
         if (i >= num_elements) return;
@@ -279,17 +264,13 @@ namespace ngp::encoding {
         const std::uint32_t level   = blockIdx.y;
         const std::uint32_t feature = (blockIdx.x * blockDim.x + threadIdx.x) * N_FEATURES_PER_THREAD - i * N_FEATURES_PER_LEVEL;
 
-        max_level = (max_level * num_grid_features) / N_FEATURES_PER_LEVEL;
-
-        if (level > max_level + 1e-3f) return;
-
         grid_gradient += offset_table.data[level] * N_FEATURES_PER_LEVEL;
         const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
         const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
         const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
 
         auto add_grid_gradient = [&](const legacy::math::uvec3& local_pos, const legacy::math::tvec<GradT, N_FEATURES_PER_THREAD>& grad, const float weight) {
-            const std::uint32_t index = grid_index(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL + feature;
+            const std::uint32_t index = grid_index(hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL + feature;
             legacy::math::atomic_add_gmem(grid_gradient + index, static_cast<GradT>(weight) * grad);
         };
 
@@ -341,7 +322,7 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::GridEncodingTemplated(const std::uint32_t n_features, const std::uint32_t log2_hashmap_size, const std::uint32_t base_resolution, const float per_level_scale, const bool stochastic_interpolation, const GridType grid_type) : n_features{n_features}, base_resolution{base_resolution}, per_level_scale{per_level_scale}, stochastic_interpolation{stochastic_interpolation}, grid_type{grid_type} {
+    GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::GridEncodingTemplated(const std::uint32_t n_features, const std::uint32_t log2_hashmap_size, const std::uint32_t base_resolution, const float per_level_scale, const bool stochastic_interpolation) : n_features{n_features}, base_resolution{base_resolution}, per_level_scale{per_level_scale}, stochastic_interpolation{stochastic_interpolation} {
         n_levels             = (this->n_features + N_FEATURES_PER_LEVEL - 1u) / N_FEATURES_PER_LEVEL;
         std::uint32_t offset = 0u;
 
@@ -352,21 +333,14 @@ namespace ngp::encoding {
         }
 
         for (std::uint32_t i = 0u; i < n_levels; ++i) {
-            const float scale                  = exp2f(static_cast<float>(i) * std::log2(per_level_scale)) * static_cast<float>(base_resolution) - 1.0f;
-            const std::uint32_t resolution     = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
-            constexpr std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
-            std::uint32_t params_in_level      = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : powi(resolution, N_POS_DIMS);
+            const float scale                         = exp2f(static_cast<float>(i) * std::log2(per_level_scale)) * static_cast<float>(base_resolution) - 1.0f;
+            const std::uint32_t resolution            = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
+            constexpr std::uint32_t max_params        = std::numeric_limits<std::uint32_t>::max() / 2u;
+            const std::uint64_t dense_params_in_level = static_cast<std::uint64_t>(resolution) * resolution * resolution;
+            std::uint32_t params_in_level             = dense_params_in_level > max_params ? max_params : static_cast<std::uint32_t>(dense_params_in_level);
 
             params_in_level = legacy::next_multiple(params_in_level, 8u);
-
-            if (grid_type == GridType::Dense) {
-            } else if (grid_type == GridType::Tiled) {
-                params_in_level = std::min(params_in_level, powi(base_resolution, N_POS_DIMS));
-            } else if (grid_type == GridType::Hash) {
-                params_in_level = std::min(params_in_level, 1u << log2_hashmap_size);
-            } else {
-                throw std::runtime_error{"GridEncoding: invalid grid type."};
-            }
+            params_in_level = std::min(params_in_level, 1u << log2_hashmap_size);
 
             offset_table.data[i] = offset;
             offset += params_in_level;
@@ -384,7 +358,7 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::encode(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<T>& output) {
+    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::encode(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
@@ -404,7 +378,7 @@ namespace ngp::encoding {
             encoded_positions_soa = reinterpret_cast<T*>(workspace.data());
         }
 
-        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, grid_type, params, input.view(), encoded_positions_soa);
+        kernel_grid<T, N_POS_DIMS, N_FEATURES_PER_LEVEL><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), params, input.view(), encoded_positions_soa);
 
         if (output.layout() == legacy::AoS) {
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
@@ -414,7 +388,7 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<T>& dL_doutput, const network::detail::GradientMode param_gradients_mode) {
+    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, const network::detail::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(dL_doutput.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
@@ -455,7 +429,7 @@ namespace ngp::encoding {
         static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
 
         const dim3 blocks_hashgrid = {((num_elements * N_FEATURES_PER_LEVEL / n_features_per_thread) + n_threads_hashgrid - 1u) / n_threads_hashgrid, n_levels, 1u};
-        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, n_features, offset_table, base_resolution, std::log2(per_level_scale), max_level, stochastic_interpolation, grid_type, grid_gradient, input.view(), dL_dy_rm);
+        kernel_grid_backward<T, std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, N_POS_DIMS, N_FEATURES_PER_LEVEL, n_features_per_thread><<<blocks_hashgrid, n_threads_hashgrid, 0, stream>>>(num_elements, offset_table, base_resolution, std::log2(per_level_scale), stochastic_interpolation, grid_gradient, input.view(), dL_dy_rm);
 
         if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
             if (n_params > 0u) {
@@ -472,16 +446,18 @@ namespace ngp::encoding {
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
     GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL> make_hash_grid_encoding(const InstantNGP::NetworkConfig::HashGridConfig& config) {
-        const GridType grid_type       = config.storage == InstantNGP::GridStorage::Hash ? GridType::Hash : (config.storage == InstantNGP::GridStorage::Dense ? GridType::Dense : (config.storage == InstantNGP::GridStorage::Tiled ? GridType::Tiled : throw std::runtime_error{"Unsupported grid storage mode."}));
         const std::uint32_t n_features = N_FEATURES_PER_LEVEL * config.n_levels;
-        const float per_level_scale    = config.per_level_scale.has_value() ? *config.per_level_scale : (grid_type == GridType::Dense && config.n_levels > 1u && config.base_resolution > 0u ? std::exp(std::log(256.0f / static_cast<float>(config.base_resolution)) / (config.n_levels - 1u)) : 2.0f);
-        return {n_features, config.log2_hashmap_size, config.base_resolution, per_level_scale, config.stochastic_interpolation, grid_type};
+        const float per_level_scale    = config.per_level_scale.has_value() ? *config.per_level_scale : 2.0f;
+        return {n_features, config.log2_hashmap_size, config.base_resolution, per_level_scale, config.stochastic_interpolation};
     }
 
     template <typename T>
     std::variant<GridEncodingTemplated<T, 3u, 1u>, GridEncodingTemplated<T, 3u, 2u>, GridEncodingTemplated<T, 3u, 4u>, GridEncodingTemplated<T, 3u, 8u>> create_position_encoding(const std::uint32_t n_dims_to_encode, const InstantNGP::NetworkConfig::HashGridConfig& config) {
         if (config.n_levels == 0u) throw std::runtime_error{"HashGrid encoding requires at least one level."};
+        if (config.n_levels > max_n_levels) throw std::runtime_error{"HashGrid encoding n_levels exceeds the supported maximum."};
         if (config.base_resolution == 0u) throw std::runtime_error{"HashGrid encoding base_resolution must be greater than zero."};
+        if (config.log2_hashmap_size > 30u) throw std::runtime_error{"HashGrid encoding log2_hashmap_size must be at most 30."};
+        if (config.per_level_scale.has_value() && (!std::isfinite(*config.per_level_scale) || *config.per_level_scale <= 0.0f)) throw std::runtime_error{"HashGrid encoding per_level_scale must be finite and positive."};
         if (n_dims_to_encode != 3u) throw std::runtime_error{"HashGrid encoding in this repository only supports 3D positions."};
 
         switch (config.n_features_per_level) {
@@ -502,7 +478,7 @@ namespace ngp::encoding {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= num_elements) return;
 
-        data_out.advance_cols(i);
+        data_out.data += static_cast<std::size_t>(i) * data_out.stride_j;
         sh_enc<T, legacy::MatrixView<T>>(degree, data_in(0u, i) * 2.0f - 1.0f, data_in(1u, i) * 2.0f - 1.0f, data_in(2u, i) * 2.0f - 1.0f, data_out);
     }
 
@@ -516,7 +492,7 @@ namespace ngp::encoding {
     }
 
     template <typename T>
-    void SphericalHarmonicsEncoding<T>::encode(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<T>& output) {
+    void SphericalHarmonicsEncoding<T>::encode(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);

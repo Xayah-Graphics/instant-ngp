@@ -11,7 +11,6 @@ namespace ngp {
     class InstantNGP final {
     public:
         enum class ActivationMode { None, ReLU, Exponential, Sigmoid, Squareplus, Softplus, Tanh, LeakyReLU };
-        enum class GridStorage { Hash, Dense, Tiled };
 
         struct NetworkConfig final {
             struct HashGridConfig final {
@@ -21,7 +20,6 @@ namespace ngp {
                 std::uint32_t base_resolution        = 16u;
                 std::optional<float> per_level_scale = {};
                 bool stochastic_interpolation        = false;
-                GridStorage storage                  = GridStorage::Hash;
             } encoding = {};
 
             struct DirectionEncodingConfig final {
@@ -131,10 +129,10 @@ namespace ngp {
         DatasetState dataset = {};
 
     private:
-        void density(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
-        void inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>& output) const;
-        void forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, legacy::GPUMatrixDynamic<__half>* output);
-        void backward(cudaStream_t stream, const legacy::GPUMatrixDynamic<float>& input, const legacy::GPUMatrixDynamic<__half>& output, const legacy::GPUMatrixDynamic<__half>& dL_doutput);
+        void density(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic>& output) const;
+        void inference(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic>& output) const;
+        void forward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic>* output);
+        void backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic>& dL_doutput);
 
         struct ModelState;
         struct ModelScratch;
@@ -231,11 +229,11 @@ namespace ngp {
                 std::uint32_t max_inference                             = 0u;
                 std::uint32_t floats_per_coord                          = 0u;
                 std::uint32_t padded_output_width                       = 0u;
-                legacy::GPUMatrixDynamic<float> coords_matrix           = {};
-                legacy::GPUMatrixDynamic<__half> rgbsigma_matrix        = {};
-                legacy::GPUMatrixDynamic<float> compacted_coords_matrix = {};
-                legacy::GPUMatrixDynamic<__half> gradient_matrix        = {};
-                legacy::GPUMatrixDynamic<__half> compacted_output       = {};
+                legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic> coords_matrix           = {};
+                legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic> rgbsigma_matrix        = {};
+                legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic> compacted_coords_matrix = {};
+                legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic> gradient_matrix        = {};
+                legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic> compacted_output       = {};
             } workspace = {};
 
             legacy::GpuBuffer<float> loss_reduction = {};

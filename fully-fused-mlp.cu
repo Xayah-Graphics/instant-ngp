@@ -407,8 +407,8 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None, bool transfer = false) {
-        if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, legacy::MatrixLayout::Dynamic>& C, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, Activation act = Activation::None, bool transfer = false) {
+        if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: layout of dynamic GPUMatrix C and D must be equal"};
         if (D.layout() == legacy::CM)
             fc_multiply<Config>(stream, A, B, C.cm(), D.cm(), act, transfer);
         else
@@ -416,7 +416,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None, bool transfer = false) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, legacy::MatrixLayout::Dynamic>& B, const legacy::GPUMatrix<TypeC, legacy::MatrixLayout::Dynamic>& C, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, Activation act = Activation::None, bool transfer = false) {
         if (B.layout() == legacy::CM)
             fc_multiply<Config>(stream, A, B.cm(), C, D, act, transfer);
         else
@@ -424,7 +424,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeD>
-    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeD>& D, Activation act = Activation::None) {
+    void fc_multiply(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, legacy::MatrixLayout::Dynamic>& B, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, Activation act = Activation::None) {
         fc_multiply<Config>(stream, A, B, D, D, act);
     }
 
@@ -464,8 +464,8 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, legacy::MatrixLayout LayoutB, typename TypeC, typename TypeD>
-    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
-        if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
+    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, LayoutB>& B, const legacy::GPUMatrix<TypeC, legacy::MatrixLayout::Dynamic>& C, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
+        if (C.layout() != D.layout()) throw std::runtime_error{"fc_multiply: layout of dynamic GPUMatrix C and D must be equal"};
         if (D.layout() == legacy::CM)
             fc_multiply_split_k<Config>(stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
         else
@@ -473,7 +473,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, legacy::MatrixLayout LayoutA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
+    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, LayoutA>& A, const legacy::GPUMatrix<TypeB, legacy::MatrixLayout::Dynamic>& B, const legacy::GPUMatrix<TypeC, legacy::MatrixLayout::Dynamic>& C, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
         if (B.layout() == legacy::CM)
             fc_multiply_split_k<Config>(stream, A, B.cm(), C, D, split_k_slices, beta);
         else
@@ -481,7 +481,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, typename TypeB, typename TypeC, typename TypeD>
-    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrixDynamic<TypeA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeC>& C, const legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
+    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, legacy::MatrixLayout::Dynamic>& A, const legacy::GPUMatrix<TypeB, legacy::MatrixLayout::Dynamic>& B, const legacy::GPUMatrix<TypeC, legacy::MatrixLayout::Dynamic>& C, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, std::uint32_t split_k_slices = 1u, float beta = 0.0f) {
         if (A.layout() == legacy::CM)
             fc_multiply_split_k<Config>(stream, A.cm(), B, C, D, split_k_slices, beta);
         else
@@ -489,7 +489,7 @@ namespace ngp::mlp {
     }
 
     template <typename Config, typename TypeA, typename TypeB, typename TypeD>
-    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrixDynamic<TypeA>& A, const legacy::GPUMatrixDynamic<TypeB>& B, const legacy::GPUMatrixDynamic<TypeD>& D, std::uint32_t split_k_slices, float beta) {
+    void fc_multiply_split_k(cudaStream_t stream, const legacy::GPUMatrix<TypeA, legacy::MatrixLayout::Dynamic>& A, const legacy::GPUMatrix<TypeB, legacy::MatrixLayout::Dynamic>& B, const legacy::GPUMatrix<TypeD, legacy::MatrixLayout::Dynamic>& D, std::uint32_t split_k_slices, float beta) {
         fc_multiply_split_k<Config>(stream, A, B, D, D, split_k_slices, beta);
     }
 
@@ -649,14 +649,14 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, typename T, Activation ACTIVATION>
-    void mlp_fused_backward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::RM>& weights_first_layer, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrixDynamic<T>& dL_doutput, legacy::GPUMatrixDynamic<T>& temporaries, const legacy::GPUMatrixDynamic<T>& forward, legacy::GPUMatrixDynamic<T>* dL_dinput, const std::uint32_t n_hidden_matmuls) {
+    void mlp_fused_backward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::RM>& weights_first_layer, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& temporaries, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& forward, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const std::uint32_t n_hidden_matmuls) {
         static_assert(std::is_same_v<T, __half>, "The fully fused backward pass only supports __half precision.");
-        const std::uint32_t batch_size   = dL_doutput.cols();
-        const std::uint32_t out_width    = dL_doutput.rows();
+        const std::uint32_t batch_size   = dL_doutput.n();
+        const std::uint32_t out_width    = dL_doutput.m();
         constexpr std::uint32_t N_BLOCKS = WIDTH / 16u;
         const std::uint32_t N_ITERS      = WIDTH >= 256u ? 2u : 8u;
 
-        legacy::check_or_throw(forward.cols() == batch_size);
+        legacy::check_or_throw(forward.n() == batch_size);
         legacy::check_or_throw(batch_size % (16u * N_ITERS) == 0u);
         legacy::check_or_throw(!dL_dinput || dL_dinput->layout() == legacy::RM || dL_dinput->stride() == dL_dinput->m());
 
@@ -836,10 +836,10 @@ namespace ngp::mlp {
     }
 
     template <std::uint32_t WIDTH, typename T, Activation ACTIVATION, bool INFERENCE>
-    void mlp_fused_forward(cudaStream_t stream, Activation output_activation, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>& output_intermediate, legacy::GPUMatrixDynamic<T>* output, const std::uint32_t n_hidden_layers) {
+    void mlp_fused_forward(cudaStream_t stream, Activation output_activation, const legacy::GPUMatrix<T, legacy::RM>& weights, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output_intermediate, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* output, const std::uint32_t n_hidden_layers) {
         static_assert(std::is_same_v<T, __half>, "The fully fused forward pass only supports __half precision.");
-        const std::uint32_t batch_size = input.cols();
-        const std::uint32_t in_width   = input.rows();
+        const std::uint32_t batch_size = input.n();
+        const std::uint32_t in_width   = input.m();
 
         constexpr std::uint32_t SKEW         = WIDTH % 16u == 0u ? 8u : 0u;
         constexpr std::uint32_t INPUT_SKEW   = 8u;
@@ -848,10 +848,10 @@ namespace ngp::mlp {
         static_assert(WIDTH % 16u == 0u, "Width must be a multiply of 16.");
 
         legacy::check_or_throw(in_width % 16u == 0u);
-        legacy::check_or_throw(weights.rows() == WIDTH);
-        legacy::check_or_throw(weights.cols() % 16u == 0u);
-        legacy::check_or_throw(output_intermediate.cols() == batch_size);
-        legacy::check_or_throw(!output || output->cols() == batch_size);
+        legacy::check_or_throw(weights.m() == WIDTH);
+        legacy::check_or_throw(weights.n() % 16u == 0u);
+        legacy::check_or_throw(output_intermediate.n() == batch_size);
+        legacy::check_or_throw(!output || output->n() == batch_size);
         legacy::check_or_throw(input.layout() == legacy::RM || input.stride() == input.m());
 
         const std::uint32_t N_ITERS = WIDTH >= 256u ? 2u : 8u;
@@ -872,7 +872,7 @@ namespace ngp::mlp {
 
         check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shmem_size)));
         kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>
-            <<<blocks, threads, shmem_size, stream>>>(output_activation, input.data(), weights.data(), output_intermediate.data(), output ? output->data() : nullptr, output ? output->stride() : 0u, batch_size, in_width, output ? output->rows() : 0u, n_hidden_layers, input.layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major, output && output->layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major);
+            <<<blocks, threads, shmem_size, stream>>>(output_activation, input.data(), weights.data(), output_intermediate.data(), output ? output->data() : nullptr, output ? output->stride() : 0u, batch_size, in_width, output ? output->m() : 0u, n_hidden_layers, input.layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major, output && output->layout() == legacy::RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major);
     }
 
     template <typename T, std::uint32_t WIDTH>
@@ -898,7 +898,7 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    void FullyFusedMLP<T, WIDTH>::inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>& output) {
+    void FullyFusedMLP<T, WIDTH>::inference(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == padded_output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
@@ -906,7 +906,7 @@ namespace ngp::mlp {
         legacy::check_or_throw(params != nullptr);
 
         const std::uint32_t batch_size            = input.n();
-        legacy::GPUMatrixDynamic<T> inference_tmp = output_width > 16u ? ngp::legacy::GPUMatrixDynamic<T>{network_width, batch_size, stream, legacy::CM} : ngp::legacy::GPUMatrixDynamic<T>{nullptr, network_width, batch_size, legacy::CM};
+        legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> inference_tmp = output_width > 16u ? ngp::legacy::GPUMatrix<T, ngp::legacy::MatrixLayout::Dynamic>{network_width, batch_size, stream, legacy::CM} : ngp::legacy::GPUMatrix<T, ngp::legacy::MatrixLayout::Dynamic>{nullptr, network_width, batch_size, legacy::CM};
 
         switch (activation) {
         case Activation::None: mlp_fused_forward<WIDTH, T, Activation::None, true>(stream, output_activation, weight_matrices.front(), input, inference_tmp, &output, n_hidden_matmuls); break;
@@ -924,7 +924,7 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    void FullyFusedMLP<T, WIDTH>::forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>* output, Scratch& scratch) {
+    void FullyFusedMLP<T, WIDTH>::forward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* output, Scratch& scratch) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(!output || output->m() == padded_output_width);
         legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
@@ -947,7 +947,7 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrixDynamic<T>& input, const legacy::GPUMatrixDynamic<T>& output, const legacy::GPUMatrixDynamic<T>& dL_doutput, legacy::GPUMatrixDynamic<T>* dL_dinput, const network::detail::GradientMode param_gradients_mode) {
+    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const network::detail::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == padded_output_width);
         legacy::check_or_throw(dL_doutput.m() == padded_output_width);
@@ -965,22 +965,20 @@ namespace ngp::mlp {
         const float param_gradient_beta = param_gradients_mode == network::detail::GradientMode::Accumulate ? 1.0f : 0.0f;
         std::vector<network::detail::SyncedStreamReservation> multi_streams;
         const std::uint32_t split_k_factor                = batch_size / std::min(1u << 12u, batch_size);
-        const legacy::GPUMatrixDynamic<T>& tmp_dL_doutput = output_activation == Activation::None ? dL_doutput : scratch.backward_output;
-
-        auto dynamic_view = []<typename T0>(T0& matrix) { return ngp::legacy::GPUMatrixDynamic<typename std::remove_reference_t<T0>::Type>{matrix.data(), matrix.m(), matrix.n(), matrix.layout(), matrix.stride()}; };
+        const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& tmp_dL_doutput = output_activation == Activation::None ? dL_doutput : scratch.backward_output;
 
         std::uint32_t tmp_idx          = n_hidden_matmuls;
         std::uint32_t backward_tmp_idx = 0u;
 
         if (param_gradients_mode != network::detail::GradientMode::Ignore) {
             multi_streams.emplace_back(stream, 2u);
-            auto output_gradient = dynamic_view(gradient_matrices.back());
+            legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> output_gradient{gradient_matrices.back().data(), gradient_matrices.back().m(), gradient_matrices.back().n(), gradient_matrices.back().layout(), gradient_matrices.back().stride()};
             fc_multiply_split_k<LastLayerK>(multi_streams.back().aux_stream, tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx).transposed(), output_gradient, split_k_factor, param_gradient_beta);
         }
 
         if (output_width > 16u) fc_multiply<FullLayer>(stream, weight_matrices.back().transposed(), tmp_dL_doutput, scratch.forward_hidden.at(tmp_idx), scratch.backward_hidden.at(backward_tmp_idx), activation, true);
 
-        legacy::GPUMatrixDynamic<T>* dL_dinput_fused = input.m() == scratch.forward_hidden.at(0).m() && input.layout() == legacy::CM ? dL_dinput : nullptr;
+        legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput_fused = input.m() == scratch.forward_hidden.at(0).m() && input.layout() == legacy::CM ? dL_dinput : nullptr;
 
         switch (activation) {
         case Activation::None: mlp_fused_backward<WIDTH, T, Activation::None>(stream, weight_matrices.front(), weight_matrices.at(1u), tmp_dL_doutput, scratch.backward_hidden.at(backward_tmp_idx), scratch.forward_hidden.at(0), dL_dinput_fused, n_hidden_matmuls); break;
@@ -1002,7 +1000,7 @@ namespace ngp::mlp {
 
             if (param_gradients_mode != network::detail::GradientMode::Ignore) {
                 multi_streams.emplace_back(stream, 2u);
-                auto gradient_matrix = dynamic_view(gradient_matrices.at(1u + matrix_idx));
+                legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> gradient_matrix{gradient_matrices.at(1u + matrix_idx).data(), gradient_matrices.at(1u + matrix_idx).m(), gradient_matrices.at(1u + matrix_idx).n(), gradient_matrices.at(1u + matrix_idx).layout(), gradient_matrices.at(1u + matrix_idx).stride()};
                 fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), scratch.forward_hidden.at(tmp_idx).transposed(), gradient_matrix, split_k_factor, param_gradient_beta);
             }
 
@@ -1012,7 +1010,7 @@ namespace ngp::mlp {
 
         if (param_gradients_mode != network::detail::GradientMode::Ignore) {
             multi_streams.emplace_back(stream, 2u);
-            auto input_gradient = dynamic_view(gradient_matrices.front());
+            legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> input_gradient{gradient_matrices.front().data(), gradient_matrices.front().m(), gradient_matrices.front().n(), gradient_matrices.front().layout(), gradient_matrices.front().stride()};
             fc_multiply_split_k<FullLayerK>(multi_streams.back().aux_stream, scratch.backward_hidden.at(backward_tmp_idx - 1u), input.transposed(), input_gradient, split_k_factor, param_gradient_beta);
         }
 

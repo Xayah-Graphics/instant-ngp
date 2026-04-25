@@ -4,15 +4,11 @@
 
 namespace ngp {
 
-    constexpr bool supported_fully_fused_width(const std::uint32_t width) {
-        return width == 16u || width == 32u || width == 64u || width == 128u;
-    }
-
     inline constexpr std::uint32_t density_network_width = 64u;
     inline constexpr std::uint32_t rgb_network_width     = 64u;
 
-    static_assert(supported_fully_fused_width(density_network_width), "density_network_width must be one of 16, 32, 64, or 128.");
-    static_assert(supported_fully_fused_width(rgb_network_width), "rgb_network_width must be one of 16, 32, 64, or 128.");
+    static_assert(density_network_width == 16u || density_network_width == 32u || density_network_width == 64u || density_network_width == 128u, "density_network_width must be one of 16, 32, 64, or 128.");
+    static_assert(rgb_network_width == 16u || rgb_network_width == 32u || rgb_network_width == 64u || rgb_network_width == 128u, "rgb_network_width must be one of 16, 32, 64, or 128.");
 
 } // namespace ngp
 
@@ -34,17 +30,17 @@ namespace ngp::mlp {
         FullyFusedMLP(std::uint32_t input_width, std::uint32_t output_width, std::uint32_t n_hidden_layers, Activation activation, Activation output_activation);
 
         struct Scratch {
-            std::vector<legacy::GPUMatrixDynamic<T>> forward_hidden  = {};
-            std::vector<legacy::GPUMatrixDynamic<T>> backward_hidden = {};
-            legacy::GPUMatrixDynamic<T> backward_output              = {};
+            std::vector<legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>> forward_hidden  = {};
+            std::vector<legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>> backward_hidden = {};
+            legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> backward_output              = {};
             legacy::GpuAllocation forward_alloc                      = {};
             legacy::GpuAllocation backward_alloc                     = {};
         };
 
-        void inference(cudaStream_t stream, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>& output);
+        void inference(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output);
         void prepare_scratch(cudaStream_t stream, std::uint32_t batch_size, legacy::MatrixLayout output_layout, Scratch& scratch);
-        void forward(cudaStream_t stream, const legacy::GPUMatrixDynamic<T>& input, legacy::GPUMatrixDynamic<T>* output, Scratch& scratch);
-        void backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrixDynamic<T>& input, const legacy::GPUMatrixDynamic<T>& output, const legacy::GPUMatrixDynamic<T>& dL_doutput, legacy::GPUMatrixDynamic<T>* dL_dinput = nullptr, network::detail::GradientMode param_gradients_mode = network::detail::GradientMode::Overwrite);
+        void forward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* output, Scratch& scratch);
+        void backward(cudaStream_t stream, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput = nullptr, network::detail::GradientMode param_gradients_mode = network::detail::GradientMode::Overwrite);
         void initialize_params(legacy::math::pcg32& rnd, float* params_full_precision, float scale = 1.0f);
 
         std::uint32_t n_hidden_layers                                   = 0u;
