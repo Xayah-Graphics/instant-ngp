@@ -86,14 +86,6 @@ namespace ngp::encoding {
         return index % hashmap_size;
     }
 
-    __host__ __device__ inline float grid_scale(const std::uint32_t level, const float log2_per_level_scale, const std::uint32_t base_resolution) {
-        return exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
-    }
-
-    __host__ __device__ inline std::uint32_t grid_resolution(const float scale) {
-        return static_cast<std::uint32_t>(ceilf(scale)) + 1u;
-    }
-
     __device__ inline void pos_fract(const float input, float* pos, std::uint32_t* pos_grid, const float scale) {
         *pos            = fmaf(scale, input, 0.5f);
         const float tmp = floorf(*pos);
@@ -240,8 +232,8 @@ namespace ngp::encoding {
 
         grid += offset_table.data[level] * N_FEATURES_PER_LEVEL;
         const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
-        const float scale                = grid_scale(level, log2_per_level_scale, base_resolution);
-        const std::uint32_t resolution   = grid_resolution(scale);
+        const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
+        const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
 
         float pos[N_POS_DIMS];
         legacy::math::uvec<N_POS_DIMS> pos_grid = {};
@@ -309,8 +301,8 @@ namespace ngp::encoding {
 
         grid_gradient += offset_table.data[level] * N_FEATURES_PER_LEVEL;
         const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
-        const float scale                = grid_scale(level, log2_per_level_scale, base_resolution);
-        const std::uint32_t resolution   = grid_resolution(scale);
+        const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
+        const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
 
         auto add_grid_gradient = [&](const legacy::math::uvec<N_POS_DIMS>& local_pos, const legacy::math::tvec<GradT, N_FEATURES_PER_THREAD>& grad, const float weight) {
             const std::uint32_t index = grid_index<N_POS_DIMS>(grid_type, hashmap_size, resolution, local_pos) * N_FEATURES_PER_LEVEL + feature;
@@ -376,7 +368,8 @@ namespace ngp::encoding {
         }
 
         for (std::uint32_t i = 0u; i < n_levels; ++i) {
-            const std::uint32_t resolution     = grid_resolution(grid_scale(i, std::log2(per_level_scale), base_resolution));
+            const float scale                  = exp2f(static_cast<float>(i) * std::log2(per_level_scale)) * static_cast<float>(base_resolution) - 1.0f;
+            const std::uint32_t resolution     = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
             constexpr std::uint32_t max_params = std::numeric_limits<std::uint32_t>::max() / 2u;
             std::uint32_t params_in_level      = std::pow(static_cast<float>(resolution), N_POS_DIMS) > static_cast<float>(max_params) ? max_params : powi(resolution, N_POS_DIMS);
 
