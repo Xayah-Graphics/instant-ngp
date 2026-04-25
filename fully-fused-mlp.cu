@@ -1068,9 +1068,9 @@ namespace ngp::mlp {
         for (auto& matrix : weight_matrices_full_precision) matrix.initialize_xavier_uniform(rnd, scale);
     }
 
-    template class FullyFusedMLP<__half, density_network_width>;
-#if NGP_RGB_NETWORK_WIDTH != NGP_DENSITY_NETWORK_WIDTH
-    template class FullyFusedMLP<__half, rgb_network_width>;
-#endif
+    template class FullyFusedMLP<__half, 16u>;
+    template class FullyFusedMLP<__half, 32u>;
+    template class FullyFusedMLP<__half, 64u>;
+    template class FullyFusedMLP<__half, 128u>;
 
 } // namespace ngp::mlp

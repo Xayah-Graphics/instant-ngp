@@ -31,16 +31,6 @@ if (MSVC)
     )
 endif ()
 
-set(NGP_DENSITY_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the density FullyFusedMLP.")
-set(NGP_RGB_NETWORK_WIDTH 64 CACHE STRING "Compile-time width of the RGB FullyFusedMLP.")
-if (NOT NGP_DENSITY_NETWORK_WIDTH MATCHES "^(16|32|64|128)$")
-    message(FATAL_ERROR "NGP_DENSITY_NETWORK_WIDTH must be one of 16, 32, 64, or 128.")
-endif ()
-if (NOT NGP_RGB_NETWORK_WIDTH MATCHES "^(16|32|64|128)$")
-    message(FATAL_ERROR "NGP_RGB_NETWORK_WIDTH must be one of 16, 32, 64, or 128.")
-endif ()
-
-
 # ============================================================================
 # Dependencies
 # ============================================================================
@@ -108,12 +98,6 @@ target_sources(
         common.cuh
 )
 target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
-target_compile_definitions(
-        instant-ngp
-        PRIVATE
-        NGP_DENSITY_NETWORK_WIDTH=${NGP_DENSITY_NETWORK_WIDTH}
-        NGP_RGB_NETWORK_WIDTH=${NGP_RGB_NETWORK_WIDTH}
-)
 target_compile_options(
         instant-ngp
         PRIVATE

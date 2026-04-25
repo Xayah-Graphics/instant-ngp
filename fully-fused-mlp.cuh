@@ -2,25 +2,17 @@
 
 #include "common.cuh"
 
-#if !defined(NGP_DENSITY_NETWORK_WIDTH)
-#error "NGP_DENSITY_NETWORK_WIDTH must be provided by the build system."
-#endif
-
-#if !defined(NGP_RGB_NETWORK_WIDTH)
-#error "NGP_RGB_NETWORK_WIDTH must be provided by the build system."
-#endif
-
 namespace ngp {
 
     constexpr bool supported_fully_fused_width(const std::uint32_t width) {
         return width == 16u || width == 32u || width == 64u || width == 128u;
     }
 
-    static_assert(supported_fully_fused_width(NGP_DENSITY_NETWORK_WIDTH), "NGP_DENSITY_NETWORK_WIDTH must be one of 16, 32, 64, or 128.");
-    static_assert(supported_fully_fused_width(NGP_RGB_NETWORK_WIDTH), "NGP_RGB_NETWORK_WIDTH must be one of 16, 32, 64, or 128.");
+    inline constexpr std::uint32_t density_network_width = 64u;
+    inline constexpr std::uint32_t rgb_network_width     = 64u;
 
-    inline constexpr std::uint32_t density_network_width = NGP_DENSITY_NETWORK_WIDTH;
-    inline constexpr std::uint32_t rgb_network_width     = NGP_RGB_NETWORK_WIDTH;
+    static_assert(supported_fully_fused_width(density_network_width), "density_network_width must be one of 16, 32, 64, or 128.");
+    static_assert(supported_fully_fused_width(rgb_network_width), "rgb_network_width must be one of 16, 32, 64, or 128.");
 
 } // namespace ngp
 
