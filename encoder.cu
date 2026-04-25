@@ -14,23 +14,23 @@ namespace ngp::encoding {
 #endif
 
     template <typename T>
-    __global__ void transpose_encoded_position(const std::uint32_t n_elements, const T* __restrict__ encoded_positions, legacy::PitchedPtr<T> output) {
+    __global__ void transpose_encoded_position(const std::uint32_t n_elements, const T* __restrict__ encoded_positions, T* __restrict__ output, const std::uint32_t output_stride) {
         const std::uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
         if (i >= n_elements) return;
 
         const std::uint32_t elem_idx = i;
         const std::uint32_t dim_idx  = threadIdx.x;
-        output(elem_idx)[dim_idx]    = encoded_positions[elem_idx + n_elements * dim_idx];
+        output[elem_idx * output_stride + dim_idx] = encoded_positions[elem_idx + n_elements * dim_idx];
     }
 
     template <typename T>
-    __global__ void transpose_gradients(const std::uint32_t n_elements, T* __restrict__ transposed_dL_dy, legacy::PitchedPtr<const T> dL_dy) {
+    __global__ void transpose_gradients(const std::uint32_t n_elements, T* __restrict__ transposed_dL_dy, const T* __restrict__ dL_dy, const std::uint32_t dL_dy_stride) {
         const std::uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
         if (i >= n_elements) return;
 
         const std::uint32_t elem_idx                      = i;
         const std::uint32_t dim_idx                       = threadIdx.x;
-        transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy(elem_idx)[dim_idx];
+        transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy[elem_idx * dL_dy_stride + dim_idx];
     }
 
     __device__ std::uint32_t lcg_hash(const legacy::math::uvec3& pos_grid, const std::uint32_t primes[3]) {
@@ -383,7 +383,7 @@ namespace ngp::encoding {
         if (output.layout() == legacy::AoS) {
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
             const std::uint32_t blocks_transpose = (num_elements + threads_transpose.y - 1u) / threads_transpose.y;
-            transpose_encoded_position<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, encoded_positions_soa, output.pitched_ptr());
+            transpose_encoded_position<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, encoded_positions_soa, output.data(), output.stride());
         }
     }
 
@@ -408,7 +408,7 @@ namespace ngp::encoding {
 
             const dim3 threads_transpose         = {n_levels * N_FEATURES_PER_LEVEL, 8u, 1u};
             const std::uint32_t blocks_transpose = (num_elements + threads_transpose.y - 1u) / threads_transpose.y;
-            transpose_gradients<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, reinterpret_cast<T*>(workspace.data()), dL_doutput.pitched_ptr());
+            transpose_gradients<T><<<blocks_transpose, threads_transpose, 0, stream>>>(num_elements, reinterpret_cast<T*>(workspace.data()), dL_doutput.data(), dL_doutput.stride());
 
             dL_dy_rm = reinterpret_cast<const T*>(workspace.data());
         }

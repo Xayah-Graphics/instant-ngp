@@ -883,22 +883,6 @@ namespace ngp::legacy {
         GpuAllocation m_allocation;
     };
 
-    template <typename T>
-    struct PitchedPtr {
-        __host__ __device__ PitchedPtr() : ptr{nullptr}, stride_in_bytes{sizeof(T)} {}
-        __host__ __device__ PitchedPtr(T* ptr, size_t stride_in_elements, size_t offset = 0, size_t extra_stride_bytes = 0) : ptr{ptr + offset}, stride_in_bytes{stride_in_elements * sizeof(T) + extra_stride_bytes} {}
-
-        template <typename U>
-        __host__ __device__ explicit PitchedPtr(PitchedPtr<U> other) : ptr{(T*) other.ptr}, stride_in_bytes{other.stride_in_bytes} {}
-
-        __host__ __device__ T* operator()(uint32_t y) const {
-            return (T*) ((const char*) ptr + y * stride_in_bytes);
-        }
-
-        T* ptr;
-        size_t stride_in_bytes;
-    };
-
     template <typename T, MatrixLayout _layout>
     class GPUMatrix {
     public:
@@ -972,13 +956,6 @@ namespace ngp::legacy {
         uint32_t stride() const {
             return m_stride;
         }
-        PitchedPtr<T> pitched_ptr() {
-            return {data(), stride()};
-        }
-        PitchedPtr<const T> pitched_ptr() const {
-            return {data(), stride()};
-        }
-
         uint32_t n_elements() const {
             return m_rows * m_cols;
         }

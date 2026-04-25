@@ -170,32 +170,13 @@ namespace ngp {
         legacy::math::vec3 max = legacy::math::vec3(1.0f);
     };
 
-    struct NerfPosition final {
-        __device__ NerfPosition() = default;
-        __device__ NerfPosition(const legacy::math::vec3& pos, float dt) : p{pos} {}
-        legacy::math::vec3 p = {};
+    struct NerfCoordinate {
+        legacy::math::vec3 pos = {};
+        float dt               = 0.0f;
+        legacy::math::vec3 dir = {};
     };
-
-    struct NerfDirection final {
-        __device__ NerfDirection() = default;
-        __device__ NerfDirection(const legacy::math::vec3& dir, float dt) : d{dir} {}
-        legacy::math::vec3 d = {};
-    };
-
-    struct NerfCoordinate final {
-        __device__ NerfCoordinate() = default;
-        __device__ NerfCoordinate(const legacy::math::vec3& pos, const legacy::math::vec3& dir, float dt) : pos{pos, dt}, dt{dt}, dir{dir, dt} {}
-
-        __device__ void set(const legacy::math::vec3& pos, const legacy::math::vec3& dir, float dt) {
-            this->dt  = dt;
-            this->pos = NerfPosition{pos, dt};
-            this->dir = NerfDirection{dir, dt};
-        }
-
-        NerfPosition pos  = {};
-        float dt          = 0.0f;
-        NerfDirection dir = {};
-    };
+    static_assert(std::is_standard_layout_v<NerfCoordinate>);
+    static_assert(sizeof(NerfCoordinate) == sizeof(float) * 7u);
 
     template <typename T>
     inline constexpr float default_loss_scale = 1.0f;
@@ -518,7 +499,7 @@ namespace ngp {
         grid_out[i] = count >= min_count ? 0.0f : -1.0f;
     }
 
-    __global__ void generate_grid_samples_nerf_nonuniform(const std::uint32_t n_elements, legacy::math::pcg32 rng, const std::uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, std::uint32_t* __restrict__ indices, const float thresh) {
+    __global__ void generate_grid_samples_nerf_nonuniform(const std::uint32_t n_elements, legacy::math::pcg32 rng, const std::uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, legacy::math::vec3* __restrict__ out, std::uint32_t* __restrict__ indices, const float thresh) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_elements) return;
 
@@ -534,7 +515,7 @@ namespace ngp {
         const std::uint32_t z        = morton3D_invert(idx >> 2u);
         const legacy::math::vec3 pos = (legacy::math::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)} + random_val_3d(rng)) / static_cast<float>(NERF_GRIDSIZE);
 
-        out[i]     = {warp_position(pos, aabb), MIN_CONE_STEPSIZE};
+        out[i]     = warp_position(pos, aabb);
         indices[i] = idx;
     }
 
@@ -571,7 +552,7 @@ namespace ngp {
         grid_bitfield[i] = bits;
     }
 
-    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const BoundingBox aabb, const std::uint32_t max_samples, legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, legacy::Ray* __restrict__ rays_out_unnormalized, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<NerfCoordinate> coords_out, const std::uint32_t n_training_images,
+    __global__ void generate_training_samples_nerf(const std::uint32_t n_rays, const BoundingBox aabb, const std::uint32_t max_samples, legacy::math::pcg32 rng, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ numsteps_counter, std::uint32_t* __restrict__ ray_indices_out, legacy::Ray* __restrict__ rays_out_unnormalized, std::uint32_t* __restrict__ numsteps_out, NerfCoordinate* __restrict__ coords_out, const std::uint32_t n_training_images,
         const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const std::uint8_t* __restrict__ density_grid, const bool snap_to_pixel_centers) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_rays) return;
@@ -615,7 +596,7 @@ namespace ngp {
         const std::uint32_t base     = atomicAdd(numsteps_counter, numsteps);
         if (base + numsteps > max_samples) return;
 
-        coords_out.ptr = reinterpret_cast<NerfCoordinate*>(reinterpret_cast<char*>(coords_out.ptr) + static_cast<std::size_t>(base) * coords_out.stride_in_bytes);
+        coords_out += base;
 
         const std::uint32_t ray_idx     = atomicAdd(ray_counter, 1u);
         ray_indices_out[ray_idx]        = i;
@@ -629,7 +610,7 @@ namespace ngp {
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
             constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
-                coords_out(j)->set(warp_position(pos, aabb), warped_dir, dt);
+                coords_out[j] = {warp_position(pos, aabb), dt, warped_dir};
                 ++j;
                 t += dt;
             } else {
@@ -639,14 +620,14 @@ namespace ngp {
     }
 
     __global__ void compute_loss_kernel_train_nerf(const std::uint32_t n_rays, const BoundingBox aabb, legacy::math::pcg32 rng, const std::uint32_t max_samples_compacted, const std::uint32_t* __restrict__ rays_counter, float loss_scale, const int padded_output_width, const std::uint32_t n_training_images, const InstantNGP::DatasetState::DeviceData::GpuFrame* __restrict__ frames, const __half* network_output, std::uint32_t* __restrict__ numsteps_counter,
-        const std::uint32_t* __restrict__ ray_indices_in, const legacy::Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const NerfCoordinate> coords_in, legacy::PitchedPtr<NerfCoordinate> coords_out, __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr, const float near_distance) {
+        const std::uint32_t* __restrict__ ray_indices_in, const legacy::Ray* __restrict__ rays_in_unnormalized, std::uint32_t* __restrict__ numsteps_in, const NerfCoordinate* __restrict__ coords_in, NerfCoordinate* __restrict__ coords_out, __half* dloss_doutput, float* __restrict__ loss_output, const bool snap_to_pixel_centers, const float* __restrict__ mean_density_ptr, const float near_distance) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= *rays_counter) return;
 
         std::uint32_t numsteps = numsteps_in[i * 2u + 0u];
         std::uint32_t base     = numsteps_in[i * 2u + 1u];
 
-        coords_in.ptr = reinterpret_cast<const NerfCoordinate*>(reinterpret_cast<const char*>(coords_in.ptr) + static_cast<std::size_t>(base) * coords_in.stride_in_bytes);
+        coords_in += base;
         network_output += base * padded_output_width;
 
         float T                 = 1.0f;
@@ -660,7 +641,7 @@ namespace ngp {
 
             const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
             const legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
-            const float dt                                            = coords_in.ptr->dt;
+            const float dt                                            = coords_in->dt;
             const float density                                       = network_to_density(local_network_output[3]);
 
             const float alpha  = 1.0f - __expf(-density * dt);
@@ -669,7 +650,7 @@ namespace ngp {
             T *= (1.0f - alpha);
 
             network_output += padded_output_width;
-            coords_in.ptr = reinterpret_cast<const NerfCoordinate*>(reinterpret_cast<const char*>(coords_in.ptr) + coords_in.stride_in_bytes);
+            ++coords_in;
         }
 
         const std::uint32_t ray_idx = ray_indices_in[i];
@@ -688,7 +669,7 @@ namespace ngp {
         if (compacted_numsteps == numsteps) rgb_ray += T * background_color;
 
         network_output -= padded_output_width * compacted_numsteps;
-        coords_in.ptr = reinterpret_cast<const NerfCoordinate*>(reinterpret_cast<const char*>(coords_in.ptr) - static_cast<std::size_t>(compacted_numsteps) * coords_in.stride_in_bytes);
+        coords_in -= compacted_numsteps;
 
         std::uint32_t compacted_base = atomicAdd(numsteps_counter, compacted_numsteps);
         compacted_numsteps           = std::min(max_samples_compacted - std::min(max_samples_compacted, compacted_base), compacted_numsteps);
@@ -696,7 +677,7 @@ namespace ngp {
         numsteps_in[i * 2u + 1u]     = compacted_base;
         if (compacted_numsteps == 0u) return;
 
-        coords_out.ptr = reinterpret_cast<NerfCoordinate*>(reinterpret_cast<char*>(coords_out.ptr) + static_cast<std::size_t>(compacted_base) * coords_out.stride_in_bytes);
+        coords_out += compacted_base;
         dloss_doutput += compacted_base * padded_output_width;
 
         const legacy::math::vec3 difference = rgb_ray - rgbtarget;
@@ -712,11 +693,11 @@ namespace ngp {
         legacy::math::vec3 rgb_ray2 = {0.0f, 0.0f, 0.0f};
         T                           = 1.0f;
         for (std::uint32_t j = 0u; j < compacted_numsteps; ++j) {
-            NerfCoordinate* coord_out      = coords_out(j);
-            const NerfCoordinate* coord_in = coords_in(j);
+            NerfCoordinate* coord_out      = coords_out + j;
+            const NerfCoordinate* coord_in = coords_in + j;
             *coord_out                     = *coord_in;
 
-            const legacy::math::vec3 pos                              = aabb.min + coord_in->pos.p * aabb.diag();
+            const legacy::math::vec3 pos                              = aabb.min + coord_in->pos * aabb.diag();
             const float depth                                         = ngp::legacy::math::distance(pos, ray_o);
             const float dt                                            = coord_in->dt;
             const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
@@ -746,7 +727,7 @@ namespace ngp {
         }
     }
 
-    __global__ void generate_validation_samples_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, BoundingBox aabb, const std::uint32_t max_samples, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, legacy::PitchedPtr<NerfCoordinate> coords_out, InstantNGP::DatasetState::DeviceData::GpuFrame frame, const std::uint8_t* __restrict__ density_grid) {
+    __global__ void generate_validation_samples_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, BoundingBox aabb, const std::uint32_t max_samples, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, NerfCoordinate* __restrict__ coords_out, InstantNGP::DatasetState::DeviceData::GpuFrame frame, const std::uint8_t* __restrict__ density_grid) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_pixels) return;
 
@@ -793,7 +774,7 @@ namespace ngp {
         numsteps_out[i * 2u + 0u] = numsteps;
         numsteps_out[i * 2u + 1u] = base;
 
-        coords_out.ptr = reinterpret_cast<NerfCoordinate*>(reinterpret_cast<char*>(coords_out.ptr) + static_cast<std::size_t>(base) * coords_out.stride_in_bytes);
+        coords_out += base;
         const legacy::math::vec3 warped_dir = warp_direction(ray_d_normalized);
         t                                   = advance_n_steps(tminmax.x, 0.5f);
 
@@ -801,7 +782,7 @@ namespace ngp {
         while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
             constexpr float dt = MIN_CONE_STEPSIZE;
             if (density_grid_occupied_at(pos, density_grid)) {
-                coords_out(j)->set(warp_position(pos, aabb), warped_dir, dt);
+                coords_out[j] = {warp_position(pos, aabb), dt, warped_dir};
                 ++j;
                 t += dt;
             } else {
@@ -810,7 +791,7 @@ namespace ngp {
         }
     }
 
-    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, legacy::PitchedPtr<const NerfCoordinate> coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, const legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
+    __global__ void composite_validation_kernel_nerf(const std::uint32_t n_pixels, const std::uint32_t pixel_offset, const std::uint32_t* __restrict__ numsteps_in, const NerfCoordinate* __restrict__ coords_in, const __half* __restrict__ network_output, const std::uint32_t padded_output_width, const legacy::math::vec3 background_color, legacy::math::vec3* __restrict__ image_out) {
         const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
         if (i >= n_pixels) return;
 
@@ -821,13 +802,13 @@ namespace ngp {
         auto rgb_ray                     = legacy::math::vec3(0.0f);
 
         if (numsteps > 0u) {
-            coords_in.ptr = reinterpret_cast<const NerfCoordinate*>(reinterpret_cast<const char*>(coords_in.ptr) + static_cast<std::size_t>(base) * coords_in.stride_in_bytes);
+            coords_in += base;
             network_output += base * padded_output_width;
 
             for (std::uint32_t j = 0u; j < numsteps; ++j) {
                 const legacy::math::tvec<__half, 4u> local_network_output = *reinterpret_cast<const legacy::math::tvec<__half, 4u>*>(network_output);
                 const legacy::math::vec3 rgb                              = network_to_rgb_vec(local_network_output);
-                const float dt                                            = coords_in.ptr->dt;
+                const float dt                                            = coords_in->dt;
                 const float density                                       = network_to_density(local_network_output[3]);
                 const float alpha                                         = 1.0f - __expf(-density * dt);
                 const float weight                                        = alpha * T;
@@ -835,7 +816,7 @@ namespace ngp {
                 rgb_ray += weight * rgb;
                 T *= (1.0f - alpha);
 
-                coords_in.ptr = reinterpret_cast<const NerfCoordinate*>(reinterpret_cast<const char*>(coords_in.ptr) + coords_in.stride_in_bytes);
+                ++coords_in;
                 network_output += padded_output_width;
                 if (T < 1e-4f) break;
             }
@@ -997,10 +978,9 @@ namespace ngp {
         train_plan.validation.floats_per_coord = train_plan.training.floats_per_coord;
         train_plan.validation.max_samples      = train_plan.validation.tile_rays * train_plan.validation.max_samples_per_ray;
 
-        constexpr std::uint32_t n_pos_dims     = sizeof(NerfPosition) / sizeof(float);
-        train_plan.network.n_pos_dims          = n_pos_dims;
+        train_plan.network.n_pos_dims          = 3u;
         train_plan.network.n_dir_dims          = 3u;
-        train_plan.network.dir_offset          = n_pos_dims + 1u;
+        train_plan.network.dir_offset          = train_plan.network.n_pos_dims + 1u;
         train_plan.network.density_output_dims = 16u;
         train_plan.network.rgb_output_dims     = 3u;
 
@@ -1221,7 +1201,7 @@ namespace ngp {
                 const std::uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
                 const std::uint32_t padded_output_width    = train_plan.density_grid.padded_output_width;
 
-                const std::size_t positions_bytes   = legacy::next_multiple(n_density_grid_samples * sizeof(NerfPosition), static_cast<std::size_t>(128));
+                const std::size_t positions_bytes   = legacy::next_multiple(n_density_grid_samples * sizeof(legacy::math::vec3), static_cast<std::size_t>(128));
                 const std::size_t indices_bytes     = legacy::next_multiple(n_elements * sizeof(std::uint32_t), static_cast<std::size_t>(128));
                 const std::size_t density_tmp_bytes = legacy::next_multiple(n_elements * sizeof(float), static_cast<std::size_t>(128));
                 const std::size_t mlp_out_bytes     = legacy::next_multiple(n_density_grid_samples * padded_output_width * sizeof(__half), static_cast<std::size_t>(128));
@@ -1250,13 +1230,13 @@ namespace ngp {
 
                 if (n_uniform_density_grid_samples > 0u) {
                     const std::uint32_t blocks = (n_uniform_density_grid_samples + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_uniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<NerfPosition*>(update_workspace.positions), update_workspace.indices, -0.01f);
+                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_uniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<legacy::math::vec3*>(update_workspace.positions), update_workspace.indices, -0.01f);
                 }
                 sampling.density_rng.advance();
 
                 if (n_nonuniform_density_grid_samples > 0u) {
                     const std::uint32_t blocks = (n_nonuniform_density_grid_samples + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_nonuniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<NerfPosition*>(update_workspace.positions) + n_uniform_density_grid_samples, update_workspace.indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS);
+                    generate_grid_samples_nerf_nonuniform<<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_nonuniform_density_grid_samples, sampling.density_rng, sampling.density.ema_step, aabb, sampling.density.values.data(), reinterpret_cast<legacy::math::vec3*>(update_workspace.positions) + n_uniform_density_grid_samples, update_workspace.indices + n_uniform_density_grid_samples, NERF_MIN_OPTICAL_THICKNESS);
                 }
                 sampling.density_rng.advance();
 
@@ -1264,7 +1244,7 @@ namespace ngp {
                 for (std::size_t density_batch_offset = 0u; density_batch_offset < n_density_grid_samples; density_batch_offset += density_batch_size) {
                     const std::size_t density_query_size = std::min(density_batch_size, static_cast<std::size_t>(n_density_grid_samples) - density_batch_offset);
                     legacy::GPUMatrix<__half, legacy::MatrixLayout::Dynamic> density_matrix(update_workspace.mlp_out + density_batch_offset, padded_output_width, density_query_size, legacy::RM);
-                    legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic> density_position_matrix(update_workspace.positions + density_batch_offset * (sizeof(NerfPosition) / sizeof(float)), sizeof(NerfPosition) / sizeof(float), density_query_size, legacy::CM);
+                    legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic> density_position_matrix(update_workspace.positions + density_batch_offset * train_plan.network.n_pos_dims, train_plan.network.n_pos_dims, density_query_size, legacy::CM);
                     density(stream, density_position_matrix, density_matrix);
                 }
 
@@ -1361,7 +1341,7 @@ namespace ngp {
             legacy::cuda_check(cudaMemsetAsync(workspace.ray_counter, 0, sizeof(std::uint32_t), stream));
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, static_cast<legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords), 1u},
+                generate_training_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, workspace.max_inference, training.rng, workspace.ray_counter, counters.numsteps_counter.data(), workspace.ray_indices, static_cast<legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, reinterpret_cast<NerfCoordinate*>(workspace.coords),
                     static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), sampling.density.occupancy.data(), sampling.snap_to_pixel_centers);
             }
             inference(stream, workspace.coords_matrix, workspace.rgbsigma_matrix);
@@ -1369,7 +1349,7 @@ namespace ngp {
             if (counters.rays_per_batch > 0u) {
                 const std::uint32_t blocks = (counters.rays_per_batch + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
                 compute_loss_kernel_train_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(counters.rays_per_batch, aabb, training.rng, batch_size, workspace.ray_counter, default_loss_scale<__half>, static_cast<int>(workspace.padded_output_width), static_cast<std::uint32_t>(dataset.device.pixels.size()), dataset.device.frames.data(), workspace.mlp_out, counters.numsteps_counter_compacted.data(), workspace.ray_indices,
-                    static_cast<const legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords), 1u}, legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.coords_compacted), 1u}, workspace.dloss_dmlp_out, counters.loss.data(), sampling.snap_to_pixel_centers, sampling.density.reduction.data(), sampling.near_distance);
+                    static_cast<const legacy::Ray*>(workspace.rays_unnormalized), workspace.numsteps, reinterpret_cast<const NerfCoordinate*>(workspace.coords), reinterpret_cast<NerfCoordinate*>(workspace.coords_compacted), workspace.dloss_dmlp_out, counters.loss.data(), sampling.snap_to_pixel_centers, sampling.density.reduction.data(), sampling.near_distance);
             }
 
             const std::uint32_t dloss_elements  = batch_size * workspace.padded_output_width;
@@ -1559,7 +1539,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), frame, sampling.density.occupancy.data());
                 }
 
                 std::uint32_t used_samples    = 0u;
@@ -1586,7 +1566,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), reinterpret_cast<const NerfCoordinate*>(workspace.tile_coords.data()), workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
                 }
             }
 
@@ -1667,7 +1647,7 @@ namespace ngp {
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), frame, sampling.density.occupancy.data());
             }
 
             std::uint32_t used_samples    = 0u;
@@ -1694,7 +1674,7 @@ namespace ngp {
 
             if (tile_pixels > 0u) {
                 const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), reinterpret_cast<const NerfCoordinate*>(workspace.tile_coords.data()), workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
             }
         }
 
@@ -1782,7 +1762,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, frame, sampling.density.occupancy.data());
+                    generate_validation_samples_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, aabb, max_samples, workspace.sample_counter.data(), workspace.overflow_counter.data(), workspace.tile_numsteps.data(), reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), frame, sampling.density.occupancy.data());
                 }
 
                 std::uint32_t used_samples    = 0u;
@@ -1809,7 +1789,7 @@ namespace ngp {
 
                 if (tile_pixels > 0u) {
                     const std::uint32_t blocks = (tile_pixels + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), ngp::legacy::PitchedPtr<const NerfCoordinate>{reinterpret_cast<NerfCoordinate*>(workspace.tile_coords.data()), 1u}, workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
+                    composite_validation_kernel_nerf<<<blocks, network::detail::n_threads_linear, 0, stream>>>(tile_pixels, pixel_offset, workspace.tile_numsteps.data(), reinterpret_cast<const NerfCoordinate*>(workspace.tile_coords.data()), workspace.tile_mlp_out.data(), padded_output_width, background, workspace.rendered.data());
                 }
             }
 
