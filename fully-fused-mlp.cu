@@ -506,8 +506,8 @@ namespace ngp::mlp {
 
         const std::uint32_t vector_count = num_elements / activation_vector_size;
         if (vector_count > 0u) {
-            const std::uint32_t blocks = (vector_count + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            kernel_activation_backward_output<T, activation_vector_size><<<blocks, network::detail::n_threads_linear, 0, stream>>>(vector_count, act, output_values, gradients_out, gradients_in);
+            const std::uint32_t blocks = (vector_count + network::n_threads_linear - 1u) / network::n_threads_linear;
+            kernel_activation_backward_output<T, activation_vector_size><<<blocks, network::n_threads_linear, 0, stream>>>(vector_count, act, output_values, gradients_out, gradients_in);
         }
     }
 
@@ -901,7 +901,7 @@ namespace ngp::mlp {
     void FullyFusedMLP<T, WIDTH>::inference(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == padded_output_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
         legacy::check_or_throw(params != nullptr);
 
@@ -927,7 +927,7 @@ namespace ngp::mlp {
     void FullyFusedMLP<T, WIDTH>::forward(cudaStream_t stream, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* output, Scratch& scratch) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(!output || output->m() == padded_output_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(!output || input.n() == output->n());
         legacy::check_or_throw(params != nullptr);
 
@@ -947,25 +947,25 @@ namespace ngp::mlp {
     }
 
     template <typename T, std::uint32_t WIDTH>
-    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, const cudaStream_t* aux_streams, const cudaEvent_t* aux_events, const std::uint32_t n_aux_streams, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const network::detail::GradientMode param_gradients_mode) {
+    void FullyFusedMLP<T, WIDTH>::backward(cudaStream_t stream, const cudaStream_t* aux_streams, const cudaEvent_t* aux_events, const std::uint32_t n_aux_streams, Scratch& scratch, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>* dL_dinput, const network::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == padded_output_width);
         legacy::check_or_throw(dL_doutput.m() == padded_output_width);
         legacy::check_or_throw(!dL_dinput || dL_dinput->m() == input_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
         legacy::check_or_throw(input.n() == dL_doutput.n());
         legacy::check_or_throw(!dL_dinput || input.n() == dL_dinput->n());
         legacy::check_or_throw(params != nullptr);
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(aux_streams != nullptr);
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(aux_events != nullptr);
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(n_aux_streams >= n_hidden_matmuls + 2u);
+        if (param_gradients_mode != network::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
+        if (param_gradients_mode != network::GradientMode::Ignore) legacy::check_or_throw(aux_streams != nullptr);
+        if (param_gradients_mode != network::GradientMode::Ignore) legacy::check_or_throw(aux_events != nullptr);
+        if (param_gradients_mode != network::GradientMode::Ignore) legacy::check_or_throw(n_aux_streams >= n_hidden_matmuls + 2u);
 
         const std::uint32_t batch_size = dL_doutput.n();
         if (output_activation != Activation::None) activation_backward_output_gpu(stream, dL_doutput.n_elements(), output_activation, output.data(), dL_doutput.data(), scratch.backward_output.data());
 
-        const float param_gradient_beta = param_gradients_mode == network::detail::GradientMode::Accumulate ? 1.0f : 0.0f;
+        const float param_gradient_beta = param_gradients_mode == network::GradientMode::Accumulate ? 1.0f : 0.0f;
         std::uint32_t aux_stream_index = 0u;
         const std::uint32_t split_k_factor                = batch_size / std::min(1u << 12u, batch_size);
         const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& tmp_dL_doutput = output_activation == Activation::None ? dL_doutput : scratch.backward_output;
@@ -973,7 +973,7 @@ namespace ngp::mlp {
         std::uint32_t tmp_idx          = n_hidden_matmuls;
         std::uint32_t backward_tmp_idx = 0u;
 
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) {
+        if (param_gradients_mode != network::GradientMode::Ignore) {
             legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> output_gradient{gradient_matrices.back().data(), gradient_matrices.back().m(), gradient_matrices.back().n(), gradient_matrices.back().layout(), gradient_matrices.back().stride()};
             legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
             legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));
@@ -1003,7 +1003,7 @@ namespace ngp::mlp {
         for (std::uint32_t i = 0u; i < n_hidden_matmuls; ++i) {
             const std::uint32_t matrix_idx = n_hidden_matmuls - i - 1u;
 
-            if (param_gradients_mode != network::detail::GradientMode::Ignore) {
+            if (param_gradients_mode != network::GradientMode::Ignore) {
                 legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> gradient_matrix{gradient_matrices.at(1u + matrix_idx).data(), gradient_matrices.at(1u + matrix_idx).m(), gradient_matrices.at(1u + matrix_idx).n(), gradient_matrices.at(1u + matrix_idx).layout(), gradient_matrices.at(1u + matrix_idx).stride()};
                 legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
                 legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));
@@ -1015,7 +1015,7 @@ namespace ngp::mlp {
             ++backward_tmp_idx;
         }
 
-        if (param_gradients_mode != network::detail::GradientMode::Ignore) {
+        if (param_gradients_mode != network::GradientMode::Ignore) {
             legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic> input_gradient{gradient_matrices.front().data(), gradient_matrices.front().m(), gradient_matrices.front().n(), gradient_matrices.front().layout(), gradient_matrices.front().stride()};
             legacy::cuda_check(cudaEventRecord(aux_events[aux_stream_index], stream));
             legacy::cuda_check(cudaStreamWaitEvent(aux_streams[aux_stream_index], aux_events[aux_stream_index], 0));

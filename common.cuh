@@ -458,19 +458,11 @@ namespace ngp::legacy {
 
     class GpuHeap {
     private:
-        template <typename T>
         struct Interval final {
-            T start, end;
+            size_t start = 0;
+            size_t end   = 0;
 
-            [[nodiscard]] Interval intersect(const Interval& other) const {
-                return {std::max(start, other.start), std::min(end, other.end)};
-            }
-
-            [[nodiscard]] bool empty() const {
-                return end <= start;
-            }
-
-            [[nodiscard]] T size() const {
+            [[nodiscard]] size_t size() const {
                 return end - start;
             }
         };
@@ -484,11 +476,7 @@ namespace ngp::legacy {
             prop.location.type       = CU_MEM_LOCATION_TYPE_DEVICE;
             prop.location.id         = m_device;
 
-            CUresult granularity_result = cuMemGetAllocationGranularity(&m_granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
-            if (granularity_result == CUDA_ERROR_NOT_SUPPORTED)
-                m_granularity = 1;
-            else
-                cu_check(granularity_result);
+            cu_check(cuMemGetAllocationGranularity(&m_granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
 
             size_t free_bytes;
             size_t total_bytes;
@@ -538,8 +526,8 @@ namespace ngp::legacy {
             n_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
 
             if (stream && stream != cudaStreamLegacy) {
-                auto& free_intervals             = m_stream_free_intervals[stream];
-                Interval<size_t>* best_candidate = nullptr;
+                auto& free_intervals    = m_stream_free_intervals[stream];
+                Interval* best_candidate = nullptr;
                 for (auto& interval : free_intervals) {
                     if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) best_candidate = &interval;
                 }
@@ -547,12 +535,12 @@ namespace ngp::legacy {
                 if (best_candidate) {
                     const size_t offset = best_candidate->start;
                     best_candidate->start += n_bytes;
-                    if (best_candidate->start == best_candidate->end) std::erase_if(free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
+                    if (best_candidate->start == best_candidate->end) std::erase_if(free_intervals, [](const Interval& interval) { return interval.start == interval.end; });
                     return offset;
                 }
             }
 
-            Interval<size_t>* best_candidate = nullptr;
+            Interval* best_candidate = nullptr;
             for (auto& interval : m_global_free_intervals) {
                 if (interval.size() >= n_bytes && (!best_candidate || interval.size() < best_candidate->size())) best_candidate = &interval;
             }
@@ -565,7 +553,7 @@ namespace ngp::legacy {
 
             const size_t offset = best_candidate->start;
             best_candidate->start += n_bytes;
-            if (best_candidate->start == best_candidate->end) std::erase_if(m_global_free_intervals, [](const Interval<size_t>& interval) { return interval.start == interval.end; });
+            if (best_candidate->start == best_candidate->end) std::erase_if(m_global_free_intervals, [](const Interval& interval) { return interval.start == interval.end; });
 
             grow(offset + n_bytes);
             return offset;
@@ -578,30 +566,26 @@ namespace ngp::legacy {
 
             if (stream && stream != cudaStreamLegacy) {
                 auto& free_intervals = m_stream_free_intervals[stream];
-                auto pos             = std::upper_bound(free_intervals.begin(), free_intervals.end(), offset, [](size_t start, const Interval<size_t>& interval) { return start < interval.start; });
+                auto pos             = std::upper_bound(free_intervals.begin(), free_intervals.end(), offset, [](size_t start, const Interval& interval) { return start < interval.start; });
                 free_intervals.insert(pos, {offset, offset + n_bytes});
                 merge_adjacent(free_intervals);
                 return;
             }
 
             cuda_check(cudaDeviceSynchronize());
-            insert_global_free_interval({offset, offset + n_bytes});
-        }
-
-    private:
-        void insert_global_free_interval(Interval<size_t> interval) {
-            auto pos = std::upper_bound(m_global_free_intervals.begin(), m_global_free_intervals.end(), interval, [](const Interval<size_t>& a, const Interval<size_t>& b) { return a.start < b.start; });
-            m_global_free_intervals.insert(pos, interval);
+            auto pos = std::upper_bound(m_global_free_intervals.begin(), m_global_free_intervals.end(), Interval{offset, offset + n_bytes}, [](const Interval& a, const Interval& b) { return a.start < b.start; });
+            m_global_free_intervals.insert(pos, {offset, offset + n_bytes});
             merge_adjacent(m_global_free_intervals);
         }
 
-        static void merge_adjacent(std::vector<Interval<size_t>>& intervals) {
+    private:
+        static void merge_adjacent(std::vector<Interval>& intervals) {
             if (intervals.empty()) return;
 
             size_t j = 0;
             for (size_t i = 1; i < intervals.size(); ++i) {
-                Interval<size_t>& prev = intervals[j];
-                Interval<size_t>& cur  = intervals[i];
+                Interval& prev = intervals[j];
+                Interval& cur  = intervals[i];
                 if (prev.end == cur.start)
                     prev.end = cur.end;
                 else {
@@ -655,19 +639,15 @@ namespace ngp::legacy {
         size_t m_granularity       = 0;
         size_t m_max_size          = 0;
         std::vector<CUmemGenericAllocationHandle> m_handles;
-        std::vector<Interval<size_t>> m_global_free_intervals;
-        std::unordered_map<cudaStream_t, std::vector<Interval<size_t>>> m_stream_free_intervals;
+        std::vector<Interval> m_global_free_intervals;
+        std::unordered_map<cudaStream_t, std::vector<Interval>> m_stream_free_intervals;
     };
 
-    inline std::unordered_map<int, std::unique_ptr<GpuHeap>>& gpu_heaps() {
-        static auto* gpu_heaps = new std::unordered_map<int, std::unique_ptr<GpuHeap>>{};
-        return *gpu_heaps;
-    }
-
     inline GpuHeap* gpu_heap() {
+        static auto* gpu_heaps = new std::unordered_map<int, std::unique_ptr<GpuHeap>>{};
         int device;
         cuda_check(cudaGetDevice(&device));
-        auto& heap = gpu_heaps()[device];
+        auto& heap = (*gpu_heaps)[device];
         if (!heap) heap = std::make_unique<GpuHeap>();
         return heap.get();
     }
@@ -691,118 +671,39 @@ namespace ngp::legacy {
 
         GpuAllocation(size_t n_bytes, cudaStream_t stream = nullptr) {
             if (n_bytes != 0) {
-                m_handle          = acquire_handle();
-                m_handle->heap    = gpu_heap();
-                m_handle->stream  = stream;
-                m_handle->n_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
-                m_handle->offset  = m_handle->heap->allocate(m_handle->n_bytes, stream);
+                auto handle     = std::make_shared<Handle>();
+                handle->heap    = gpu_heap();
+                handle->stream  = stream;
+                const size_t aligned_bytes = next_multiple(n_bytes, static_cast<size_t>(128));
+                handle->offset             = handle->heap->allocate(aligned_bytes, stream);
+                handle->n_bytes            = aligned_bytes;
+                m_handle        = std::move(handle);
             }
         }
 
-        ~GpuAllocation() {
-            reset();
-        }
-
-        GpuAllocation(const GpuAllocation& other) : m_handle{other.m_handle} {
-            if (m_handle) ++m_handle->refs;
-        }
-
-        GpuAllocation& operator=(const GpuAllocation& other) {
-            if (this != &other) {
-                reset();
-                m_handle = other.m_handle;
-                if (m_handle) ++m_handle->refs;
-            }
-            return *this;
-        }
-
-        GpuAllocation(GpuAllocation&& other) noexcept {
-            m_handle       = other.m_handle;
-            other.m_handle = nullptr;
-        }
-
-        GpuAllocation& operator=(GpuAllocation&& other) noexcept {
-            if (this != &other) {
-                reset();
-                m_handle       = other.m_handle;
-                other.m_handle = nullptr;
-            }
-            return *this;
-        }
+        GpuAllocation(const GpuAllocation&)                = default;
+        GpuAllocation& operator=(const GpuAllocation&)     = default;
+        GpuAllocation(GpuAllocation&&) noexcept            = default;
+        GpuAllocation& operator=(GpuAllocation&&) noexcept = default;
+        ~GpuAllocation()                                   = default;
 
         [[nodiscard]] uint8_t* data() const {
             return m_handle ? m_handle->heap->data() + m_handle->offset : nullptr;
         }
 
-        [[nodiscard]] cudaStream_t stream() const {
-            return m_handle ? m_handle->stream : nullptr;
-        }
-
-        [[nodiscard]] size_t bytes() const {
-            return m_handle ? m_handle->n_bytes : 0;
-        }
-
     private:
         struct Handle {
-            uint32_t refs       = 0;
             GpuHeap* heap       = nullptr;
             cudaStream_t stream = nullptr;
             size_t n_bytes      = 0;
             size_t offset       = 0;
+
+            ~Handle() {
+                if (heap && n_bytes) heap->release(offset, n_bytes, stream);
+            }
         };
 
-        static std::vector<std::unique_ptr<Handle[]>>& handle_pool_chunks() {
-            static auto* chunks = new std::vector<std::unique_ptr<Handle[]>>{};
-            return *chunks;
-        }
-
-        static std::vector<Handle*>& handle_pool_free_handles() {
-            static auto* free_handles = new std::vector<Handle*>{};
-            return *free_handles;
-        }
-
-        static Handle* acquire_handle() {
-            auto& chunks       = handle_pool_chunks();
-            auto& free_handles = handle_pool_free_handles();
-
-            if (free_handles.empty()) {
-                constexpr size_t kChunkSize = 1024;
-                auto chunk                  = std::make_unique<Handle[]>(kChunkSize);
-                for (size_t i = 0; i < kChunkSize; ++i) {
-                    free_handles.push_back(&chunk[i]);
-                }
-                chunks.push_back(std::move(chunk));
-            }
-
-            Handle* handle = free_handles.back();
-            free_handles.pop_back();
-            handle->refs    = 1;
-            handle->heap    = nullptr;
-            handle->stream  = nullptr;
-            handle->n_bytes = 0;
-            handle->offset  = 0;
-            return handle;
-        }
-
-        static void recycle_handle(Handle* handle) {
-            handle_pool_free_handles().push_back(handle);
-        }
-
-        void reset() {
-            if (!m_handle) return;
-
-            if (--m_handle->refs == 0) {
-                if (m_handle->heap && m_handle->n_bytes) m_handle->heap->release(m_handle->offset, m_handle->n_bytes, m_handle->stream);
-                recycle_handle(m_handle);
-            }
-
-            m_handle = nullptr;
-        }
-
-        Handle* m_handle = nullptr;
-
-        template <typename T, MatrixLayout _layout>
-        friend class GPUMatrix;
+        std::shared_ptr<Handle> m_handle = {};
     };
 
 
@@ -810,9 +711,6 @@ namespace ngp::legacy {
     class GpuBuffer {
     public:
         GpuBuffer() = default;
-        explicit GpuBuffer(size_t size, cudaStream_t stream = nullptr) {
-            resize(size, stream);
-        }
 
         GpuBuffer(GpuBuffer&&) noexcept            = default;
         GpuBuffer& operator=(GpuBuffer&&) noexcept = default;
@@ -1009,7 +907,7 @@ namespace ngp::legacy {
 
 } // namespace ngp::legacy
 
-namespace ngp::network::detail {
+namespace ngp::network {
 
     enum class GradientMode {
         Ignore,
@@ -1029,6 +927,6 @@ namespace ngp::network::detail {
     }
 #endif
 
-} // namespace ngp::network::detail
+} // namespace ngp::network
 
 #endif // NGP_LEGACY_CUH

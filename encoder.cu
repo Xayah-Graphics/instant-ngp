@@ -91,8 +91,8 @@ namespace ngp::encoding {
         if (n_elements == 0u) return;
 
         const std::size_t n_threads = (n_elements + n_to_generate - 1u) / n_to_generate;
-        const std::size_t blocks    = (n_threads + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-        generate_random_uniform_kernel<T, RNG, n_to_generate><<<blocks, network::detail::n_threads_linear>>>(n_elements, rng, out, lower, upper);
+        const std::size_t blocks    = (n_threads + network::n_threads_linear - 1u) / network::n_threads_linear;
+        generate_random_uniform_kernel<T, RNG, n_to_generate><<<blocks, network::n_threads_linear>>>(n_elements, rng, out, lower, upper);
         rng.advance(n_elements);
     }
 
@@ -361,7 +361,7 @@ namespace ngp::encoding {
     void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::encode(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == output_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
         if (n_params > 0u) legacy::check_or_throw(params != nullptr);
 
@@ -388,18 +388,18 @@ namespace ngp::encoding {
     }
 
     template <typename T, std::uint32_t N_POS_DIMS, std::uint32_t N_FEATURES_PER_LEVEL>
-    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, const network::detail::GradientMode param_gradients_mode) {
+    void GridEncodingTemplated<T, N_POS_DIMS, N_FEATURES_PER_LEVEL>::backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, const network::GradientMode param_gradients_mode) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(dL_doutput.m() == output_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == dL_doutput.n());
         if (n_params > 0u) {
             legacy::check_or_throw(params != nullptr);
-            if (param_gradients_mode != network::detail::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
+            if (param_gradients_mode != network::GradientMode::Ignore) legacy::check_or_throw(gradients != nullptr);
         }
 
         const std::uint32_t num_elements = input.n();
-        if (param_gradients_mode == network::detail::GradientMode::Ignore || num_elements == 0u) return;
+        if (param_gradients_mode == network::GradientMode::Ignore || num_elements == 0u) return;
 
         const T* dL_dy_rm               = dL_doutput.data();
         legacy::GpuAllocation workspace = {};
@@ -423,7 +423,7 @@ namespace ngp::encoding {
             grid_gradient = reinterpret_cast<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>*>(gradients);
         }
 
-        if (param_gradients_mode == network::detail::GradientMode::Overwrite) legacy::cuda_check(cudaMemsetAsync(grid_gradient, 0, n_params * sizeof(std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>), stream));
+        if (param_gradients_mode == network::GradientMode::Overwrite) legacy::cuda_check(cudaMemsetAsync(grid_gradient, 0, n_params * sizeof(std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>), stream));
 
         static constexpr std::uint32_t n_threads_hashgrid    = 256u;
         static constexpr std::uint32_t n_features_per_thread = std::min(2u, N_FEATURES_PER_LEVEL);
@@ -433,8 +433,8 @@ namespace ngp::encoding {
 
         if constexpr (!std::is_same_v<std::conditional_t<N_FEATURES_PER_LEVEL == 1u, float, T>, T>) {
             if (n_params > 0u) {
-                const std::uint32_t blocks = (static_cast<std::uint32_t>(n_params) + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-                network::detail::cast<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(static_cast<std::uint32_t>(n_params), reinterpret_cast<const float*>(grid_gradient), gradients);
+                const std::uint32_t blocks = (static_cast<std::uint32_t>(n_params) + network::n_threads_linear - 1u) / network::n_threads_linear;
+                network::cast<T><<<blocks, network::n_threads_linear, 0, stream>>>(static_cast<std::uint32_t>(n_params), reinterpret_cast<const float*>(grid_gradient), gradients);
             }
         }
     }
@@ -494,14 +494,14 @@ namespace ngp::encoding {
     void SphericalHarmonicsEncoding<T>::encode(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output) {
         legacy::check_or_throw(input.m() == input_width);
         legacy::check_or_throw(output.m() == output_width);
-        legacy::check_or_throw(input.n() % network::detail::batch_size_granularity == 0u);
+        legacy::check_or_throw(input.n() % network::batch_size_granularity == 0u);
         legacy::check_or_throw(input.n() == output.n());
         if (output_width == 0u) return;
 
         const std::uint32_t num_elements = input.n();
         if (num_elements > 0u) {
-            const std::uint32_t blocks = (num_elements + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-            kernel_sh<T><<<blocks, network::detail::n_threads_linear, 0, stream>>>(num_elements, degree, input.data(), input.layout() == legacy::CM ? 1u : input.stride(), input.layout() == legacy::CM ? input.stride() : 1u, output.data(), output.layout() == legacy::CM ? 1u : output.stride(), output.layout() == legacy::CM ? output.stride() : 1u);
+            const std::uint32_t blocks = (num_elements + network::n_threads_linear - 1u) / network::n_threads_linear;
+            kernel_sh<T><<<blocks, network::n_threads_linear, 0, stream>>>(num_elements, degree, input.data(), input.layout() == legacy::CM ? 1u : input.stride(), input.layout() == legacy::CM ? input.stride() : 1u, output.data(), output.layout() == legacy::CM ? 1u : output.stride(), output.layout() == legacy::CM ? output.stride() : 1u);
         }
     }
 

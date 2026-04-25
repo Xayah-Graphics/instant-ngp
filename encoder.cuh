@@ -16,7 +16,7 @@ namespace ngp::encoding {
         GridEncodingTemplated(std::uint32_t n_features, std::uint32_t log2_hashmap_size, std::uint32_t base_resolution, float per_level_scale, bool stochastic_interpolation);
 
         void encode(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& output);
-        void backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, network::detail::GradientMode param_gradients_mode = network::detail::GradientMode::Overwrite);
+        void backward(cudaStream_t stream, const legacy::GPUMatrix<float, legacy::MatrixLayout::Dynamic>& input, const legacy::GPUMatrix<T, legacy::MatrixLayout::Dynamic>& dL_doutput, network::GradientMode param_gradients_mode = network::GradientMode::Overwrite);
         void initialize_params(legacy::math::pcg32& rng, float* params_full_precision, float scale = 1.0f);
 
         std::uint32_t n_features                     = 0u;

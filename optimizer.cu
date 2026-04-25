@@ -43,8 +43,8 @@ namespace ngp {
     void InstantNGP::Optimizer::step(cudaStream_t stream, const float loss_scale, float* weights_full_precision, __half* weights, const __half* gradients) {
         if (n_weights == 0u) return;
 
-        const std::uint32_t blocks = (n_weights + network::detail::n_threads_linear - 1u) / network::detail::n_threads_linear;
-        adam_step<__half><<<blocks, network::detail::n_threads_linear, 0, stream>>>(n_weights, n_matrix_weights, loss_scale, base_learning_rate, beta1, beta2, epsilon, l2_reg, weights_full_precision, weights, gradients, first_moments.data(), second_moments.data(), param_steps.data());
+        const std::uint32_t blocks = (n_weights + network::n_threads_linear - 1u) / network::n_threads_linear;
+        adam_step<__half><<<blocks, network::n_threads_linear, 0, stream>>>(n_weights, n_matrix_weights, loss_scale, base_learning_rate, beta1, beta2, epsilon, l2_reg, weights_full_precision, weights, gradients, first_moments.data(), second_moments.data(), param_steps.data());
     }
 
 } // namespace ngp
