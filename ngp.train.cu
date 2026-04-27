@@ -63,6 +63,26 @@ namespace ngp::cuda {
             return std::string{operation} + " failed: " + cudaGetErrorString(status);
         }
 
+        struct CublasLtMatmulResources final {
+            cublasLtMatmulDesc_t operation_desc   = nullptr;
+            cublasLtMatrixLayout_t a_desc         = nullptr;
+            cublasLtMatrixLayout_t b_desc         = nullptr;
+            cublasLtMatrixLayout_t d_desc         = nullptr;
+            cublasLtMatmulPreference_t preference = nullptr;
+
+            CublasLtMatmulResources()                                          = default;
+            CublasLtMatmulResources(const CublasLtMatmulResources&)            = delete;
+            CublasLtMatmulResources& operator=(const CublasLtMatmulResources&) = delete;
+
+            ~CublasLtMatmulResources() noexcept {
+                if (this->preference != nullptr) cublasLtMatmulPreferenceDestroy(this->preference);
+                if (this->d_desc != nullptr) cublasLtMatrixLayoutDestroy(this->d_desc);
+                if (this->b_desc != nullptr) cublasLtMatrixLayoutDestroy(this->b_desc);
+                if (this->a_desc != nullptr) cublasLtMatrixLayoutDestroy(this->a_desc);
+                if (this->operation_desc != nullptr) cublasLtMatmulDescDestroy(this->operation_desc);
+            }
+        };
+
         struct Pcg32 final {
             std::uint64_t state = PCG32_DEFAULT_STATE;
             std::uint64_t inc   = PCG32_DEFAULT_STREAM;
@@ -1327,11 +1347,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp backward hidden", status);
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1341,97 +1357,26 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, config::MLP_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt rgb last weight gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_output_gradients), a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), d_desc,
-                    reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, config::MLP_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb last gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb last gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb last gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt rgb last weight gradients returned no supported algorithm.";
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_output_gradients), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), lt.d_desc,
+                    reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
                 status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
                 return std::string{"cublasLtMatmul rgb last weight gradients failed: "} + cublasGetStatusString(status);
             }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1441,96 +1386,26 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt rgb hidden weight gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden), a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden), b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt rgb hidden weight gradients returned no supported algorithm.";
+            if (const cublasStatus_t status =
+                    cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
                 status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
                 return std::string{"cublasLtMatmul rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
             }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1540,96 +1415,26 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt rgb first weight gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, a_desc, reinterpret_cast<const __half*>(rgb_input), b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset), d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb first gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb first gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb first gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt rgb first weight gradients returned no supported algorithm.";
+            if (const cublasStatus_t status =
+                    cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, lt.a_desc, reinterpret_cast<const __half*>(rgb_input), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset), lt.d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
                 status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
                 return std::string{"cublasLtMatmul rgb first weight gradients failed: "} + cublasGetStatusString(status);
             }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1639,88 +1444,22 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb input gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate rgb input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt rgb input gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(params + rgb_param_offset), a_desc, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, b_desc, &beta, reinterpret_cast<__half*>(rgb_input_gradients), d_desc, reinterpret_cast<__half*>(rgb_input_gradients), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb input gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb input gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate rgb input gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate rgb input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute rgb input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic rgb input gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt rgb input gradients returned no supported algorithm.";
+            if (const cublasStatus_t status =
+                    cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(params + rgb_param_offset), lt.a_desc, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, lt.b_desc, &beta, reinterpret_cast<__half*>(rgb_input_gradients), lt.d_desc, reinterpret_cast<__half*>(rgb_input_gradients), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
                 status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
                 return std::string{"cublasLtMatmul rgb input gradients failed: "} + cublasGetStatusString(status);
             }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         add_density_gradient_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_input_gradients));
@@ -1731,11 +1470,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp backward hidden", status);
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_ROW;
@@ -1745,97 +1480,26 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density last weight gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density last gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density last gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density last gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate density last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute density last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic density last weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt density last weight gradients returned no supported algorithm.";
-            }
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density last gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density last gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density last gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate density last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute density last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic density last weight gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt density last weight gradients returned no supported algorithm.";
             if (const cublasStatus_t status =
-                    cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_input_gradients), a_desc, reinterpret_cast<const __half*>(density_forward_hidden), b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                    cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_input_gradients), lt.a_desc, reinterpret_cast<const __half*>(density_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
                 status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
                 return std::string{"cublasLtMatmul density last weight gradients failed: "} + cublasGetStatusString(status);
             }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1845,95 +1509,24 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density first weight gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density first gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density first gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density first gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate density first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute density first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic density first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt density first weight gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(density_backward_hidden), a_desc, reinterpret_cast<const __half*>(density_input), b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset), d_desc, reinterpret_cast<__half*>(gradients + density_param_offset), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density first gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density first gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density first gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate density first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute density first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic density first weight gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt density first weight gradients returned no supported algorithm.";
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(density_backward_hidden), lt.a_desc, reinterpret_cast<const __half*>(density_input), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset), lt.d_desc, reinterpret_cast<__half*>(gradients + density_param_offset), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS)
                 return std::string{"cublasLtMatmul density first weight gradients failed: "} + cublasGetStatusString(status);
-            }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         {
-            cublasLtMatmulDesc_t operation_desc       = nullptr;
-            cublasLtMatrixLayout_t a_desc             = nullptr;
-            cublasLtMatrixLayout_t b_desc             = nullptr;
-            cublasLtMatrixLayout_t d_desc             = nullptr;
-            cublasLtMatmulPreference_t preference     = nullptr;
+            CublasLtMatmulResources lt;
             const auto alpha                          = static_cast<__half>(1.0f);
             const auto beta                           = static_cast<__half>(0.0f);
             constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
@@ -1943,87 +1536,19 @@ namespace ngp::cuda {
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
 
-            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density input gradients failed: "} + cublasGetStatusString(status);
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density input gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density input gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutCreate density input gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients A failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients B failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients D failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceCreate density input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulPreferenceSetAttribute density input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return std::string{"cublasLtMatmulAlgoGetHeuristic density input gradients failed: "} + cublasGetStatusString(status);
-            }
-            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
-                return "cublasLt density input gradients returned no supported algorithm.";
-            }
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(params + density_param_offset), a_desc, reinterpret_cast<const __half*>(density_backward_hidden), b_desc, &beta, reinterpret_cast<__half*>(density_input_gradients), d_desc, reinterpret_cast<__half*>(density_input_gradients), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
-                cublasLtMatmulPreferenceDestroy(preference);
-                cublasLtMatrixLayoutDestroy(d_desc);
-                cublasLtMatrixLayoutDestroy(b_desc);
-                cublasLtMatrixLayoutDestroy(a_desc);
-                cublasLtMatmulDescDestroy(operation_desc);
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density input gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density input gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutCreate density input gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients A failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients B failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients D failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&lt.preference); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceCreate density input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulPreferenceSetAttribute density input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulAlgoGetHeuristic density input gradients failed: "} + cublasGetStatusString(status);
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) return "cublasLt density input gradients returned no supported algorithm.";
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(params + density_param_offset), lt.a_desc, reinterpret_cast<const __half*>(density_backward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(density_input_gradients), lt.d_desc, reinterpret_cast<__half*>(density_input_gradients), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS)
                 return std::string{"cublasLtMatmul density input gradients failed: "} + cublasGetStatusString(status);
-            }
-            cublasLtMatmulPreferenceDestroy(preference);
-            cublasLtMatrixLayoutDestroy(d_desc);
-            cublasLtMatrixLayoutDestroy(b_desc);
-            cublasLtMatrixLayoutDestroy(a_desc);
-            cublasLtMatmulDescDestroy(operation_desc);
         }
 
         return encode_grid_backward(batch_size, sample_coords, grid_offsets, grid_n_levels, grid_features_per_level, grid_base_resolution, grid_per_level_scale, density_input_gradients, gradients + grid_param_offset);
