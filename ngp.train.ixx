@@ -81,38 +81,38 @@ namespace ngp::train {
                 this->host.focal_length = static_cast<float>(first_frame.focal_length);
 
                 this->host.density_param_offset = 0u;
-                this->host.density_param_count  = config::mlp_width * config::grid_output_width + (config::density_hidden_layers - 1u) * config::mlp_width * config::mlp_width + config::density_output_width * config::mlp_width;
+                this->host.density_param_count  = config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH + (config::DENSITY_HIDDEN_LAYERS - 1u) * config::MLP_WIDTH * config::MLP_WIDTH + config::DENSITY_OUTPUT_WIDTH * config::MLP_WIDTH;
                 this->host.rgb_param_offset     = this->host.density_param_offset + this->host.density_param_count;
-                this->host.rgb_param_count      = config::mlp_width * config::rgb_input_width + (config::rgb_hidden_layers - 1u) * config::mlp_width * config::mlp_width + config::network_output_width * config::mlp_width;
+                this->host.rgb_param_count      = config::MLP_WIDTH * config::RGB_INPUT_WIDTH + (config::RGB_HIDDEN_LAYERS - 1u) * config::MLP_WIDTH * config::MLP_WIDTH + config::NETWORK_OUTPUT_WIDTH * config::MLP_WIDTH;
                 this->host.mlp_param_count      = this->host.rgb_param_offset + this->host.rgb_param_count;
                 this->host.grid_param_offset    = this->host.mlp_param_count;
 
                 std::uint32_t grid_offset = 0u;
-                for (std::uint32_t level = 0u; level < config::grid_n_levels; ++level) {
-                    const float scale                         = std::exp2(static_cast<float>(level) * std::log2(config::grid_per_level_scale)) * static_cast<float>(config::grid_base_resolution) - 1.0f;
+                for (std::uint32_t level = 0u; level < config::GRID_N_LEVELS; ++level) {
+                    const float scale                         = std::exp2(static_cast<float>(level) * std::log2(config::GRID_PER_LEVEL_SCALE)) * static_cast<float>(config::GRID_BASE_RESOLUTION) - 1.0f;
                     const std::uint32_t resolution            = static_cast<std::uint32_t>(std::ceil(scale)) + 1u;
-                    constexpr std::uint32_t max_params        = std::numeric_limits<std::uint32_t>::max() / 2u;
+                    constexpr std::uint32_t MAX_PARAMS        = std::numeric_limits<std::uint32_t>::max() / 2u;
                     const std::uint64_t dense_params_in_level = static_cast<std::uint64_t>(resolution) * resolution * resolution;
-                    std::uint32_t params_in_level             = dense_params_in_level > max_params ? max_params : static_cast<std::uint32_t>(dense_params_in_level);
+                    std::uint32_t params_in_level             = dense_params_in_level > MAX_PARAMS ? MAX_PARAMS : static_cast<std::uint32_t>(dense_params_in_level);
 
                     params_in_level                = ((params_in_level + 7u) / 8u) * 8u;
-                    params_in_level                = std::min(params_in_level, 1u << config::grid_log2_hashmap_size);
+                    params_in_level                = std::min(params_in_level, 1u << config::GRID_LOG2_HASHMAP_SIZE);
                     this->host.grid_offsets[level] = grid_offset;
                     grid_offset += params_in_level;
                 }
-                this->host.grid_offsets[config::grid_n_levels] = grid_offset;
-                this->host.grid_param_count                    = grid_offset * config::grid_features_per_level;
+                this->host.grid_offsets[config::GRID_N_LEVELS] = grid_offset;
+                this->host.grid_param_count                    = grid_offset * config::GRID_FEATURES_PER_LEVEL;
                 this->host.total_param_count                   = this->host.mlp_param_count + this->host.grid_param_count;
 
                 if (const std::string error = cuda::allocate_sampler_once(this->host.max_rays_per_batch, this->host.max_samples, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_network_once(
-                        config::network_batch_size, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
+                        config::NETWORK_BATCH_SIZE, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
                     !error.empty())
                     throw std::runtime_error{error};
-                if (const std::string error = cuda::allocate_training_loss_once(config::network_batch_size, this->host.max_rays_per_batch, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values); !error.empty()) throw std::runtime_error{error};
+                if (const std::string error = cuda::allocate_training_loss_once(config::NETWORK_BATCH_SIZE, this->host.max_rays_per_batch, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_trainable_params_once(this->host.total_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_adam_state_once(this->host.total_param_count, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps); !error.empty()) throw std::runtime_error{error};
-                if (const std::string error = cuda::initialize_mlp_params_once(this->host.seed, config::grid_output_width, config::density_output_width, config::density_hidden_layers, this->host.density_param_offset, config::rgb_input_width, config::network_output_width, config::rgb_hidden_layers, this->host.rgb_param_offset, this->device.params_full_precision, this->device.params, this->device.param_gradients); !error.empty()) throw std::runtime_error{error};
+                if (const std::string error = cuda::initialize_mlp_params_once(this->host.seed, config::GRID_OUTPUT_WIDTH, config::DENSITY_OUTPUT_WIDTH, config::DENSITY_HIDDEN_LAYERS, this->host.density_param_offset, config::RGB_INPUT_WIDTH, config::NETWORK_OUTPUT_WIDTH, config::RGB_HIDDEN_LAYERS, this->host.rgb_param_offset, this->device.params_full_precision, this->device.params, this->device.param_gradients); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::initialize_grid_params_once(this->host.grid_param_count, this->host.seed, this->host.mlp_param_count, this->device.params_full_precision + this->host.grid_param_offset, this->device.params + this->host.grid_param_offset, this->device.param_gradients + this->host.grid_param_offset); !error.empty()) throw std::runtime_error{error};
             } catch (...) {
                 cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients,
@@ -143,20 +143,21 @@ namespace ngp::train {
                     !error.empty())
                     return std::unexpected{error};
 
-                if (const std::string error = cuda::network_inference_once(this->host.inference_sample_count, config::network_batch_size, this->device.sample_coords, this->host.grid_offsets.data(), config::grid_n_levels, config::grid_features_per_level, config::grid_base_resolution, config::grid_per_level_scale, this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.network_output);
+                if (const std::string error = cuda::network_inference_once(
+                        this->host.inference_sample_count, config::NETWORK_BATCH_SIZE, this->device.sample_coords, this->host.grid_offsets.data(), config::GRID_N_LEVELS, config::GRID_FEATURES_PER_LEVEL, config::GRID_BASE_RESOLUTION, config::GRID_PER_LEVEL_SCALE, this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.network_output);
                     !error.empty())
                     return std::unexpected{error};
-                if (const std::string error = cuda::compute_loss_and_compact_once(this->host.rays_per_batch, config::network_batch_size, this->host.seed, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->host.snap_to_pixel_centers, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords,
-                        this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
+                if (const std::string error = cuda::compute_loss_and_compact_once(this->host.rays_per_batch, config::NETWORK_BATCH_SIZE, this->host.seed, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->host.snap_to_pixel_centers, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps,
+                        this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
                     !error.empty())
                     return std::unexpected{error};
-                if (const std::string error = cuda::fill_rollover_once(config::network_batch_size, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.network_output_gradients); !error.empty()) return std::unexpected{error};
-                if (const std::string error = cuda::network_forward_once(
-                        config::network_batch_size, this->device.compacted_sample_coords, this->host.grid_offsets.data(), config::grid_n_levels, config::grid_features_per_level, config::grid_base_resolution, config::grid_per_level_scale, this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output);
+                if (const std::string error = cuda::fill_rollover_once(config::NETWORK_BATCH_SIZE, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.network_output_gradients); !error.empty()) return std::unexpected{error};
+                if (const std::string error = cuda::network_forward_once(config::NETWORK_BATCH_SIZE, this->device.compacted_sample_coords, this->host.grid_offsets.data(), config::GRID_N_LEVELS, config::GRID_FEATURES_PER_LEVEL, config::GRID_BASE_RESOLUTION, config::GRID_PER_LEVEL_SCALE, this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input,
+                        this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output);
                     !error.empty())
                     return std::unexpected{error};
-                if (const std::string error = cuda::network_backward_once(config::network_batch_size, this->device.compacted_sample_coords, this->host.grid_offsets.data(), config::grid_n_levels, config::grid_features_per_level, config::grid_base_resolution, config::grid_per_level_scale, this->device.params, this->device.param_gradients, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden,
-                        this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
+                if (const std::string error = cuda::network_backward_once(config::NETWORK_BATCH_SIZE, this->device.compacted_sample_coords, this->host.grid_offsets.data(), config::GRID_N_LEVELS, config::GRID_FEATURES_PER_LEVEL, config::GRID_BASE_RESOLUTION, config::GRID_PER_LEVEL_SCALE, this->device.params, this->device.param_gradients, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input,
+                        this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
                     !error.empty())
                     return std::unexpected{error};
                 if (const std::string error = cuda::optimize(
@@ -167,8 +168,8 @@ namespace ngp::train {
                 if (const std::string error = cuda::read_counter_once(this->device.compacted_sample_counter, this->host.measured_sample_count); !error.empty()) return std::unexpected{error};
                 if (this->host.measured_sample_count == 0u) return std::unexpected{std::string{"Training stopped unexpectedly."}};
 
-                this->host.inference_sample_count = config::round_up(std::min(this->host.measured_sample_count_before_compaction, this->host.max_samples), config::network_batch_granularity);
-                this->host.rays_per_batch         = std::min(std::max(config::round_up(static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * config::network_batch_size) / this->host.measured_sample_count, static_cast<std::uint64_t>(this->host.max_rays_per_batch))), config::network_batch_granularity), config::network_batch_granularity), this->host.max_rays_per_batch);
+                this->host.inference_sample_count = config::round_up(std::min(this->host.measured_sample_count_before_compaction, this->host.max_samples), config::NETWORK_BATCH_GRANULARITY);
+                this->host.rays_per_batch         = std::min(std::max(config::round_up(static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * config::NETWORK_BATCH_SIZE) / this->host.measured_sample_count, static_cast<std::uint64_t>(this->host.max_rays_per_batch))), config::NETWORK_BATCH_GRANULARITY), config::NETWORK_BATCH_GRANULARITY), this->host.max_rays_per_batch);
 
                 ++this->host.current_step;
             }
@@ -181,7 +182,7 @@ namespace ngp::train {
                 .rays_per_batch                          = this->host.rays_per_batch,
                 .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
                 .measured_sample_count                   = this->host.measured_sample_count,
-                .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::network_batch_size),
+                .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::NETWORK_BATCH_SIZE),
                 .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
             };
         }
@@ -201,22 +202,22 @@ namespace ngp::train {
 
             // Sampler and loss.
             std::uint32_t rays_per_batch                          = 1u << 12u;
-            std::uint32_t max_rays_per_batch                      = config::network_batch_size;
-            std::uint32_t max_samples                             = config::network_batch_size * 16u;
+            std::uint32_t max_rays_per_batch                      = config::NETWORK_BATCH_SIZE;
+            std::uint32_t max_samples                             = config::NETWORK_BATCH_SIZE * 16u;
             std::uint32_t inference_sample_count                  = max_samples;
             std::uint32_t measured_sample_count_before_compaction = 0u;
             std::uint32_t measured_sample_count                   = 0u;
 
             // Network parameter layout.
-            std::array<std::uint32_t, config::grid_offset_count> grid_offsets = {};
-            std::uint32_t density_param_offset                               = 0u;
-            std::uint32_t density_param_count                                = 0u;
-            std::uint32_t rgb_param_offset                                   = 0u;
-            std::uint32_t rgb_param_count                                    = 0u;
-            std::uint32_t mlp_param_count                                    = 0u;
-            std::uint32_t grid_param_offset                                  = 0u;
-            std::uint32_t grid_param_count                                   = 0u;
-            std::uint32_t total_param_count                                  = 0u;
+            std::array<std::uint32_t, config::GRID_OFFSET_COUNT> grid_offsets = {};
+            std::uint32_t density_param_offset                                = 0u;
+            std::uint32_t density_param_count                                 = 0u;
+            std::uint32_t rgb_param_offset                                    = 0u;
+            std::uint32_t rgb_param_count                                     = 0u;
+            std::uint32_t mlp_param_count                                     = 0u;
+            std::uint32_t grid_param_offset                                   = 0u;
+            std::uint32_t grid_param_count                                    = 0u;
+            std::uint32_t total_param_count                                   = 0u;
 
             // Optimizer.
             float optimizer_learning_rate = 1e-2f;
@@ -271,6 +272,6 @@ namespace ngp::train {
             std::uint32_t* optimizer_param_steps = nullptr;
         } device;
 
-        static constexpr std::array<float, 6> aabb = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+        static constexpr std::array<float, 6> AABB = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
     };
 } // namespace ngp::train

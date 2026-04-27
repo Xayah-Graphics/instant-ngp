@@ -27,38 +27,38 @@ namespace ngp::cuda {
         using namespace config;
 
         // Launch configuration.
-        inline constexpr std::uint32_t threads_per_block = 128u;
+        inline constexpr std::uint32_t THREADS_PER_BLOCK = 128u;
 
         // Sampler.
-        inline constexpr std::uint32_t nerf_grid_size             = 128u;
-        inline constexpr std::uint32_t nerf_grid_cells            = nerf_grid_size * nerf_grid_size * nerf_grid_size;
-        inline constexpr std::uint32_t nerf_steps                 = 1024u;
-        inline constexpr std::uint32_t max_random_samples_per_ray = 16u;
-        inline constexpr std::uint32_t random_values_per_thread   = 4u;
-        inline constexpr std::uint32_t sample_coord_floats        = 7u;
-        inline constexpr std::uint32_t ray_floats                 = 6u;
-        inline constexpr float min_cone_stepsize                  = 1.73205080757f / static_cast<float>(nerf_steps);
+        inline constexpr std::uint32_t NERF_GRID_SIZE             = 128u;
+        inline constexpr std::uint32_t NERF_GRID_CELLS            = NERF_GRID_SIZE * NERF_GRID_SIZE * NERF_GRID_SIZE;
+        inline constexpr std::uint32_t NERF_STEPS                 = 1024u;
+        inline constexpr std::uint32_t MAX_RANDOM_SAMPLES_PER_RAY = 16u;
+        inline constexpr std::uint32_t RANDOM_VALUES_PER_THREAD   = 4u;
+        inline constexpr std::uint32_t SAMPLE_COORD_FLOATS        = 7u;
+        inline constexpr std::uint32_t RAY_FLOATS                 = 6u;
+        inline constexpr float MIN_CONE_STEPSIZE                  = 1.73205080757f / static_cast<float>(NERF_STEPS);
 
         // Grid encoding.
-        inline constexpr std::uint32_t grid_forward_threads   = 512u;
-        inline constexpr std::uint32_t grid_backward_threads  = 256u;
-        inline constexpr std::uint32_t grid_backward_features = 2u;
+        inline constexpr std::uint32_t GRID_FORWARD_THREADS   = 512u;
+        inline constexpr std::uint32_t GRID_BACKWARD_THREADS  = 256u;
+        inline constexpr std::uint32_t GRID_BACKWARD_FEATURES = 2u;
 
         // Fully fused MLP.
-        inline constexpr std::uint32_t mlp_forward_iters       = 8u;
-        inline constexpr std::uint32_t mlp_width_blocks        = mlp_width / 16u;
-        inline constexpr std::uint32_t mlp_skew                = 8u;
-        inline constexpr std::uint32_t mlp_input_skew          = 8u;
-        inline constexpr std::uint32_t mlp_first_layer_params  = mlp_width * mlp_input_width;
-        inline constexpr std::uint32_t mlp_hidden_layer_params = mlp_width * mlp_width;
-        inline constexpr std::uint32_t mlp_last_layer_params   = mlp_output_width * mlp_width;
-        inline constexpr std::uint32_t density_network_params  = mlp_first_layer_params + (density_hidden_layers - 1u) * mlp_hidden_layer_params + mlp_last_layer_params;
-        inline constexpr std::uint32_t rgb_network_params      = mlp_first_layer_params + (rgb_hidden_layers - 1u) * mlp_hidden_layer_params + mlp_last_layer_params;
+        inline constexpr std::uint32_t MLP_FORWARD_ITERS       = 8u;
+        inline constexpr std::uint32_t MLP_WIDTH_BLOCKS        = MLP_WIDTH / 16u;
+        inline constexpr std::uint32_t MLP_SKEW                = 8u;
+        inline constexpr std::uint32_t MLP_INPUT_SKEW          = 8u;
+        inline constexpr std::uint32_t MLP_FIRST_LAYER_PARAMS  = MLP_WIDTH * MLP_INPUT_WIDTH;
+        inline constexpr std::uint32_t MLP_HIDDEN_LAYER_PARAMS = MLP_WIDTH * MLP_WIDTH;
+        inline constexpr std::uint32_t MLP_LAST_LAYER_PARAMS   = MLP_OUTPUT_WIDTH * MLP_WIDTH;
+        inline constexpr std::uint32_t DENSITY_NETWORK_PARAMS  = MLP_FIRST_LAYER_PARAMS + (DENSITY_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
+        inline constexpr std::uint32_t RGB_NETWORK_PARAMS      = MLP_FIRST_LAYER_PARAMS + (RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
 
         // Random number generation.
-        inline constexpr std::uint64_t pcg32_default_state  = 0x853c49e6748fea9bULL;
-        inline constexpr std::uint64_t pcg32_default_stream = 0xda3e39cb94b95bdbULL;
-        inline constexpr std::uint64_t pcg32_mult           = 0x5851f42d4c957f2dULL;
+        inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
+        inline constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
+        inline constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
 
         // Error reporting.
         std::string cuda_error(const char* operation, const cudaError_t status) {
@@ -67,12 +67,12 @@ namespace ngp::cuda {
 
         // Small POD helpers.
         struct GridOffsetTable final {
-            std::uint32_t data[grid_n_levels + 1u] = {};
+            std::uint32_t data[GRID_N_LEVELS + 1u] = {};
         };
 
         struct Pcg32 final {
-            std::uint64_t state = pcg32_default_state;
-            std::uint64_t inc   = pcg32_default_stream;
+            std::uint64_t state = PCG32_DEFAULT_STATE;
+            std::uint64_t inc   = PCG32_DEFAULT_STREAM;
 
             __host__ __device__ explicit Pcg32(const std::uint64_t initstate, const std::uint64_t initseq = 1u) {
                 this->seed(initstate, initseq);
@@ -87,10 +87,10 @@ namespace ngp::cuda {
             }
 
             __host__ __device__ std::uint32_t next_uint() {
-                const std::uint64_t oldstate   = this->state;
-                this->state                    = oldstate * pcg32_mult + this->inc;
-                const std::uint32_t xorshifted = static_cast<std::uint32_t>(((oldstate >> 18u) ^ oldstate) >> 27u);
-                const std::uint32_t rot        = static_cast<std::uint32_t>(oldstate >> 59u);
+                const std::uint64_t oldstate = this->state;
+                this->state                  = oldstate * PCG32_MULT + this->inc;
+                const auto xorshifted        = static_cast<std::uint32_t>(((oldstate >> 18u) ^ oldstate) >> 27u);
+                const auto rot               = static_cast<std::uint32_t>(oldstate >> 59u);
                 return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
             }
 
@@ -104,7 +104,7 @@ namespace ngp::cuda {
             }
 
             __host__ __device__ void advance(std::uint64_t delta) {
-                std::uint64_t cur_mult = pcg32_mult;
+                std::uint64_t cur_mult = PCG32_MULT;
                 std::uint64_t cur_plus = this->inc;
                 std::uint64_t acc_mult = 1u;
                 std::uint64_t acc_plus = 0u;
@@ -179,13 +179,13 @@ namespace ngp::cuda {
         }
 
         __device__ bool density_grid_occupied_at(const float3 pos, const std::uint8_t* occupancy) {
-            const int x = static_cast<int>(pos.x * static_cast<float>(nerf_grid_size));
-            const int y = static_cast<int>(pos.y * static_cast<float>(nerf_grid_size));
-            const int z = static_cast<int>(pos.z * static_cast<float>(nerf_grid_size));
-            if (x < 0 || x >= static_cast<int>(nerf_grid_size) || y < 0 || y >= static_cast<int>(nerf_grid_size) || z < 0 || z >= static_cast<int>(nerf_grid_size)) return false;
-            std::uint32_t morton_x    = static_cast<std::uint32_t>(x);
-            std::uint32_t morton_y    = static_cast<std::uint32_t>(y);
-            std::uint32_t morton_z    = static_cast<std::uint32_t>(z);
+            const int x = static_cast<int>(pos.x * static_cast<float>(NERF_GRID_SIZE));
+            const int y = static_cast<int>(pos.y * static_cast<float>(NERF_GRID_SIZE));
+            const int z = static_cast<int>(pos.z * static_cast<float>(NERF_GRID_SIZE));
+            if (x < 0 || x >= static_cast<int>(NERF_GRID_SIZE) || y < 0 || y >= static_cast<int>(NERF_GRID_SIZE) || z < 0 || z >= static_cast<int>(NERF_GRID_SIZE)) return false;
+            auto morton_x             = static_cast<std::uint32_t>(x);
+            auto morton_y             = static_cast<std::uint32_t>(y);
+            auto morton_z             = static_cast<std::uint32_t>(z);
             morton_x                  = (morton_x * 0x00010001u) & 0xFF0000FFu;
             morton_x                  = (morton_x * 0x00000101u) & 0x0F00F00Fu;
             morton_x                  = (morton_x * 0x00000011u) & 0xC30C30C3u;
@@ -203,13 +203,13 @@ namespace ngp::cuda {
         }
 
         __device__ float advance_to_next_voxel(const float t, const float3 pos, const float3 direction, const float3 inv_direction) {
-            constexpr float scale = static_cast<float>(nerf_grid_size);
-            const float3 p        = {(pos.x - 0.5f) * scale, (pos.y - 0.5f) * scale, (pos.z - 0.5f) * scale};
-            const float tx        = (floorf(p.x + 0.5f + 0.5f * copysignf(1.0f, direction.x)) - p.x) * inv_direction.x;
-            const float ty        = (floorf(p.y + 0.5f + 0.5f * copysignf(1.0f, direction.y)) - p.y) * inv_direction.y;
-            const float tz        = (floorf(p.z + 0.5f + 0.5f * copysignf(1.0f, direction.z)) - p.z) * inv_direction.z;
-            const float t_target  = t + fmaxf(fminf(fminf(tx, ty), tz) / scale, 0.0f);
-            return t + ceilf(fmaxf((t_target - t) / min_cone_stepsize, 0.5f)) * min_cone_stepsize;
+            constexpr auto scale = static_cast<float>(NERF_GRID_SIZE);
+            const float3 p       = {(pos.x - 0.5f) * scale, (pos.y - 0.5f) * scale, (pos.z - 0.5f) * scale};
+            const float tx       = (floorf(p.x + 0.5f + 0.5f * copysignf(1.0f, direction.x)) - p.x) * inv_direction.x;
+            const float ty       = (floorf(p.y + 0.5f + 0.5f * copysignf(1.0f, direction.y)) - p.y) * inv_direction.y;
+            const float tz       = (floorf(p.z + 0.5f + 0.5f * copysignf(1.0f, direction.z)) - p.z) * inv_direction.z;
+            const float t_target = t + fmaxf(fminf(fminf(tx, ty), tz) / scale, 0.0f);
+            return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE, 0.5f)) * MIN_CONE_STEPSIZE;
         }
 
         // Rendering and loss helpers.
@@ -283,7 +283,7 @@ namespace ngp::cuda {
 
             Pcg32 rng{seed};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
-            rng.advance(static_cast<std::uint64_t>(i) * max_random_samples_per_ray);
+            rng.advance(static_cast<std::uint64_t>(i) * MAX_RANDOM_SAMPLES_PER_RAY);
 
             float u = rng.next_float();
             float v = rng.next_float();
@@ -313,7 +313,7 @@ namespace ngp::cuda {
             float tmin = 0.0f;
             if (!ray_intersect_unit_aabb(ray_origin, ray_direction_normalized, tmin)) return;
 
-            constexpr float dt         = min_cone_stepsize;
+            constexpr float dt         = MIN_CONE_STEPSIZE;
             const float start_t        = tmin + rng.next_float() * dt;
             const float3 inv_direction = {1.0f / ray_direction_normalized.x, 1.0f / ray_direction_normalized.y, 1.0f / ray_direction_normalized.z};
 
@@ -321,7 +321,7 @@ namespace ngp::cuda {
             float t                = start_t;
             float3 pos             = {};
 
-            while (numsteps < nerf_steps) {
+            while (numsteps < NERF_STEPS) {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
                 if (!contains_unit_aabb(pos)) break;
 
@@ -341,7 +341,7 @@ namespace ngp::cuda {
             const std::uint32_t ray_index = atomicAdd(ray_counter, 1u);
             ray_indices_out[ray_index]    = i;
 
-            float* ray_out = rays_out + static_cast<std::uint64_t>(ray_index) * ray_floats;
+            float* ray_out = rays_out + static_cast<std::uint64_t>(ray_index) * RAY_FLOATS;
             ray_out[0]     = ray_origin.x;
             ray_out[1]     = ray_origin.y;
             ray_out[2]     = ray_origin.z;
@@ -361,7 +361,7 @@ namespace ngp::cuda {
                 if (!contains_unit_aabb(pos)) break;
 
                 if (density_grid_occupied_at(pos, occupancy)) {
-                    float* coord = coords_out + static_cast<std::uint64_t>(base + j) * sample_coord_floats;
+                    float* coord = coords_out + static_cast<std::uint64_t>(base + j) * SAMPLE_COORD_FLOATS;
                     coord[0]     = pos.x;
                     coord[1]     = pos.y;
                     coord[2]     = pos.z;
@@ -387,14 +387,14 @@ namespace ngp::cuda {
             std::uint32_t numsteps = numsteps_in[i * 2u + 0u];
             std::uint32_t base     = numsteps_in[i * 2u + 1u];
 
-            const float* coord_in = coords_in + static_cast<std::uint64_t>(base) * sample_coord_floats;
-            const __half* output  = network_output + static_cast<std::uint64_t>(base) * mlp_output_width;
+            const float* coord_in = coords_in + static_cast<std::uint64_t>(base) * SAMPLE_COORD_FLOATS;
+            const __half* output  = network_output + static_cast<std::uint64_t>(base) * MLP_OUTPUT_WIDTH;
 
             float transmittance                   = 1.0f;
             constexpr float transmittance_epsilon = 1e-4f;
             float3 rgb_ray                        = {};
             std::uint32_t compacted_numsteps      = 0u;
-            const float* ray                      = rays_in + static_cast<std::uint64_t>(i) * ray_floats;
+            const float* ray                      = rays_in + static_cast<std::uint64_t>(i) * RAY_FLOATS;
             const float3 ray_origin               = {ray[0], ray[1], ray[2]};
 
             for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
@@ -411,14 +411,14 @@ namespace ngp::cuda {
                 rgb_ray.z += weight * rgb_z;
                 transmittance *= 1.0f - alpha;
 
-                output += mlp_output_width;
-                coord_in += sample_coord_floats;
+                output += MLP_OUTPUT_WIDTH;
+                coord_in += SAMPLE_COORD_FLOATS;
             }
 
             const std::uint32_t ray_index = ray_indices_in[i];
             Pcg32 rng{seed};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
-            rng.advance(static_cast<std::uint64_t>(ray_index) * max_random_samples_per_ray);
+            rng.advance(static_cast<std::uint64_t>(ray_index) * MAX_RANDOM_SAMPLES_PER_RAY);
 
             const std::uint32_t image = image_index(ray_index, rays_per_batch, frame_count);
             float u                   = 0.0f;
@@ -438,8 +438,8 @@ namespace ngp::cuda {
                 rgb_ray.z += transmittance * background_color.z;
             }
 
-            output -= static_cast<std::uint64_t>(compacted_numsteps) * mlp_output_width;
-            coord_in -= static_cast<std::uint64_t>(compacted_numsteps) * sample_coord_floats;
+            output -= static_cast<std::uint64_t>(compacted_numsteps) * MLP_OUTPUT_WIDTH;
+            coord_in -= static_cast<std::uint64_t>(compacted_numsteps) * SAMPLE_COORD_FLOATS;
 
             std::uint32_t compacted_base = atomicAdd(compacted_sample_counter, compacted_numsteps);
             compacted_numsteps           = ::cuda::std::min(batch_size - ::cuda::std::min(batch_size, compacted_base), compacted_numsteps);
@@ -447,8 +447,8 @@ namespace ngp::cuda {
             numsteps_in[i * 2u + 1u]     = compacted_base;
             if (compacted_numsteps == 0u) return;
 
-            coords_out += static_cast<std::uint64_t>(compacted_base) * sample_coord_floats;
-            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * mlp_output_width;
+            coords_out += static_cast<std::uint64_t>(compacted_base) * SAMPLE_COORD_FLOATS;
+            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * MLP_OUTPUT_WIDTH;
 
             const float3 difference = {rgb_ray.x - rgb_target.x, rgb_ray.y - rgb_target.y, rgb_ray.z - rgb_target.z};
             const float3 gradient   = {2.0f * difference.x, 2.0f * difference.y, 2.0f * difference.z};
@@ -459,9 +459,9 @@ namespace ngp::cuda {
             transmittance           = 1.0f;
 
             for (std::uint32_t j = 0u; j < compacted_numsteps; ++j) {
-                float* coord_out   = coords_out + static_cast<std::uint64_t>(j) * sample_coord_floats;
-                const float* coord = coord_in + static_cast<std::uint64_t>(j) * sample_coord_floats;
-                for (std::uint32_t k = 0u; k < sample_coord_floats; ++k) coord_out[k] = coord[k];
+                float* coord_out   = coords_out + static_cast<std::uint64_t>(j) * SAMPLE_COORD_FLOATS;
+                const float* coord = coord_in + static_cast<std::uint64_t>(j) * SAMPLE_COORD_FLOATS;
+                for (std::uint32_t k = 0u; k < SAMPLE_COORD_FLOATS; ++k) coord_out[k] = coord[k];
 
                 const float3 pos        = {coord[0], coord[1], coord[2]};
                 const float depth       = norm3df(pos.x - ray_origin.x, pos.y - ray_origin.y, pos.z - ray_origin.z);
@@ -490,8 +490,8 @@ namespace ngp::cuda {
                 const float dloss_by_dmlp      = density_derivative * (dt * (gradient.x * (transmittance * rgb.x - suffix.x) + gradient.y * (transmittance * rgb.y - suffix.y) + gradient.z * (transmittance * rgb.z - suffix.z)));
                 dloss_doutput[3u]              = __float2half(scaled_loss * dloss_by_dmlp + (mlp_density > -10.0f && depth < 0.1f ? 1e-4f : 0.0f));
 
-                dloss_doutput += mlp_output_width;
-                output += mlp_output_width;
+                dloss_doutput += MLP_OUTPUT_WIDTH;
+                output += MLP_OUTPUT_WIDTH;
             }
         }
 
@@ -517,11 +517,11 @@ namespace ngp::cuda {
             if (i >= sample_count) return;
 
             const std::uint32_t level = blockIdx.y;
-            grid += offset_table.data[level] * grid_features_per_level;
+            grid += offset_table.data[level] * GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
-            const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * sample_coord_floats;
+            const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
 
             float pos_x          = 0.0f;
             float pos_y          = 0.0f;
@@ -543,7 +543,7 @@ namespace ngp::cuda {
                 const bool high_y         = (corner & 2u) != 0u;
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
-                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * grid_features_per_level;
+                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * GRID_FEATURES_PER_LEVEL;
                 const __half weight_half  = weight;
                 result0                   = __hfma(weight_half, grid[index + 0u], result0);
                 result1                   = __hfma(weight_half, grid[index + 1u], result1);
@@ -551,24 +551,24 @@ namespace ngp::cuda {
                 result3                   = __hfma(weight_half, grid[index + 3u], result3);
             }
 
-            encoded_positions[i + (level * grid_features_per_level + 0u) * sample_count] = result0;
-            encoded_positions[i + (level * grid_features_per_level + 1u) * sample_count] = result1;
-            encoded_positions[i + (level * grid_features_per_level + 2u) * sample_count] = result2;
-            encoded_positions[i + (level * grid_features_per_level + 3u) * sample_count] = result3;
+            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 0u) * sample_count] = result0;
+            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 1u) * sample_count] = result1;
+            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 2u) * sample_count] = result2;
+            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 3u) * sample_count] = result3;
         }
 
         __global__ void encode_grid_backward_kernel(const std::uint32_t sample_count, const GridOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const float* __restrict__ sample_coords, const __half* __restrict__ encoded_position_gradients, __half* __restrict__ grid_gradients) {
             const std::uint32_t thread = blockIdx.x * blockDim.x + threadIdx.x;
-            const std::uint32_t i      = (thread * grid_backward_features) / grid_features_per_level;
+            const std::uint32_t i      = (thread * GRID_BACKWARD_FEATURES) / GRID_FEATURES_PER_LEVEL;
             if (i >= sample_count) return;
 
             const std::uint32_t level   = blockIdx.y;
-            const std::uint32_t feature = thread * grid_backward_features - i * grid_features_per_level;
-            grid_gradients += offset_table.data[level] * grid_features_per_level;
+            const std::uint32_t feature = thread * GRID_BACKWARD_FEATURES - i * GRID_FEATURES_PER_LEVEL;
+            grid_gradients += offset_table.data[level] * GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
-            const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * sample_coord_floats;
+            const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
 
             float pos_x          = 0.0f;
             float pos_y          = 0.0f;
@@ -580,15 +580,15 @@ namespace ngp::cuda {
             pos_fract(sample[1], pos_y, grid_y, scale);
             pos_fract(sample[2], pos_z, grid_z, scale);
 
-            const __half grad0 = encoded_position_gradients[i + (level * grid_features_per_level + feature + 0u) * sample_count];
-            const __half grad1 = encoded_position_gradients[i + (level * grid_features_per_level + feature + 1u) * sample_count];
+            const __half grad0 = encoded_position_gradients[i + (level * GRID_FEATURES_PER_LEVEL + feature + 0u) * sample_count];
+            const __half grad1 = encoded_position_gradients[i + (level * GRID_FEATURES_PER_LEVEL + feature + 1u) * sample_count];
 
             for (std::uint32_t corner = 0u; corner < 8u; ++corner) {
                 const bool high_x         = (corner & 1u) != 0u;
                 const bool high_y         = (corner & 2u) != 0u;
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
-                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * grid_features_per_level + feature;
+                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * GRID_FEATURES_PER_LEVEL + feature;
                 const __half weight_half  = weight;
                 atomicAdd(reinterpret_cast<__half2*>(grid_gradients + index), __halves2half2(__hmul(weight_half, grad0), __hmul(weight_half, grad1)));
             }
@@ -598,7 +598,7 @@ namespace ngp::cuda {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            const float* coord = sample_coords + static_cast<std::uint64_t>(i) * sample_coord_floats;
+            const float* coord = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
             const float x      = coord[4] * 2.0f - 1.0f;
             const float y      = coord[5] * 2.0f - 1.0f;
             const float z      = coord[6] * 2.0f - 1.0f;
@@ -638,9 +638,9 @@ namespace ngp::cuda {
             const std::uint32_t i         = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n_threads = blockDim.x * gridDim.x;
             Pcg32 rng{seed};
-            rng.advance(rng_offset + static_cast<std::uint64_t>(i) * random_values_per_thread);
+            rng.advance(rng_offset + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
-            for (std::uint32_t j = 0u; j < random_values_per_thread; ++j) {
+            for (std::uint32_t j = 0u; j < RANDOM_VALUES_PER_THREAD; ++j) {
                 const std::uint32_t idx = i + n_threads * j;
                 if (idx >= param_count) return;
 
@@ -664,7 +664,7 @@ namespace ngp::cuda {
         struct CutlassLastLayerK final : CutlassFullLayerK {};
 
         template <typename T>
-        inline constexpr int cutlass_vector_elements = 128 / cutlass::sizeof_bits<T>::value;
+        inline constexpr int CUTLASS_VECTOR_ELEMENTS = 128 / cutlass::sizeof_bits<T>::value;
 
         std::string cutlass_error(const char* operation, const cutlass::Status status) {
             if (status == cutlass::Status::kSuccess) return {};
@@ -672,11 +672,11 @@ namespace ngp::cuda {
         }
 
         template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        using CutlassGemm = cutlass::gemm::device::Gemm<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, cutlass_vector_elements<cutlass::half_t>, cutlass::half_t, cutlass::half_t>,
+        using CutlassGemm = cutlass::gemm::device::Gemm<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, CUTLASS_VECTOR_ELEMENTS<cutlass::half_t>, cutlass::half_t, cutlass::half_t>,
             cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>;
 
         template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        using CutlassSplitKGemm = cutlass::gemm::device::GemmSplitKParallel<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, cutlass_vector_elements<cutlass::half_t>, cutlass::half_t, cutlass::half_t>>;
+        using CutlassSplitKGemm = cutlass::gemm::device::GemmSplitKParallel<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, CUTLASS_VECTOR_ELEMENTS<cutlass::half_t>, cutlass::half_t, cutlass::half_t>>;
 
         template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
         std::size_t cutlass_gemm_workspace_size(const int m, const int n, const int k, const int lda, const int ldb, const int ldd) {
@@ -737,31 +737,31 @@ namespace ngp::cuda {
         __device__ void mlp_input_layer_forward(__half* __restrict__ act_shmem, const __half* __restrict__ input_threadblock, const __half* __restrict__ weights_this_layer, __half* __restrict__ hidden_threadblock, const std::uint32_t batch_size) {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::col_major> act_frag;
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag;
-            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[mlp_forward_iters];
+            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[MLP_FORWARD_ITERS];
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % mlp_width;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / mlp_width;
+            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
-            __half* __restrict__ weights_shmem        = act_shmem + 16u * (mlp_input_width + mlp_input_skew);
-            constexpr std::uint32_t n_elems_per_load      = mlp_width_blocks * 32u * 8u;
+            __half* __restrict__ weights_shmem        = act_shmem + 16u * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
+            constexpr std::uint32_t n_elems_per_load  = MLP_WIDTH_BLOCKS * 32u * 8u;
             const std::uint32_t thread_elem_idx       = (li + wi * 32u) * 8u;
-            constexpr std::uint32_t n_weight_elements = mlp_width * mlp_input_width;
+            constexpr std::uint32_t n_weight_elements = MLP_WIDTH * MLP_INPUT_WIDTH;
 
             for (std::uint32_t idx = thread_elem_idx; idx < n_weight_elements; idx += n_elems_per_load) {
-                const std::uint32_t idx_skewed                       = idx + idx / mlp_input_width * mlp_input_skew;
+                const std::uint32_t idx_skewed                       = idx + idx / MLP_INPUT_WIDTH * MLP_INPUT_SKEW;
                 *reinterpret_cast<int4*>(&weights_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&weights_this_layer[idx]);
             }
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) {
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
-                for (std::uint32_t i = 0u; i < mlp_input_width / 16u; ++i) {
+                for (std::uint32_t i = 0u; i < MLP_INPUT_WIDTH / 16u; ++i) {
                     nvcuda::wmma::load_matrix_sync(act_frag, input_threadblock + 16u * i * batch_size + 16u * l, batch_size);
-                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (mlp_input_width + mlp_input_skew), mlp_input_width + mlp_input_skew);
+                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW), MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
                 }
                 relu_fragment(result_frag[l]);
@@ -769,33 +769,33 @@ namespace ngp::cuda {
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (mlp_width + mlp_skew), result_frag[l], mlp_width + mlp_skew, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             if (hidden_threadblock != nullptr)
-                for (std::uint32_t i = 0u; i < mlp_forward_iters; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * mlp_width]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (mlp_width + mlp_skew)]);
+                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
         }
 
         __device__ void mlp_hidden_layer_forward(__half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, __half* __restrict__ hidden_threadblock) {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> act_frag;
-            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag[mlp_width_blocks];
-            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[mlp_forward_iters];
+            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag[MLP_WIDTH_BLOCKS];
+            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[MLP_FORWARD_ITERS];
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % mlp_width;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / mlp_width;
+            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * mlp_width, mlp_width);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * MLP_WIDTH, MLP_WIDTH);
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) {
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
-                for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (mlp_width + mlp_skew), mlp_width + mlp_skew);
+                for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag[i], result_frag[l]);
                 }
                 relu_fragment(result_frag[l]);
@@ -803,35 +803,35 @@ namespace ngp::cuda {
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + l * 16u * (mlp_width + mlp_skew), result_frag[l], mlp_width + mlp_skew, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + l * 16u * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             if (hidden_threadblock != nullptr)
-                for (std::uint32_t i = 0u; i < mlp_forward_iters; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * mlp_width]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (mlp_width + mlp_skew)]);
+                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
         }
 
         __device__ void mlp_last_layer_forward(__half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, __half* __restrict__ out, const std::uint32_t output_stride, const nvcuda::wmma::layout_t output_layout) {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> act_frag;
-            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag[mlp_width_blocks];
+            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> weights_frag[MLP_WIDTH_BLOCKS];
             nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag;
 
             const std::uint32_t li = threadIdx.x;
             const std::uint32_t wi = threadIdx.y;
 
-            __half* __restrict__ weights_shmem = act_shmem + mlp_forward_iters * 16u * (mlp_width + mlp_skew);
-            const std::uint32_t weights_row    = (8u * li) % mlp_width;
-            const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / mlp_width;
+            __half* __restrict__ weights_shmem = act_shmem + MLP_FORWARD_ITERS * 16u * (MLP_WIDTH + MLP_SKEW);
+            const std::uint32_t weights_row    = (8u * li) % MLP_WIDTH;
+            const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / MLP_WIDTH;
 
-            *reinterpret_cast<int4*>(&weights_shmem[weights_row + weights_col * (mlp_width + mlp_skew)]) = *reinterpret_cast<const int4*>(&weights_this_layer[weights_row + weights_col * mlp_width]);
+            *reinterpret_cast<int4*>(&weights_shmem[weights_row + weights_col * (MLP_WIDTH + MLP_SKEW)]) = *reinterpret_cast<const int4*>(&weights_this_layer[weights_row + weights_col * MLP_WIDTH]);
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_shmem + 16u * i, mlp_width + mlp_skew);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_shmem + 16u * i, MLP_WIDTH + MLP_SKEW);
 
-            for (std::uint32_t idx = wi; idx < mlp_forward_iters; idx += mlp_width_blocks) {
+            for (std::uint32_t idx = wi; idx < MLP_FORWARD_ITERS; idx += MLP_WIDTH_BLOCKS) {
                 nvcuda::wmma::fill_fragment(result_frag, 0.0f);
-                for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * idx) * (mlp_width + mlp_skew), mlp_width + mlp_skew);
+                for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * idx) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag, act_frag, weights_frag[i], result_frag);
                 }
 
@@ -844,72 +844,72 @@ namespace ngp::cuda {
 
         __global__ void mlp_forward_64_relu_kernel(const std::uint32_t batch_size, const __half* __restrict__ input, const __half* __restrict__ weights, __half* __restrict__ hidden, __half* __restrict__ output, const bool output_row_major, const std::uint32_t hidden_layers) {
             extern __shared__ __half shmem[];
-            const std::uint32_t elem_idx = 16u * blockIdx.x * mlp_forward_iters;
+            const std::uint32_t elem_idx = 16u * blockIdx.x * MLP_FORWARD_ITERS;
 
-            mlp_input_layer_forward(shmem, input + elem_idx, weights, hidden == nullptr ? nullptr : hidden + elem_idx * mlp_width, batch_size);
-            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + mlp_first_layer_params, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(mlp_width) * batch_size + elem_idx * mlp_width);
+            mlp_input_layer_forward(shmem, input + elem_idx, weights, hidden == nullptr ? nullptr : hidden + elem_idx * MLP_WIDTH, batch_size);
+            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + MLP_FIRST_LAYER_PARAMS, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(MLP_WIDTH) * batch_size + elem_idx * MLP_WIDTH);
 
-            const __half* last_weights = weights + mlp_first_layer_params + (hidden_layers - 1u) * mlp_hidden_layer_params;
+            const __half* last_weights = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
             if (output_row_major)
-                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * mlp_output_width, mlp_output_width, nvcuda::wmma::mem_row_major);
+                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * MLP_OUTPUT_WIDTH, MLP_OUTPUT_WIDTH, nvcuda::wmma::mem_row_major);
             else
                 mlp_last_layer_forward(shmem, last_weights, output + elem_idx, batch_size, nvcuda::wmma::mem_col_major);
         }
 
         __device__ void mlp_hidden_layer_backward(__half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, const __half* __restrict__ forward_hidden, __half* __restrict__ backward_hidden) {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> act_frag;
-            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::row_major> weights_frag[mlp_width_blocks];
-            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[mlp_forward_iters];
+            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::row_major> weights_frag[MLP_WIDTH_BLOCKS];
+            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[MLP_FORWARD_ITERS];
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % mlp_width;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / mlp_width;
+            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * mlp_width + weights_col, mlp_width);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * MLP_WIDTH + weights_col, MLP_WIDTH);
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) {
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
-                for (std::uint32_t i = 0u; i < mlp_width_blocks; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (mlp_width + mlp_skew), mlp_width + mlp_skew);
+                for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag[i], result_frag[l]);
                 }
 
                 nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> forward_frag;
-                nvcuda::wmma::load_matrix_sync(forward_frag, forward_hidden + weights_col + l * 16u * mlp_width, mlp_width);
+                nvcuda::wmma::load_matrix_sync(forward_frag, forward_hidden + weights_col + l * 16u * MLP_WIDTH, MLP_WIDTH);
                 relu_backward_fragment(result_frag[l], forward_frag);
             }
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (mlp_width + mlp_skew), result_frag[l], mlp_width + mlp_skew, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < mlp_forward_iters; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + i * 16u) * mlp_width]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (mlp_width + mlp_skew)]);
+            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + i * 16u) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
         }
 
         template <typename OutputLayout>
         __global__ void mlp_backward_hidden_64_relu_kernel(const std::uint32_t batch_size, const __half* __restrict__ dloss_doutput, const __half* __restrict__ weights, const __half* __restrict__ forward_hidden, __half* __restrict__ backward_hidden, const std::uint32_t output_stride, const std::uint32_t hidden_layers) {
             const std::uint32_t wi            = threadIdx.y;
-            const std::uint32_t elem_idx_base = 16u * blockIdx.x * mlp_forward_iters;
+            const std::uint32_t elem_idx_base = 16u * blockIdx.x * MLP_FORWARD_ITERS;
 
             extern __shared__ __half shmem[];
             __half* act_shmem = shmem;
 
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, OutputLayout> act_frag;
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::row_major> weights_frag;
-            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[mlp_forward_iters];
+            nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[MLP_FORWARD_ITERS];
 
             const std::uint32_t weights_col = 16u * wi;
-            const __half* last_weights      = weights + mlp_first_layer_params + (hidden_layers - 1u) * mlp_hidden_layer_params;
-            const __half* forward_last      = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * mlp_width * batch_size;
-            nvcuda::wmma::load_matrix_sync(weights_frag, last_weights + weights_col, mlp_width);
+            const __half* last_weights      = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
+            const __half* forward_last      = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * MLP_WIDTH * batch_size;
+            nvcuda::wmma::load_matrix_sync(weights_frag, last_weights + weights_col, MLP_WIDTH);
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) {
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
 
                 if constexpr (std::is_same_v<OutputLayout, nvcuda::wmma::row_major>)
@@ -920,30 +920,30 @@ namespace ngp::cuda {
                 nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
 
                 nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> forward_frag;
-                nvcuda::wmma::load_matrix_sync(forward_frag, forward_last + weights_col + (elem_idx_base + l * 16u) * mlp_width, mlp_width);
+                nvcuda::wmma::load_matrix_sync(forward_frag, forward_last + weights_col + (elem_idx_base + l * 16u) * MLP_WIDTH, MLP_WIDTH);
                 relu_backward_fragment(result_frag[l], forward_frag);
             }
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < mlp_forward_iters; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (mlp_width + mlp_skew), result_frag[l], mlp_width + mlp_skew, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             const std::uint32_t li          = threadIdx.x;
-            const std::uint32_t lane_offset = (8u * li) % mlp_width;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / mlp_width;
+            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
 
-            for (std::uint32_t i = 0u; i < mlp_forward_iters; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + elem_idx_base + i * 16u) * mlp_width]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (mlp_width + mlp_skew)]);
+            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + elem_idx_base + i * 16u) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
 
-            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + mlp_first_layer_params, forward_hidden + elem_idx_base * mlp_width, backward_hidden + static_cast<std::uint64_t>(mlp_width) * batch_size + elem_idx_base * mlp_width);
+            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + MLP_FIRST_LAYER_PARAMS, forward_hidden + elem_idx_base * MLP_WIDTH, backward_hidden + static_cast<std::uint64_t>(MLP_WIDTH) * batch_size + elem_idx_base * MLP_WIDTH);
         }
 
         // Network bridge kernels.
         __global__ void extract_density_kernel(const std::uint32_t batch_size, const __half* __restrict__ density_output, __half* __restrict__ network_output) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            network_output[static_cast<std::uint64_t>(i) * mlp_output_width + 3u] = density_output[i];
+            network_output[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u] = density_output[i];
         }
 
         __global__ void extract_rgb_gradients_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ rgb_output_gradients) {
@@ -951,16 +951,16 @@ namespace ngp::cuda {
             if (i >= batch_size) return;
 
             const __half zero = 0.0f;
-            for (std::uint32_t j = 0u; j < mlp_output_width; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + j] = zero;
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 0u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 1u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 2u];
+            for (std::uint32_t j = 0u; j < MLP_OUTPUT_WIDTH; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + j] = zero;
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u];
         }
 
         __global__ void add_density_gradient_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ density_output_gradients) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 3u];
+            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u];
         }
 
         // Optimizer kernels.
@@ -1031,8 +1031,8 @@ namespace ngp::cuda {
         if (rays_per_batch == 0u) return "sampler rays per batch is zero.";
         if (max_samples == 0u) return "sampler max samples is zero.";
 
-        if (const cudaError_t status = cudaMalloc(&out_sample_coords, static_cast<std::size_t>(max_samples) * sample_coord_floats * sizeof(float)); status != cudaSuccess) return cuda_error("cudaMalloc sampler sample coords", status);
-        if (const cudaError_t status = cudaMalloc(&out_rays, static_cast<std::size_t>(rays_per_batch) * ray_floats * sizeof(float)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_sample_coords, static_cast<std::size_t>(max_samples) * SAMPLE_COORD_FLOATS * sizeof(float)); status != cudaSuccess) return cuda_error("cudaMalloc sampler sample coords", status);
+        if (const cudaError_t status = cudaMalloc(&out_rays, static_cast<std::size_t>(rays_per_batch) * RAY_FLOATS * sizeof(float)); status != cudaSuccess) {
             free_device_data(out_sample_coords, out_rays, out_ray_indices, out_numsteps, out_ray_counter, out_sample_counter, out_occupancy);
             return cuda_error("cudaMalloc sampler rays", status);
         }
@@ -1052,11 +1052,11 @@ namespace ngp::cuda {
             free_device_data(out_sample_coords, out_rays, out_ray_indices, out_numsteps, out_ray_counter, out_sample_counter, out_occupancy);
             return cuda_error("cudaMalloc sampler sample counter", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_occupancy, nerf_grid_cells / 8u); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_occupancy, NERF_GRID_CELLS / 8u); status != cudaSuccess) {
             free_device_data(out_sample_coords, out_rays, out_ray_indices, out_numsteps, out_ray_counter, out_sample_counter, out_occupancy);
             return cuda_error("cudaMalloc sampler occupancy", status);
         }
-        if (const cudaError_t status = cudaMemset(out_occupancy, 0xFF, nerf_grid_cells / 8u); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMemset(out_occupancy, 0xFF, NERF_GRID_CELLS / 8u); status != cudaSuccess) {
             free_device_data(out_sample_coords, out_rays, out_ray_indices, out_numsteps, out_ray_counter, out_sample_counter, out_occupancy);
             return cuda_error("cudaMemset sampler occupancy", status);
         }
@@ -1082,47 +1082,47 @@ namespace ngp::cuda {
 
         if (batch_size == 0u) return "network batch size is zero.";
         if (max_samples == 0u) return "network max samples is zero.";
-        if (batch_size % (16u * mlp_forward_iters) != 0u) return "network batch size does not match the fully fused MLP tile size.";
-        if (max_samples % (16u * mlp_forward_iters) != 0u) return "network max samples does not match the fully fused MLP tile size.";
+        if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
+        if (max_samples % (16u * MLP_FORWARD_ITERS) != 0u) return "network max samples does not match the fully fused MLP tile size.";
 
-        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(mlp_input_width) * batch_size * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMalloc density network input", status);
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(mlp_input_width) * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMalloc density network input", status);
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc rgb network input", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(mlp_output_width) * max_samples * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * max_samples * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc network output", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(mlp_output_width) * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc network output gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(mlp_output_width) * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc rgb output gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(mlp_input_width) * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc rgb input gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(mlp_input_width) * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc density input gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_forward_hidden, static_cast<std::size_t>(density_hidden_layers) * mlp_width * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_density_forward_hidden, static_cast<std::size_t>(DENSITY_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc density forward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_forward_hidden, static_cast<std::size_t>(rgb_hidden_layers) * mlp_width * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_rgb_forward_hidden, static_cast<std::size_t>(RGB_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc rgb forward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_backward_hidden, static_cast<std::size_t>(density_hidden_layers) * mlp_width * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_density_backward_hidden, static_cast<std::size_t>(DENSITY_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc density backward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_backward_hidden, static_cast<std::size_t>(rgb_hidden_layers) * mlp_width * batch_size * sizeof(__half)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_rgb_backward_hidden, static_cast<std::size_t>(RGB_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
             free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
             return cuda_error("cudaMalloc rgb backward hidden", status);
         }
@@ -1148,7 +1148,7 @@ namespace ngp::cuda {
         if (rays_per_batch == 0u) return "training rays per batch is zero.";
 
         if (const cudaError_t status = cudaMalloc(&out_compacted_sample_counter, sizeof(std::uint32_t)); status != cudaSuccess) return cuda_error("cudaMalloc compacted sample counter", status);
-        if (const cudaError_t status = cudaMalloc(&out_compacted_sample_coords, static_cast<std::size_t>(batch_size) * sample_coord_floats * sizeof(float)); status != cudaSuccess) {
+        if (const cudaError_t status = cudaMalloc(&out_compacted_sample_coords, static_cast<std::size_t>(batch_size) * SAMPLE_COORD_FLOATS * sizeof(float)); status != cudaSuccess) {
             free_device_data(out_compacted_sample_counter, out_compacted_sample_coords, out_loss_values);
             return cuda_error("cudaMalloc compacted sample coords", status);
         }
@@ -1186,11 +1186,11 @@ namespace ngp::cuda {
         if (params_full_precision == nullptr) return "mlp full precision params are null.";
         if (params == nullptr) return "mlp params are null.";
         if (param_gradients == nullptr) return "mlp param gradients are null.";
-        if (density_input_width != mlp_input_width || rgb_input_width != mlp_input_width) return "mlp input width does not match the compiled fully fused MLP.";
-        if (density_output_width != mlp_output_width || rgb_output_width != mlp_output_width) return "mlp output width does not match the compiled fully fused MLP.";
-        if (density_layers != density_hidden_layers || rgb_layers != rgb_hidden_layers) return "mlp hidden layer count does not match the compiled fully fused MLP.";
+        if (density_input_width != MLP_INPUT_WIDTH || rgb_input_width != MLP_INPUT_WIDTH) return "mlp input width does not match the compiled fully fused MLP.";
+        if (density_output_width != MLP_OUTPUT_WIDTH || rgb_output_width != MLP_OUTPUT_WIDTH) return "mlp output width does not match the compiled fully fused MLP.";
+        if (density_layers != DENSITY_HIDDEN_LAYERS || rgb_layers != RGB_HIDDEN_LAYERS) return "mlp hidden layer count does not match the compiled fully fused MLP.";
 
-        const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + density_network_params, rgb_param_offset + rgb_network_params);
+        const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + DENSITY_NETWORK_PARAMS, rgb_param_offset + RGB_NETWORK_PARAMS);
         std::vector host_params(mlp_param_count, 0.0f);
         Pcg32 rng{seed};
 
@@ -1199,17 +1199,17 @@ namespace ngp::cuda {
             for (std::uint32_t i = 0u; i < rows * cols; ++i) host_params[offset + i] = rng.next_float() * 2.0f * scale - scale;
         };
 
-        initialize_matrix(density_param_offset, mlp_width, mlp_input_width);
-        initialize_matrix(density_param_offset + mlp_first_layer_params, mlp_output_width, mlp_width);
-        initialize_matrix(rgb_param_offset, mlp_width, mlp_input_width);
-        initialize_matrix(rgb_param_offset + mlp_first_layer_params, mlp_width, mlp_width);
-        initialize_matrix(rgb_param_offset + mlp_first_layer_params + mlp_hidden_layer_params, mlp_output_width, mlp_width);
+        initialize_matrix(density_param_offset, MLP_WIDTH, MLP_INPUT_WIDTH);
+        initialize_matrix(density_param_offset + MLP_FIRST_LAYER_PARAMS, MLP_OUTPUT_WIDTH, MLP_WIDTH);
+        initialize_matrix(rgb_param_offset, MLP_WIDTH, MLP_INPUT_WIDTH);
+        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS, MLP_WIDTH, MLP_WIDTH);
+        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS + MLP_HIDDEN_LAYER_PARAMS, MLP_OUTPUT_WIDTH, MLP_WIDTH);
 
         if (const cudaError_t status = cudaMemcpy(params_full_precision, host_params.data(), host_params.size() * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) return cuda_error("cudaMemcpy mlp full precision params", status);
         if (const cudaError_t status = cudaMemset(param_gradients, 0, host_params.size() * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset mlp gradients", status);
 
-        const std::uint32_t blocks = (mlp_param_count + threads_per_block - 1u) / threads_per_block;
-        cast_params_to_half_kernel<<<blocks, threads_per_block>>>(mlp_param_count, params_full_precision, reinterpret_cast<__half*>(params));
+        const std::uint32_t blocks = (mlp_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        cast_params_to_half_kernel<<<blocks, THREADS_PER_BLOCK>>>(mlp_param_count, params_full_precision, reinterpret_cast<__half*>(params));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("cast_params_to_half_kernel", status);
         return {};
@@ -1221,9 +1221,9 @@ namespace ngp::cuda {
         if (params == nullptr) return "grid params are null.";
         if (param_gradients == nullptr) return "grid param gradients are null.";
 
-        const std::uint32_t n_threads = (param_count + random_values_per_thread - 1u) / random_values_per_thread;
-        const std::uint32_t blocks    = (n_threads + threads_per_block - 1u) / threads_per_block;
-        initialize_grid_params_kernel<<<blocks, threads_per_block>>>(param_count, seed, rng_offset, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<__half*>(param_gradients));
+        const std::uint32_t n_threads = (param_count + RANDOM_VALUES_PER_THREAD - 1u) / RANDOM_VALUES_PER_THREAD;
+        const std::uint32_t blocks    = (n_threads + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        initialize_grid_params_kernel<<<blocks, THREADS_PER_BLOCK>>>(param_count, seed, rng_offset, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<__half*>(param_gradients));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("initialize_grid_params_kernel", status);
         return {};
@@ -1234,18 +1234,18 @@ namespace ngp::cuda {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != grid_n_levels) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != grid_features_per_level) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_levels != GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (features_per_level != GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
         if (base_resolution == 0u) return "grid base resolution is zero.";
         if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (grid_params == nullptr) return "grid params are null.";
         if (encoded_positions == nullptr) return "grid encoded positions are null.";
 
         GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= grid_n_levels; ++i) offset_table.data[i] = grid_offsets[i];
+        for (std::uint32_t i = 0u; i <= GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
 
-        const dim3 blocks{(sample_count + grid_forward_threads - 1u) / grid_forward_threads, grid_n_levels, 1u};
-        encode_grid_forward_kernel<<<blocks, grid_forward_threads>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(grid_params), reinterpret_cast<__half*>(encoded_positions));
+        const dim3 blocks{(sample_count + GRID_FORWARD_THREADS - 1u) / GRID_FORWARD_THREADS, GRID_N_LEVELS, 1u};
+        encode_grid_forward_kernel<<<blocks, GRID_FORWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(grid_params), reinterpret_cast<__half*>(encoded_positions));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_forward_kernel", status);
         return {};
@@ -1255,21 +1255,21 @@ namespace ngp::cuda {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != grid_n_levels) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != grid_features_per_level) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_levels != GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (features_per_level != GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
         if (base_resolution == 0u) return "grid base resolution is zero.";
         if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (encoded_position_gradients == nullptr) return "grid encoded position gradients are null.";
         if (grid_param_gradients == nullptr) return "grid param gradients are null.";
 
         GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= grid_n_levels; ++i) offset_table.data[i] = grid_offsets[i];
+        for (std::uint32_t i = 0u; i <= GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
 
-        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(offset_table.data[grid_n_levels]) * grid_features_per_level * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
+        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(offset_table.data[GRID_N_LEVELS]) * GRID_FEATURES_PER_LEVEL * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
 
-        const std::uint32_t threads = (sample_count * grid_features_per_level / grid_backward_features + grid_backward_threads - 1u) / grid_backward_threads;
-        const dim3 blocks{threads, grid_n_levels, 1u};
-        encode_grid_backward_kernel<<<blocks, grid_backward_threads>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(encoded_position_gradients), reinterpret_cast<__half*>(grid_param_gradients));
+        const std::uint32_t threads = (sample_count * GRID_FEATURES_PER_LEVEL / GRID_BACKWARD_FEATURES + GRID_BACKWARD_THREADS - 1u) / GRID_BACKWARD_THREADS;
+        const dim3 blocks{threads, GRID_N_LEVELS, 1u};
+        encode_grid_backward_kernel<<<blocks, GRID_BACKWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(encoded_position_gradients), reinterpret_cast<__half*>(grid_param_gradients));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_backward_kernel", status);
         return {};
@@ -1280,36 +1280,36 @@ namespace ngp::cuda {
         std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
         if (sample_count == 0u) return {};
         if (batch_size == 0u) return "network inference batch size is zero.";
-        if (sample_count % (16u * mlp_forward_iters) != 0u) return "network inference sample count does not match the fully fused MLP tile size.";
-        if (batch_size % (16u * mlp_forward_iters) != 0u) return "network inference batch size does not match the fully fused MLP tile size.";
+        if (sample_count % (16u * MLP_FORWARD_ITERS) != 0u) return "network inference sample count does not match the fully fused MLP tile size.";
+        if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network inference batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network inference sample coords are null.";
         if (params == nullptr) return "network inference params are null.";
         if (density_input == nullptr) return "network inference density input is null.";
         if (rgb_input == nullptr) return "network inference rgb input is null.";
         if (network_output == nullptr) return "network inference output is null.";
 
-        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew);
-        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
 
         for (std::uint32_t offset = 0u; offset < sample_count; offset += batch_size) {
             const std::uint32_t chunk = ::cuda::std::min(batch_size, sample_count - offset);
-            if (chunk % (16u * mlp_forward_iters) != 0u) return "network inference chunk size does not match the fully fused MLP tile size.";
+            if (chunk % (16u * MLP_FORWARD_ITERS) != 0u) return "network inference chunk size does not match the fully fused MLP tile size.";
 
-            if (const std::string error = encode_grid_forward(chunk, sample_coords + static_cast<std::uint64_t>(offset) * sample_coord_floats, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
+            if (const std::string error = encode_grid_forward(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
-            const std::uint32_t linear_blocks = (chunk + threads_per_block - 1u) / threads_per_block;
-            encode_spherical_harmonics_kernel<<<linear_blocks, threads_per_block>>>(chunk, sample_coords + static_cast<std::uint64_t>(offset) * sample_coord_floats, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(mlp_output_width) * chunk);
+            const std::uint32_t linear_blocks = (chunk + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+            encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * chunk);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_spherical_harmonics_kernel", status);
 
-            const dim3 blocks{chunk / (16u * mlp_forward_iters), 1u, 1u};
-            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), nullptr, reinterpret_cast<__half*>(rgb_input), false, density_hidden_layers);
+            const dim3 blocks{chunk / (16u * MLP_FORWARD_ITERS), 1u, 1u};
+            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), nullptr, reinterpret_cast<__half*>(rgb_input), false, DENSITY_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp inference", status);
 
-            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * mlp_output_width, true, rgb_hidden_layers);
+            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH, true, RGB_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp inference", status);
 
-            extract_density_kernel<<<linear_blocks, threads_per_block>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * mlp_output_width);
+            extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_density_kernel inference", status);
         }
 
@@ -1319,7 +1319,7 @@ namespace ngp::cuda {
     std::string network_forward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input,
         std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
         if (batch_size == 0u) return {};
-        if (batch_size % (16u * mlp_forward_iters) != 0u) return "network batch size does not match the fully fused MLP tile size.";
+        if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network sample coords are null.";
         if (params == nullptr) return "network params are null.";
         if (density_input == nullptr) return "density network input is null.";
@@ -1330,22 +1330,22 @@ namespace ngp::cuda {
 
         if (const std::string error = encode_grid_forward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
-        const std::uint32_t linear_blocks = (batch_size + threads_per_block - 1u) / threads_per_block;
-        encode_spherical_harmonics_kernel<<<linear_blocks, threads_per_block>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(mlp_output_width) * batch_size);
+        const std::uint32_t linear_blocks = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * batch_size);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_spherical_harmonics_kernel", status);
 
-        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew);
-        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
-        const dim3 blocks{batch_size / (16u * mlp_forward_iters), 1u, 1u};
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
+        const dim3 blocks{batch_size / (16u * MLP_FORWARD_ITERS), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
-        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<__half*>(density_forward_hidden), reinterpret_cast<__half*>(rgb_input), false, density_hidden_layers);
+        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<__half*>(density_forward_hidden), reinterpret_cast<__half*>(rgb_input), false, DENSITY_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp forward", status);
 
-        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<__half*>(rgb_forward_hidden), reinterpret_cast<__half*>(network_output), true, rgb_hidden_layers);
+        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<__half*>(rgb_forward_hidden), reinterpret_cast<__half*>(network_output), true, RGB_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp forward", status);
 
-        extract_density_kernel<<<linear_blocks, threads_per_block>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output));
+        extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_density_kernel", status);
         return {};
     }
@@ -1354,7 +1354,7 @@ namespace ngp::cuda {
         const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients, std::uint16_t* const density_backward_hidden,
         std::uint16_t* const rgb_backward_hidden, std::uint8_t* const cutlass_workspace) {
         if (batch_size == 0u) return {};
-        if (batch_size % (16u * mlp_forward_iters) != 0u) return "network batch size does not match the fully fused MLP tile size.";
+        if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network sample coords are null.";
         if (params == nullptr) return "network params are null.";
         if (gradients == nullptr) return "network gradients are null.";
@@ -1371,42 +1371,42 @@ namespace ngp::cuda {
         if (rgb_backward_hidden == nullptr) return "rgb backward hidden is null.";
         if (cutlass_workspace == nullptr && cutlass_workspace_size(batch_size) > 0u) return "cutlass workspace is null.";
 
-        const std::uint32_t linear_blocks       = (batch_size + threads_per_block - 1u) / threads_per_block;
-        const std::uint64_t hidden_layer_stride = static_cast<std::uint64_t>(mlp_width) * batch_size;
+        const std::uint32_t linear_blocks       = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        const std::uint64_t hidden_layer_stride = static_cast<std::uint64_t>(MLP_WIDTH) * batch_size;
         const int batch                         = static_cast<int>(batch_size);
         const int split_k                       = static_cast<int>(batch_size / ::cuda::std::min(1u << 12u, batch_size));
         void* const workspace                   = cutlass_workspace;
 
-        extract_rgb_gradients_kernel<<<linear_blocks, threads_per_block>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_output_gradients));
+        extract_rgb_gradients_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_rgb_gradients_kernel", status);
 
-        constexpr int backward_shmem = sizeof(__half) * (16u * mlp_forward_iters) * (mlp_width + mlp_skew);
-        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
-        const dim3 blocks{batch_size / (16u * mlp_forward_iters), 1u, 1u};
+        constexpr int backward_shmem = sizeof(__half) * (16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
+        const dim3 blocks{batch_size / (16u * MLP_FORWARD_ITERS), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute rgb mlp backward", status);
-        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), mlp_output_width, rgb_hidden_layers);
+        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), MLP_OUTPUT_WIDTH, RGB_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp backward hidden", status);
 
         if (std::string error = run_cutlass_split_k<CutlassLastLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(
-                mlp_output_width, mlp_width, batch, reinterpret_cast<const __half*>(rgb_output_gradients), mlp_output_width, reinterpret_cast<const __half*>(rgb_forward_hidden) + (rgb_hidden_layers - 1u) * hidden_layer_stride, mlp_width, reinterpret_cast<__half*>(gradients + rgb_param_offset + mlp_first_layer_params + (rgb_hidden_layers - 1u) * mlp_hidden_layer_params), mlp_width, workspace, split_k);
+                MLP_OUTPUT_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_output_gradients), MLP_OUTPUT_WIDTH, reinterpret_cast<const __half*>(rgb_forward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), MLP_WIDTH, workspace, split_k);
             !error.empty())
             return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(mlp_width, mlp_width, batch, reinterpret_cast<const __half*>(rgb_backward_hidden), mlp_width, reinterpret_cast<const __half*>(rgb_forward_hidden), mlp_width, reinterpret_cast<__half*>(gradients + rgb_param_offset + mlp_first_layer_params), mlp_width, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(mlp_width, mlp_input_width, batch, reinterpret_cast<const __half*>(rgb_backward_hidden) + (rgb_hidden_layers - 1u) * hidden_layer_stride, mlp_width, reinterpret_cast<const __half*>(rgb_input), batch, reinterpret_cast<__half*>(gradients + rgb_param_offset), mlp_input_width, workspace, split_k); !error.empty())
+        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_backward_hidden), MLP_WIDTH, reinterpret_cast<const __half*>(rgb_forward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), MLP_WIDTH, workspace, split_k); !error.empty()) return error;
+        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_INPUT_WIDTH, batch, reinterpret_cast<const __half*>(rgb_backward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<const __half*>(rgb_input), batch, reinterpret_cast<__half*>(gradients + rgb_param_offset), MLP_INPUT_WIDTH, workspace, split_k); !error.empty())
             return error;
-        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(mlp_input_width, batch, mlp_width, reinterpret_cast<const __half*>(params + rgb_param_offset), mlp_input_width, reinterpret_cast<const __half*>(rgb_backward_hidden) + (rgb_hidden_layers - 1u) * hidden_layer_stride, mlp_width, reinterpret_cast<__half*>(rgb_input_gradients), batch, workspace); !error.empty()) return error;
+        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_INPUT_WIDTH, batch, MLP_WIDTH, reinterpret_cast<const __half*>(params + rgb_param_offset), MLP_INPUT_WIDTH, reinterpret_cast<const __half*>(rgb_backward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<__half*>(rgb_input_gradients), batch, workspace); !error.empty()) return error;
 
-        add_density_gradient_kernel<<<linear_blocks, threads_per_block>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_input_gradients));
+        add_density_gradient_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_input_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("add_density_gradient_kernel", status);
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute density mlp backward", status);
-        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input_gradients), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<const __half*>(density_forward_hidden), reinterpret_cast<__half*>(density_backward_hidden), batch_size, density_hidden_layers);
+        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input_gradients), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<const __half*>(density_forward_hidden), reinterpret_cast<__half*>(density_backward_hidden), batch_size, DENSITY_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp backward hidden", status);
 
-        if (std::string error = run_cutlass_split_k<CutlassLastLayerK, cutlass::layout::RowMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(mlp_output_width, mlp_width, batch, reinterpret_cast<const __half*>(rgb_input_gradients), batch, reinterpret_cast<const __half*>(density_forward_hidden), mlp_width, reinterpret_cast<__half*>(gradients + density_param_offset + mlp_first_layer_params), mlp_width, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(mlp_width, mlp_input_width, batch, reinterpret_cast<const __half*>(density_backward_hidden), mlp_width, reinterpret_cast<const __half*>(density_input), batch, reinterpret_cast<__half*>(gradients + density_param_offset), mlp_input_width, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(mlp_input_width, batch, mlp_width, reinterpret_cast<const __half*>(params + density_param_offset), mlp_input_width, reinterpret_cast<const __half*>(density_backward_hidden), mlp_width, reinterpret_cast<__half*>(density_input_gradients), batch, workspace); !error.empty()) return error;
+        if (std::string error = run_cutlass_split_k<CutlassLastLayerK, cutlass::layout::RowMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(MLP_OUTPUT_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_input_gradients), batch, reinterpret_cast<const __half*>(density_forward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), MLP_WIDTH, workspace, split_k); !error.empty()) return error;
+        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_INPUT_WIDTH, batch, reinterpret_cast<const __half*>(density_backward_hidden), MLP_WIDTH, reinterpret_cast<const __half*>(density_input), batch, reinterpret_cast<__half*>(gradients + density_param_offset), MLP_INPUT_WIDTH, workspace, split_k); !error.empty()) return error;
+        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_INPUT_WIDTH, batch, MLP_WIDTH, reinterpret_cast<const __half*>(params + density_param_offset), MLP_INPUT_WIDTH, reinterpret_cast<const __half*>(density_backward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(density_input_gradients), batch, workspace); !error.empty()) return error;
 
         return encode_grid_backward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, density_input_gradients, gradients + grid_param_offset);
     }
@@ -1465,8 +1465,8 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(ray_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) return cuda_error("cudaMemset sampler ray counter", status);
         if (const cudaError_t status = cudaMemset(sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) return cuda_error("cudaMemset sampler sample counter", status);
 
-        const std::uint32_t blocks = (rays_per_batch + threads_per_block - 1u) / threads_per_block;
-        generate_training_samples<<<blocks, threads_per_block>>>(rays_per_batch, max_samples, seed, current_step, frame_count, width, height, focal_length, snap_to_pixel_centers, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
+        const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        generate_training_samples<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, max_samples, seed, current_step, frame_count, width, height, focal_length, snap_to_pixel_centers, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("generate_training_samples", status);
         return {};
@@ -1494,8 +1494,8 @@ namespace ngp::cuda {
         if (loss_values != nullptr)
             if (const cudaError_t status = cudaMemset(loss_values, 0, static_cast<std::size_t>(rays_per_batch) * sizeof(float)); status != cudaSuccess) return cuda_error("cudaMemset loss values", status);
 
-        const std::uint32_t blocks = (rays_per_batch + threads_per_block - 1u) / threads_per_block;
-        compute_loss_and_compact_kernel<<<blocks, threads_per_block>>>(rays_per_batch, batch_size, seed, current_step, ray_counter, pixels, frame_count, width, height, snap_to_pixel_centers, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
+        const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        compute_loss_and_compact_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, batch_size, seed, current_step, ray_counter, pixels, frame_count, width, height, snap_to_pixel_centers, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("compute_loss_and_compact_kernel", status);
         return {};
@@ -1507,12 +1507,12 @@ namespace ngp::cuda {
         if (compacted_sample_coords == nullptr) return "rollover compacted sample coords are null.";
         if (network_output_gradients == nullptr) return "rollover network output gradients are null.";
 
-        const std::uint32_t gradient_elements = batch_size * mlp_output_width;
-        fill_rollover_and_rescale_half_kernel<<<(gradient_elements + threads_per_block - 1u) / threads_per_block, threads_per_block>>>(batch_size, mlp_output_width, compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
+        const std::uint32_t gradient_elements = batch_size * MLP_OUTPUT_WIDTH;
+        fill_rollover_and_rescale_half_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(batch_size, MLP_OUTPUT_WIDTH, compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("fill_rollover_and_rescale_half_kernel", status);
 
-        const std::uint32_t coord_elements = batch_size * sample_coord_floats;
-        fill_rollover_kernel<float><<<(coord_elements + threads_per_block - 1u) / threads_per_block, threads_per_block>>>(batch_size, sample_coord_floats, compacted_sample_counter, compacted_sample_coords);
+        const std::uint32_t coord_elements = batch_size * SAMPLE_COORD_FLOATS;
+        fill_rollover_kernel<float><<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(batch_size, SAMPLE_COORD_FLOATS, compacted_sample_counter, compacted_sample_coords);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("fill_rollover_kernel compacted coords", status);
         return {};
     }
@@ -1547,8 +1547,8 @@ namespace ngp::cuda {
         if (second_moments == nullptr) return "optimizer second moments are null.";
         if (param_steps == nullptr) return "optimizer param steps are null.";
 
-        const std::uint32_t blocks = (param_count + threads_per_block - 1u) / threads_per_block;
-        adam_step<<<blocks, threads_per_block>>>(param_count, mlp_param_count, loss_scale, learning_rate, beta1, beta2, epsilon, l2_reg, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<const __half*>(gradients), first_moments, second_moments, param_steps);
+        const std::uint32_t blocks = (param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        adam_step<<<blocks, THREADS_PER_BLOCK>>>(param_count, mlp_param_count, loss_scale, learning_rate, beta1, beta2, epsilon, l2_reg, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<const __half*>(gradients), first_moments, second_moments, param_steps);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("adam_step", status);
         return {};

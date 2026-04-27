@@ -7,33 +7,33 @@
 
 namespace ngp::cuda::config {
     // Grid encoding.
-    inline constexpr std::uint32_t grid_n_levels           = 8u;
-    inline constexpr std::uint32_t grid_features_per_level = 4u;
-    inline constexpr std::uint32_t grid_output_width       = grid_n_levels * grid_features_per_level;
-    inline constexpr std::uint32_t grid_base_resolution    = 16u;
-    inline constexpr std::uint32_t grid_log2_hashmap_size  = 19u;
-    inline constexpr std::uint32_t grid_offset_count       = grid_n_levels + 1u;
-    inline constexpr float grid_per_level_scale            = 2.0f;
+    inline constexpr std::uint32_t GRID_N_LEVELS           = 8u;
+    inline constexpr std::uint32_t GRID_FEATURES_PER_LEVEL = 4u;
+    inline constexpr std::uint32_t GRID_OUTPUT_WIDTH       = GRID_N_LEVELS * GRID_FEATURES_PER_LEVEL;
+    inline constexpr std::uint32_t GRID_BASE_RESOLUTION    = 16u;
+    inline constexpr std::uint32_t GRID_LOG2_HASHMAP_SIZE  = 19u;
+    inline constexpr std::uint32_t GRID_OFFSET_COUNT       = GRID_N_LEVELS + 1u;
+    inline constexpr float GRID_PER_LEVEL_SCALE            = 2.0f;
 
     // Fully fused MLP shape.
-    inline constexpr std::uint32_t mlp_width              = 64u;
-    inline constexpr std::uint32_t density_hidden_layers  = 1u;
-    inline constexpr std::uint32_t rgb_hidden_layers      = 2u;
-    inline constexpr std::uint32_t density_output_width   = 16u;
-    inline constexpr std::uint32_t direction_output_width = 16u;
-    inline constexpr std::uint32_t rgb_input_width        = density_output_width + direction_output_width;
-    inline constexpr std::uint32_t network_output_width   = 16u;
-    inline constexpr std::uint32_t mlp_input_width        = grid_output_width;
-    inline constexpr std::uint32_t mlp_output_width       = network_output_width;
+    inline constexpr std::uint32_t MLP_WIDTH              = 64u;
+    inline constexpr std::uint32_t DENSITY_HIDDEN_LAYERS  = 1u;
+    inline constexpr std::uint32_t RGB_HIDDEN_LAYERS      = 2u;
+    inline constexpr std::uint32_t DENSITY_OUTPUT_WIDTH   = 16u;
+    inline constexpr std::uint32_t DIRECTION_OUTPUT_WIDTH = 16u;
+    inline constexpr std::uint32_t RGB_INPUT_WIDTH        = DENSITY_OUTPUT_WIDTH + DIRECTION_OUTPUT_WIDTH;
+    inline constexpr std::uint32_t NETWORK_OUTPUT_WIDTH   = 16u;
+    inline constexpr std::uint32_t MLP_INPUT_WIDTH        = GRID_OUTPUT_WIDTH;
+    inline constexpr std::uint32_t MLP_OUTPUT_WIDTH       = NETWORK_OUTPUT_WIDTH;
 
     // Training batch shape.
-    inline constexpr std::uint32_t network_batch_size        = 1u << 18u;
-    inline constexpr std::uint32_t network_batch_granularity = 16u * 8u;
+    inline constexpr std::uint32_t NETWORK_BATCH_SIZE        = 1u << 18u;
+    inline constexpr std::uint32_t NETWORK_BATCH_GRANULARITY = 16u * 8u;
 
-    static_assert(grid_output_width % grid_features_per_level == 0u);
-    static_assert(grid_output_width == mlp_input_width);
-    static_assert(rgb_input_width == mlp_input_width);
-    static_assert(network_output_width == mlp_output_width);
+    static_assert(GRID_OUTPUT_WIDTH % GRID_FEATURES_PER_LEVEL == 0u);
+    static_assert(GRID_OUTPUT_WIDTH == MLP_INPUT_WIDTH);
+    static_assert(RGB_INPUT_WIDTH == MLP_INPUT_WIDTH);
+    static_assert(NETWORK_OUTPUT_WIDTH == MLP_OUTPUT_WIDTH);
 
     constexpr std::uint32_t round_up(const std::uint32_t value, const std::uint32_t granularity) {
         return ((value + granularity - 1u) / granularity) * granularity;
