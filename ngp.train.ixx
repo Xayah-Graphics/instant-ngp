@@ -81,9 +81,9 @@ namespace ngp::train {
                 this->host.focal_length = static_cast<float>(first_frame.focal_length);
 
                 this->host.density_param_offset = 0u;
-                this->host.density_param_count  = config::mlp_param_count(config::grid_output_width, config::density_output_width, config::density_hidden_layers);
+                this->host.density_param_count  = config::mlp_width * config::grid_output_width + (config::density_hidden_layers - 1u) * config::mlp_width * config::mlp_width + config::density_output_width * config::mlp_width;
                 this->host.rgb_param_offset     = this->host.density_param_offset + this->host.density_param_count;
-                this->host.rgb_param_count      = config::mlp_param_count(config::rgb_input_width, config::network_output_width, config::rgb_hidden_layers);
+                this->host.rgb_param_count      = config::mlp_width * config::rgb_input_width + (config::rgb_hidden_layers - 1u) * config::mlp_width * config::mlp_width + config::network_output_width * config::mlp_width;
                 this->host.mlp_param_count      = this->host.rgb_param_offset + this->host.rgb_param_count;
                 this->host.grid_param_offset    = this->host.mlp_param_count;
 

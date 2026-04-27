@@ -35,10 +35,6 @@ namespace ngp::cuda::config {
     static_assert(rgb_input_width == mlp_input_width);
     static_assert(network_output_width == mlp_output_width);
 
-    constexpr std::uint32_t mlp_param_count(const std::uint32_t input_width, const std::uint32_t output_width, const std::uint32_t hidden_layers) {
-        return mlp_width * input_width + (hidden_layers - 1u) * mlp_width * mlp_width + output_width * mlp_width;
-    }
-
     constexpr std::uint32_t round_up(const std::uint32_t value, const std::uint32_t granularity) {
         return ((value + granularity - 1u) / granularity) * granularity;
     }
