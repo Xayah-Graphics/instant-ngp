@@ -36,11 +36,6 @@ endif ()
 # ============================================================================
 find_package(CUDAToolkit 13.2 REQUIRED)
 
-set(NGP_CUTLASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/cutlass" CACHE PATH "Pinned CUTLASS root for the network module." FORCE)
-if (NOT EXISTS "${NGP_CUTLASS_ROOT}/include/cutlass/cutlass.h")
-    message(FATAL_ERROR "CUTLASS headers are missing at '${NGP_CUTLASS_ROOT}'.")
-endif ()
-
 function(download_if_needed url out_path)
     if (EXISTS "${out_path}")
         message(STATUS "Using cached file: ${out_path}")
@@ -85,32 +80,15 @@ add_library(instant-ngp)
 target_sources(
         instant-ngp
         PRIVATE
-        encoder.cu
-        fully-fused-mlp.cu
-        instant-ngp.cpp
-        instant-ngp.cu
-        optimizer.cu
-        encoder.cuh
-        fully-fused-mlp.cuh
-        optimizer.cuh
+        ngp.dataset.cpp
+        ngp.train.cu
+        ngp.train.h
         PUBLIC
-        instant-ngp.h
-        common.cuh
+        FILE_SET cxx_modules TYPE CXX_MODULES FILES
+        ngp.dataset.ixx
+        ngp.train.ixx
 )
-target_link_libraries(instant-ngp PUBLIC CUDA::cudart CUDA::cuda_driver CUDA::cublas)
-target_compile_options(
-        instant-ngp
-        PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
-        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-        $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
-)
-target_include_directories(
-        instant-ngp
-        PRIVATE
-        "${NGP_CUTLASS_ROOT}/include"
-        "${CMAKE_CURRENT_BINARY_DIR}/vendor"
-)
+target_include_directories(instant-ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor" "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/cutlass/include")
 set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 
 
@@ -119,5 +97,4 @@ set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 # ============================================================================
 add_executable(instant-ngp-app main.cpp)
 target_link_libraries(instant-ngp-app PRIVATE instant-ngp)
-target_include_directories(instant-ngp-app PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
 set_property(TARGET instant-ngp-app PROPERTY CXX_MODULE_STD ON)
