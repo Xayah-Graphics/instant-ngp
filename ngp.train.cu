@@ -533,10 +533,10 @@ namespace ngp::cuda {
             pos_fract(sample[1], pos_y, grid_y, scale);
             pos_fract(sample[2], pos_z, grid_z, scale);
 
-            __half result0 = static_cast<__half>(0.0f);
-            __half result1 = static_cast<__half>(0.0f);
-            __half result2 = static_cast<__half>(0.0f);
-            __half result3 = static_cast<__half>(0.0f);
+            __half result0 = 0.0f;
+            __half result1 = 0.0f;
+            __half result2 = 0.0f;
+            __half result3 = 0.0f;
 
             for (std::uint32_t corner = 0u; corner < 8u; ++corner) {
                 const bool high_x         = (corner & 1u) != 0u;
@@ -544,7 +544,7 @@ namespace ngp::cuda {
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
                 const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * grid_features_per_level;
-                const __half weight_half  = static_cast<__half>(weight);
+                const __half weight_half  = weight;
                 result0                   = __hfma(weight_half, grid[index + 0u], result0);
                 result1                   = __hfma(weight_half, grid[index + 1u], result1);
                 result2                   = __hfma(weight_half, grid[index + 2u], result2);
@@ -589,7 +589,7 @@ namespace ngp::cuda {
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
                 const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * grid_features_per_level + feature;
-                const __half weight_half  = static_cast<__half>(weight);
+                const __half weight_half  = weight;
                 atomicAdd(reinterpret_cast<__half2*>(grid_gradients + index), __halves2half2(__hmul(weight_half, grad0), __hmul(weight_half, grad1)));
             }
         }
@@ -746,7 +746,7 @@ namespace ngp::cuda {
             const std::uint32_t weights_col = 16u * wi;
 
             __half* __restrict__ weights_shmem        = act_shmem + 16u * (mlp_input_width + mlp_input_skew);
-            const std::uint32_t n_elems_per_load      = mlp_width_blocks * 32u * 8u;
+            constexpr std::uint32_t n_elems_per_load      = mlp_width_blocks * 32u * 8u;
             const std::uint32_t thread_elem_idx       = (li + wi * 32u) * 8u;
             constexpr std::uint32_t n_weight_elements = mlp_width * mlp_input_width;
 
@@ -950,7 +950,7 @@ namespace ngp::cuda {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
 
-            const __half zero = static_cast<__half>(0.0f);
+            const __half zero = 0.0f;
             for (std::uint32_t j = 0u; j < mlp_output_width; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + j] = zero;
             rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 0u];
             rgb_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * mlp_output_width + 1u];
@@ -1191,7 +1191,7 @@ namespace ngp::cuda {
         if (density_layers != density_hidden_layers || rgb_layers != rgb_hidden_layers) return "mlp hidden layer count does not match the compiled fully fused MLP.";
 
         const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + density_network_params, rgb_param_offset + rgb_network_params);
-        std::vector<float> host_params(mlp_param_count, 0.0f);
+        std::vector host_params(mlp_param_count, 0.0f);
         Pcg32 rng{seed};
 
         auto initialize_matrix = [&](const std::uint32_t offset, const std::uint32_t rows, const std::uint32_t cols) {
@@ -1288,8 +1288,8 @@ namespace ngp::cuda {
         if (rgb_input == nullptr) return "network inference rgb input is null.";
         if (network_output == nullptr) return "network inference output is null.";
 
-        constexpr int forward_shmem = static_cast<int>(sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew));
-        const dim3 threads{32u, mlp_width_blocks, 1u};
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew);
+        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
 
         for (std::uint32_t offset = 0u; offset < sample_count; offset += batch_size) {
@@ -1334,8 +1334,8 @@ namespace ngp::cuda {
         encode_spherical_harmonics_kernel<<<linear_blocks, threads_per_block>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(mlp_output_width) * batch_size);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_spherical_harmonics_kernel", status);
 
-        constexpr int forward_shmem = static_cast<int>(sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew));
-        const dim3 threads{32u, mlp_width_blocks, 1u};
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * mlp_forward_iters) * (mlp_width + mlp_skew);
+        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
         const dim3 blocks{batch_size / (16u * mlp_forward_iters), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
@@ -1380,8 +1380,8 @@ namespace ngp::cuda {
         extract_rgb_gradients_kernel<<<linear_blocks, threads_per_block>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_rgb_gradients_kernel", status);
 
-        constexpr int backward_shmem = static_cast<int>(sizeof(__half) * (16u * mlp_forward_iters) * (mlp_width + mlp_skew));
-        const dim3 threads{32u, mlp_width_blocks, 1u};
+        constexpr int backward_shmem = sizeof(__half) * (16u * mlp_forward_iters) * (mlp_width + mlp_skew);
+        constexpr dim3 threads{32u, mlp_width_blocks, 1u};
         const dim3 blocks{batch_size / (16u * mlp_forward_iters), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute rgb mlp backward", status);
