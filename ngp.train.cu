@@ -1,16 +1,9 @@
 #include "ngp.train.h"
 #include <cmath>
+#include <cublasLt.h>
 #include <cuda/std/algorithm>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cutlass/cutlass.h>
-#include <cutlass/epilogue/thread/linear_combination.h>
-#include <cutlass/gemm/device/gemm.h>
-#include <cutlass/gemm/device/gemm_splitk_parallel.h>
-#include <cutlass/gemm/threadblock/threadblock_swizzle.h>
-#include <cutlass/half.h>
-#include <cutlass/layout/matrix.h>
-#include <cutlass/numeric_types.h>
 #include <mma.h>
 #include <vector>
 
@@ -23,9 +16,12 @@ namespace ngp::cuda {
         }
     }
 
-    namespace {
-        using namespace config;
+    void destroy_cublaslt_once(void*& handle) noexcept {
+        if (handle != nullptr) cublasLtDestroy(reinterpret_cast<cublasLtHandle_t>(handle));
+        handle = nullptr;
+    }
 
+    namespace {
         // Launch configuration.
         inline constexpr std::uint32_t THREADS_PER_BLOCK = 128u;
 
@@ -46,14 +42,15 @@ namespace ngp::cuda {
 
         // Fully fused MLP.
         inline constexpr std::uint32_t MLP_FORWARD_ITERS       = 8u;
-        inline constexpr std::uint32_t MLP_WIDTH_BLOCKS        = MLP_WIDTH / 16u;
+        inline constexpr std::uint32_t MLP_WIDTH_BLOCKS        = config::MLP_WIDTH / 16u;
         inline constexpr std::uint32_t MLP_SKEW                = 8u;
         inline constexpr std::uint32_t MLP_INPUT_SKEW          = 8u;
-        inline constexpr std::uint32_t MLP_FIRST_LAYER_PARAMS  = MLP_WIDTH * MLP_INPUT_WIDTH;
-        inline constexpr std::uint32_t MLP_HIDDEN_LAYER_PARAMS = MLP_WIDTH * MLP_WIDTH;
-        inline constexpr std::uint32_t MLP_LAST_LAYER_PARAMS   = MLP_OUTPUT_WIDTH * MLP_WIDTH;
-        inline constexpr std::uint32_t DENSITY_NETWORK_PARAMS  = MLP_FIRST_LAYER_PARAMS + (DENSITY_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
-        inline constexpr std::uint32_t RGB_NETWORK_PARAMS      = MLP_FIRST_LAYER_PARAMS + (RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
+        inline constexpr std::uint32_t MLP_FIRST_LAYER_PARAMS  = config::MLP_WIDTH * config::MLP_INPUT_WIDTH;
+        inline constexpr std::uint32_t MLP_HIDDEN_LAYER_PARAMS = config::MLP_WIDTH * config::MLP_WIDTH;
+        inline constexpr std::uint32_t MLP_LAST_LAYER_PARAMS   = config::MLP_OUTPUT_WIDTH * config::MLP_WIDTH;
+        inline constexpr std::uint32_t DENSITY_NETWORK_PARAMS  = MLP_FIRST_LAYER_PARAMS + (config::DENSITY_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
+        inline constexpr std::uint32_t RGB_NETWORK_PARAMS      = MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS + MLP_LAST_LAYER_PARAMS;
+        inline constexpr std::size_t CUBLASLT_WORKSPACE_BYTES  = static_cast<std::size_t>(64u) * 1024u * 1024u;
 
         // Random number generation.
         inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
@@ -67,7 +64,7 @@ namespace ngp::cuda {
 
         // Small POD helpers.
         struct GridOffsetTable final {
-            std::uint32_t data[GRID_N_LEVELS + 1u] = {};
+            std::uint32_t data[config::GRID_N_LEVELS + 1u] = {};
         };
 
         struct Pcg32 final {
@@ -388,7 +385,7 @@ namespace ngp::cuda {
             std::uint32_t base     = numsteps_in[i * 2u + 1u];
 
             const float* coord_in = coords_in + static_cast<std::uint64_t>(base) * SAMPLE_COORD_FLOATS;
-            const __half* output  = network_output + static_cast<std::uint64_t>(base) * MLP_OUTPUT_WIDTH;
+            const __half* output  = network_output + static_cast<std::uint64_t>(base) * config::MLP_OUTPUT_WIDTH;
 
             float transmittance                   = 1.0f;
             constexpr float transmittance_epsilon = 1e-4f;
@@ -411,7 +408,7 @@ namespace ngp::cuda {
                 rgb_ray.z += weight * rgb_z;
                 transmittance *= 1.0f - alpha;
 
-                output += MLP_OUTPUT_WIDTH;
+                output += config::MLP_OUTPUT_WIDTH;
                 coord_in += SAMPLE_COORD_FLOATS;
             }
 
@@ -438,7 +435,7 @@ namespace ngp::cuda {
                 rgb_ray.z += transmittance * background_color.z;
             }
 
-            output -= static_cast<std::uint64_t>(compacted_numsteps) * MLP_OUTPUT_WIDTH;
+            output -= static_cast<std::uint64_t>(compacted_numsteps) * config::MLP_OUTPUT_WIDTH;
             coord_in -= static_cast<std::uint64_t>(compacted_numsteps) * SAMPLE_COORD_FLOATS;
 
             std::uint32_t compacted_base = atomicAdd(compacted_sample_counter, compacted_numsteps);
@@ -448,7 +445,7 @@ namespace ngp::cuda {
             if (compacted_numsteps == 0u) return;
 
             coords_out += static_cast<std::uint64_t>(compacted_base) * SAMPLE_COORD_FLOATS;
-            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * MLP_OUTPUT_WIDTH;
+            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * config::MLP_OUTPUT_WIDTH;
 
             const float3 difference = {rgb_ray.x - rgb_target.x, rgb_ray.y - rgb_target.y, rgb_ray.z - rgb_target.z};
             const float3 gradient   = {2.0f * difference.x, 2.0f * difference.y, 2.0f * difference.z};
@@ -490,8 +487,8 @@ namespace ngp::cuda {
                 const float dloss_by_dmlp      = density_derivative * (dt * (gradient.x * (transmittance * rgb.x - suffix.x) + gradient.y * (transmittance * rgb.y - suffix.y) + gradient.z * (transmittance * rgb.z - suffix.z)));
                 dloss_doutput[3u]              = __float2half(scaled_loss * dloss_by_dmlp + (mlp_density > -10.0f && depth < 0.1f ? 1e-4f : 0.0f));
 
-                dloss_doutput += MLP_OUTPUT_WIDTH;
-                output += MLP_OUTPUT_WIDTH;
+                dloss_doutput += config::MLP_OUTPUT_WIDTH;
+                output += config::MLP_OUTPUT_WIDTH;
             }
         }
 
@@ -517,7 +514,7 @@ namespace ngp::cuda {
             if (i >= sample_count) return;
 
             const std::uint32_t level = blockIdx.y;
-            grid += offset_table.data[level] * GRID_FEATURES_PER_LEVEL;
+            grid += offset_table.data[level] * config::GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
@@ -543,7 +540,7 @@ namespace ngp::cuda {
                 const bool high_y         = (corner & 2u) != 0u;
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
-                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * GRID_FEATURES_PER_LEVEL;
+                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * config::GRID_FEATURES_PER_LEVEL;
                 const __half weight_half  = weight;
                 result0                   = __hfma(weight_half, grid[index + 0u], result0);
                 result1                   = __hfma(weight_half, grid[index + 1u], result1);
@@ -551,20 +548,20 @@ namespace ngp::cuda {
                 result3                   = __hfma(weight_half, grid[index + 3u], result3);
             }
 
-            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 0u) * sample_count] = result0;
-            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 1u) * sample_count] = result1;
-            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 2u) * sample_count] = result2;
-            encoded_positions[i + (level * GRID_FEATURES_PER_LEVEL + 3u) * sample_count] = result3;
+            encoded_positions[i + (level * config::GRID_FEATURES_PER_LEVEL + 0u) * sample_count] = result0;
+            encoded_positions[i + (level * config::GRID_FEATURES_PER_LEVEL + 1u) * sample_count] = result1;
+            encoded_positions[i + (level * config::GRID_FEATURES_PER_LEVEL + 2u) * sample_count] = result2;
+            encoded_positions[i + (level * config::GRID_FEATURES_PER_LEVEL + 3u) * sample_count] = result3;
         }
 
         __global__ void encode_grid_backward_kernel(const std::uint32_t sample_count, const GridOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const float* __restrict__ sample_coords, const __half* __restrict__ encoded_position_gradients, __half* __restrict__ grid_gradients) {
             const std::uint32_t thread = blockIdx.x * blockDim.x + threadIdx.x;
-            const std::uint32_t i      = (thread * GRID_BACKWARD_FEATURES) / GRID_FEATURES_PER_LEVEL;
+            const std::uint32_t i      = (thread * GRID_BACKWARD_FEATURES) / config::GRID_FEATURES_PER_LEVEL;
             if (i >= sample_count) return;
 
             const std::uint32_t level   = blockIdx.y;
-            const std::uint32_t feature = thread * GRID_BACKWARD_FEATURES - i * GRID_FEATURES_PER_LEVEL;
-            grid_gradients += offset_table.data[level] * GRID_FEATURES_PER_LEVEL;
+            const std::uint32_t feature = thread * GRID_BACKWARD_FEATURES - i * config::GRID_FEATURES_PER_LEVEL;
+            grid_gradients += offset_table.data[level] * config::GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
@@ -580,15 +577,15 @@ namespace ngp::cuda {
             pos_fract(sample[1], pos_y, grid_y, scale);
             pos_fract(sample[2], pos_z, grid_z, scale);
 
-            const __half grad0 = encoded_position_gradients[i + (level * GRID_FEATURES_PER_LEVEL + feature + 0u) * sample_count];
-            const __half grad1 = encoded_position_gradients[i + (level * GRID_FEATURES_PER_LEVEL + feature + 1u) * sample_count];
+            const __half grad0 = encoded_position_gradients[i + (level * config::GRID_FEATURES_PER_LEVEL + feature + 0u) * sample_count];
+            const __half grad1 = encoded_position_gradients[i + (level * config::GRID_FEATURES_PER_LEVEL + feature + 1u) * sample_count];
 
             for (std::uint32_t corner = 0u; corner < 8u; ++corner) {
                 const bool high_x         = (corner & 1u) != 0u;
                 const bool high_y         = (corner & 2u) != 0u;
                 const bool high_z         = (corner & 4u) != 0u;
                 const float weight        = (high_x ? pos_x : 1.0f - pos_x) * (high_y ? pos_y : 1.0f - pos_y) * (high_z ? pos_z : 1.0f - pos_z);
-                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * GRID_FEATURES_PER_LEVEL + feature;
+                const std::uint32_t index = grid_index(hashmap_size, resolution, high_x ? grid_x + 1u : grid_x, high_y ? grid_y + 1u : grid_y, high_z ? grid_z + 1u : grid_z) * config::GRID_FEATURES_PER_LEVEL + feature;
                 const __half weight_half  = weight;
                 atomicAdd(reinterpret_cast<__half2*>(grid_gradients + index), __halves2half2(__hmul(weight_half, grad0), __hmul(weight_half, grad1)));
             }
@@ -652,78 +649,6 @@ namespace ngp::cuda {
         }
 
         // Fully fused MLP helpers.
-        template <typename ThreadBlock, typename Warp>
-        struct CutlassLayerConfig {
-            using thread_block_shape = ThreadBlock;
-            using warp_shape         = Warp;
-        };
-
-        struct CutlassFullLayer : CutlassLayerConfig<cutlass::gemm::GemmShape<128, 128, 32>, cutlass::gemm::GemmShape<64, 64, 32>> {};
-        struct CutlassLastLayer final : CutlassFullLayer {};
-        struct CutlassFullLayerK : CutlassLayerConfig<cutlass::gemm::GemmShape<64, 64, 32>, cutlass::gemm::GemmShape<32, 32, 32>> {};
-        struct CutlassLastLayerK final : CutlassFullLayerK {};
-
-        template <typename T>
-        inline constexpr int CUTLASS_VECTOR_ELEMENTS = 128 / cutlass::sizeof_bits<T>::value;
-
-        std::string cutlass_error(const char* operation, const cutlass::Status status) {
-            if (status == cutlass::Status::kSuccess) return {};
-            return std::string{operation} + " failed: " + cutlassGetStatusString(status);
-        }
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        using CutlassGemm = cutlass::gemm::device::Gemm<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, CUTLASS_VECTOR_ELEMENTS<cutlass::half_t>, cutlass::half_t, cutlass::half_t>,
-            cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>;
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        using CutlassSplitKGemm = cutlass::gemm::device::GemmSplitKParallel<cutlass::half_t, LayoutA, cutlass::half_t, LayoutB, cutlass::half_t, LayoutD, cutlass::half_t, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80, typename Config::thread_block_shape, typename Config::warp_shape, cutlass::gemm::GemmShape<16, 8, 8>, cutlass::epilogue::thread::LinearCombination<cutlass::half_t, CUTLASS_VECTOR_ELEMENTS<cutlass::half_t>, cutlass::half_t, cutlass::half_t>>;
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        std::size_t cutlass_gemm_workspace_size(const int m, const int n, const int k, const int lda, const int ldb, const int ldd) {
-            using Gemm = CutlassGemm<Config, LayoutA, LayoutB, LayoutD>;
-            typename Gemm::Arguments args{{m, n, k}, {nullptr, lda}, {nullptr, ldb}, {nullptr, ldd}, {nullptr, ldd}, {cutlass::half_t{1.0f}, cutlass::half_t{0.0f}}, 1};
-            return Gemm::get_workspace_size(args);
-        }
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        std::size_t cutlass_split_k_workspace_size(const int m, const int n, const int k, const int lda, const int ldb, const int ldd, const int split_k) {
-            using Gemm = CutlassSplitKGemm<Config, LayoutA, LayoutB, LayoutD>;
-            typename Gemm::Arguments args{{m, n, k}, {nullptr, lda}, {nullptr, ldb}, {nullptr, ldd}, {nullptr, ldd}, {cutlass::half_t{1.0f}, cutlass::half_t{0.0f}}, split_k};
-            return Gemm::get_workspace_size(args);
-        }
-
-        std::size_t cutlass_workspace_size(const std::uint32_t batch_size) {
-            const int batch   = static_cast<int>(batch_size);
-            const int split_k = static_cast<int>(batch_size / ::cuda::std::min(1u << 12u, batch_size));
-            std::size_t bytes = 0u;
-            bytes             = ::cuda::std::max(bytes, cutlass_split_k_workspace_size<CutlassLastLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(16, 64, batch, 16, 64, 64, split_k));
-            bytes             = ::cuda::std::max(bytes, cutlass_split_k_workspace_size<CutlassLastLayerK, cutlass::layout::RowMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(16, 64, batch, batch, 64, 64, split_k));
-            bytes             = ::cuda::std::max(bytes, cutlass_split_k_workspace_size<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(64, 64, batch, 64, 64, 64, split_k));
-            bytes             = ::cuda::std::max(bytes, cutlass_split_k_workspace_size<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(64, 32, batch, 64, batch, 32, split_k));
-            bytes             = ::cuda::std::max(bytes, cutlass_gemm_workspace_size<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(32, batch, 64, 32, 64, batch));
-            return bytes;
-        }
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        std::string run_cutlass_gemm(const int m, const int n, const int k, const __half* const a, const int lda, const __half* const b, const int ldb, __half* const d, const int ldd, void* const workspace) {
-            using Gemm = CutlassGemm<Config, LayoutA, LayoutB, LayoutD>;
-            typename Gemm::Arguments args{{m, n, k}, {reinterpret_cast<cutlass::half_t*>(const_cast<__half*>(a)), lda}, {reinterpret_cast<cutlass::half_t*>(const_cast<__half*>(b)), ldb}, {reinterpret_cast<cutlass::half_t*>(d), ldd}, {reinterpret_cast<cutlass::half_t*>(d), ldd}, {cutlass::half_t{1.0f}, cutlass::half_t{0.0f}}, 1};
-            Gemm gemm;
-            if (std::string error = cutlass_error("cutlass gemm initialize", gemm.initialize(args, workspace, nullptr)); !error.empty()) return error;
-            if (std::string error = cutlass_error("cutlass gemm", gemm(nullptr)); !error.empty()) return error;
-            return {};
-        }
-
-        template <typename Config, typename LayoutA, typename LayoutB, typename LayoutD>
-        std::string run_cutlass_split_k(const int m, const int n, const int k, const __half* const a, const int lda, const __half* const b, const int ldb, __half* const d, const int ldd, void* const workspace, const int split_k) {
-            using Gemm = CutlassSplitKGemm<Config, LayoutA, LayoutB, LayoutD>;
-            typename Gemm::Arguments args{{m, n, k}, {reinterpret_cast<cutlass::half_t*>(const_cast<__half*>(a)), lda}, {reinterpret_cast<cutlass::half_t*>(const_cast<__half*>(b)), ldb}, {reinterpret_cast<cutlass::half_t*>(d), ldd}, {reinterpret_cast<cutlass::half_t*>(d), ldd}, {cutlass::half_t{1.0f}, cutlass::half_t{0.0f}}, split_k};
-            Gemm gemm;
-            if (std::string error = cutlass_error("cutlass split-k gemm initialize", gemm.initialize(args, workspace)); !error.empty()) return error;
-            if (std::string error = cutlass_error("cutlass split-k gemm", gemm(nullptr)); !error.empty()) return error;
-            return {};
-        }
-
         template <typename Fragment>
         __device__ void relu_fragment(Fragment& fragment) {
             for (int i = 0; i < static_cast<int>(fragment.num_elements); ++i) fragment.x[i] = __hmax(fragment.x[i], static_cast<__half>(0.0f));
@@ -741,17 +666,17 @@ namespace ngp::cuda {
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
+            const std::uint32_t lane_offset = (8u * li) % config::MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / config::MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
-            __half* __restrict__ weights_shmem        = act_shmem + 16u * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
+            __half* __restrict__ weights_shmem        = act_shmem + 16u * (config::MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
             constexpr std::uint32_t n_elems_per_load  = MLP_WIDTH_BLOCKS * 32u * 8u;
             const std::uint32_t thread_elem_idx       = (li + wi * 32u) * 8u;
-            constexpr std::uint32_t n_weight_elements = MLP_WIDTH * MLP_INPUT_WIDTH;
+            constexpr std::uint32_t n_weight_elements = config::MLP_WIDTH * config::MLP_INPUT_WIDTH;
 
             for (std::uint32_t idx = thread_elem_idx; idx < n_weight_elements; idx += n_elems_per_load) {
-                const std::uint32_t idx_skewed                       = idx + idx / MLP_INPUT_WIDTH * MLP_INPUT_SKEW;
+                const std::uint32_t idx_skewed                       = idx + idx / config::MLP_INPUT_WIDTH * MLP_INPUT_SKEW;
                 *reinterpret_cast<int4*>(&weights_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&weights_this_layer[idx]);
             }
 
@@ -759,9 +684,9 @@ namespace ngp::cuda {
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
-                for (std::uint32_t i = 0u; i < MLP_INPUT_WIDTH / 16u; ++i) {
+                for (std::uint32_t i = 0u; i < config::MLP_INPUT_WIDTH / 16u; ++i) {
                     nvcuda::wmma::load_matrix_sync(act_frag, input_threadblock + 16u * i * batch_size + 16u * l, batch_size);
-                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW), MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
+                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (config::MLP_INPUT_WIDTH + MLP_INPUT_SKEW), config::MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
                 }
                 relu_fragment(result_frag[l]);
@@ -769,12 +694,12 @@ namespace ngp::cuda {
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (config::MLP_WIDTH + MLP_SKEW), result_frag[l], config::MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             if (hidden_threadblock != nullptr)
-                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
+                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * config::MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (config::MLP_WIDTH + MLP_SKEW)]);
         }
 
         __device__ void mlp_hidden_layer_forward(__half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, __half* __restrict__ hidden_threadblock) {
@@ -784,18 +709,18 @@ namespace ngp::cuda {
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
+            const std::uint32_t lane_offset = (8u * li) % config::MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / config::MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * MLP_WIDTH, MLP_WIDTH);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i + weights_col * config::MLP_WIDTH, config::MLP_WIDTH);
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
                 for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (config::MLP_WIDTH + MLP_SKEW), config::MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag[i], result_frag[l]);
                 }
                 relu_fragment(result_frag[l]);
@@ -803,12 +728,12 @@ namespace ngp::cuda {
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + l * 16u * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + l * 16u * (config::MLP_WIDTH + MLP_SKEW), result_frag[l], config::MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             if (hidden_threadblock != nullptr)
-                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
+                for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&hidden_threadblock[lane_offset + (row + 16u * i) * config::MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (config::MLP_WIDTH + MLP_SKEW)]);
         }
 
         __device__ void mlp_last_layer_forward(__half* __restrict__ act_shmem, const __half* __restrict__ weights_this_layer, __half* __restrict__ out, const std::uint32_t output_stride, const nvcuda::wmma::layout_t output_layout) {
@@ -819,19 +744,19 @@ namespace ngp::cuda {
             const std::uint32_t li = threadIdx.x;
             const std::uint32_t wi = threadIdx.y;
 
-            __half* __restrict__ weights_shmem = act_shmem + MLP_FORWARD_ITERS * 16u * (MLP_WIDTH + MLP_SKEW);
-            const std::uint32_t weights_row    = (8u * li) % MLP_WIDTH;
-            const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / MLP_WIDTH;
+            __half* __restrict__ weights_shmem = act_shmem + MLP_FORWARD_ITERS * 16u * (config::MLP_WIDTH + MLP_SKEW);
+            const std::uint32_t weights_row    = (8u * li) % config::MLP_WIDTH;
+            const std::uint32_t weights_col    = (8u * li + 8u * 32u * wi) / config::MLP_WIDTH;
 
-            *reinterpret_cast<int4*>(&weights_shmem[weights_row + weights_col * (MLP_WIDTH + MLP_SKEW)]) = *reinterpret_cast<const int4*>(&weights_this_layer[weights_row + weights_col * MLP_WIDTH]);
+            *reinterpret_cast<int4*>(&weights_shmem[weights_row + weights_col * (config::MLP_WIDTH + MLP_SKEW)]) = *reinterpret_cast<const int4*>(&weights_this_layer[weights_row + weights_col * config::MLP_WIDTH]);
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_shmem + 16u * i, MLP_WIDTH + MLP_SKEW);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_shmem + 16u * i, config::MLP_WIDTH + MLP_SKEW);
 
             for (std::uint32_t idx = wi; idx < MLP_FORWARD_ITERS; idx += MLP_WIDTH_BLOCKS) {
                 nvcuda::wmma::fill_fragment(result_frag, 0.0f);
                 for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * idx) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * idx) * (config::MLP_WIDTH + MLP_SKEW), config::MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag, act_frag, weights_frag[i], result_frag);
                 }
 
@@ -846,12 +771,12 @@ namespace ngp::cuda {
             extern __shared__ __half shmem[];
             const std::uint32_t elem_idx = 16u * blockIdx.x * MLP_FORWARD_ITERS;
 
-            mlp_input_layer_forward(shmem, input + elem_idx, weights, hidden == nullptr ? nullptr : hidden + elem_idx * MLP_WIDTH, batch_size);
-            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + MLP_FIRST_LAYER_PARAMS, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(MLP_WIDTH) * batch_size + elem_idx * MLP_WIDTH);
+            mlp_input_layer_forward(shmem, input + elem_idx, weights, hidden == nullptr ? nullptr : hidden + elem_idx * config::MLP_WIDTH, batch_size);
+            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + MLP_FIRST_LAYER_PARAMS, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx * config::MLP_WIDTH);
 
             const __half* last_weights = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
             if (output_row_major)
-                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * MLP_OUTPUT_WIDTH, MLP_OUTPUT_WIDTH, nvcuda::wmma::mem_row_major);
+                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * config::MLP_OUTPUT_WIDTH, config::MLP_OUTPUT_WIDTH, nvcuda::wmma::mem_row_major);
             else
                 mlp_last_layer_forward(shmem, last_weights, output + elem_idx, batch_size, nvcuda::wmma::mem_col_major);
         }
@@ -863,33 +788,33 @@ namespace ngp::cuda {
 
             const std::uint32_t li          = threadIdx.x;
             const std::uint32_t wi          = threadIdx.y;
-            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
+            const std::uint32_t lane_offset = (8u * li) % config::MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / config::MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * MLP_WIDTH + weights_col, MLP_WIDTH);
+            for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) nvcuda::wmma::load_matrix_sync(weights_frag[i], weights_this_layer + 16u * i * config::MLP_WIDTH + weights_col, config::MLP_WIDTH);
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
                 for (std::uint32_t i = 0u; i < MLP_WIDTH_BLOCKS; ++i) {
-                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (MLP_WIDTH + MLP_SKEW), MLP_WIDTH + MLP_SKEW);
+                    nvcuda::wmma::load_matrix_sync(act_frag, act_shmem + 16u * i + (16u * l) * (config::MLP_WIDTH + MLP_SKEW), config::MLP_WIDTH + MLP_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag[i], result_frag[l]);
                 }
 
                 nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> forward_frag;
-                nvcuda::wmma::load_matrix_sync(forward_frag, forward_hidden + weights_col + l * 16u * MLP_WIDTH, MLP_WIDTH);
+                nvcuda::wmma::load_matrix_sync(forward_frag, forward_hidden + weights_col + l * 16u * config::MLP_WIDTH, config::MLP_WIDTH);
                 relu_backward_fragment(result_frag[l], forward_frag);
             }
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (config::MLP_WIDTH + MLP_SKEW), result_frag[l], config::MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
-            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + i * 16u) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
+            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + i * 16u) * config::MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (config::MLP_WIDTH + MLP_SKEW)]);
         }
 
         template <typename OutputLayout>
@@ -906,8 +831,8 @@ namespace ngp::cuda {
 
             const std::uint32_t weights_col = 16u * wi;
             const __half* last_weights      = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
-            const __half* forward_last      = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * MLP_WIDTH * batch_size;
-            nvcuda::wmma::load_matrix_sync(weights_frag, last_weights + weights_col, MLP_WIDTH);
+            const __half* forward_last      = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * config::MLP_WIDTH * batch_size;
+            nvcuda::wmma::load_matrix_sync(weights_frag, last_weights + weights_col, config::MLP_WIDTH);
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
@@ -920,30 +845,30 @@ namespace ngp::cuda {
                 nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
 
                 nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> forward_frag;
-                nvcuda::wmma::load_matrix_sync(forward_frag, forward_last + weights_col + (elem_idx_base + l * 16u) * MLP_WIDTH, MLP_WIDTH);
+                nvcuda::wmma::load_matrix_sync(forward_frag, forward_last + weights_col + (elem_idx_base + l * 16u) * config::MLP_WIDTH, config::MLP_WIDTH);
                 relu_backward_fragment(result_frag[l], forward_frag);
             }
 
             __syncthreads();
 
-            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (MLP_WIDTH + MLP_SKEW), result_frag[l], MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
+            for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) nvcuda::wmma::store_matrix_sync(act_shmem + weights_col + (16u * l) * (config::MLP_WIDTH + MLP_SKEW), result_frag[l], config::MLP_WIDTH + MLP_SKEW, nvcuda::wmma::mem_row_major);
 
             __syncthreads();
 
             const std::uint32_t li          = threadIdx.x;
-            const std::uint32_t lane_offset = (8u * li) % MLP_WIDTH;
-            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / MLP_WIDTH;
+            const std::uint32_t lane_offset = (8u * li) % config::MLP_WIDTH;
+            const std::uint32_t row         = (8u * li + wi * 8u * 32u) / config::MLP_WIDTH;
 
-            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + elem_idx_base + i * 16u) * MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (MLP_WIDTH + MLP_SKEW)]);
+            for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + elem_idx_base + i * 16u) * config::MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (config::MLP_WIDTH + MLP_SKEW)]);
 
-            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + MLP_FIRST_LAYER_PARAMS, forward_hidden + elem_idx_base * MLP_WIDTH, backward_hidden + static_cast<std::uint64_t>(MLP_WIDTH) * batch_size + elem_idx_base * MLP_WIDTH);
+            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + MLP_FIRST_LAYER_PARAMS, forward_hidden + elem_idx_base * config::MLP_WIDTH, backward_hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx_base * config::MLP_WIDTH);
         }
 
         // Network bridge kernels.
         __global__ void extract_density_kernel(const std::uint32_t batch_size, const __half* __restrict__ density_output, __half* __restrict__ network_output) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            network_output[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u] = density_output[i];
+            network_output[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 3u] = density_output[i];
         }
 
         __global__ void extract_rgb_gradients_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ rgb_output_gradients) {
@@ -951,16 +876,16 @@ namespace ngp::cuda {
             if (i >= batch_size) return;
 
             const __half zero = 0.0f;
-            for (std::uint32_t j = 0u; j < MLP_OUTPUT_WIDTH; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + j] = zero;
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u];
+            for (std::uint32_t j = 0u; j < config::MLP_OUTPUT_WIDTH; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + j] = zero;
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 0u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 1u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 2u];
         }
 
         __global__ void add_density_gradient_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ density_output_gradients) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u];
+            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * config::MLP_OUTPUT_WIDTH + 3u];
         }
 
         // Optimizer kernels.
@@ -1066,7 +991,7 @@ namespace ngp::cuda {
 
     // Network buffers.
     std::string allocate_network_once(const std::uint32_t batch_size, const std::uint32_t max_samples, std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden,
-        std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, std::uint8_t*& out_cutlass_workspace) {
+        std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace) {
         out_density_input            = nullptr;
         out_rgb_input                = nullptr;
         out_network_output           = nullptr;
@@ -1078,61 +1003,77 @@ namespace ngp::cuda {
         out_rgb_forward_hidden       = nullptr;
         out_density_backward_hidden  = nullptr;
         out_rgb_backward_hidden      = nullptr;
-        out_cutlass_workspace        = nullptr;
+        out_cublaslt_handle          = nullptr;
+        out_cublaslt_workspace       = nullptr;
 
         if (batch_size == 0u) return "network batch size is zero.";
         if (max_samples == 0u) return "network max samples is zero.";
         if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (max_samples % (16u * MLP_FORWARD_ITERS) != 0u) return "network max samples does not match the fully fused MLP tile size.";
 
-        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMalloc density network input", status);
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        cublasLtHandle_t handle = nullptr;
+        if (const cublasStatus_t status = cublasLtCreate(&handle); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtCreate failed: "} + cublasGetStatusString(status);
+        out_cublaslt_handle = reinterpret_cast<void*>(handle);
+
+        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(config::MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            return cuda_error("cudaMalloc density network input", status);
+        }
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(config::MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc rgb network input", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * max_samples * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(config::MLP_OUTPUT_WIDTH) * max_samples * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc network output", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(config::MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc network output gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(config::MLP_OUTPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc rgb output gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(config::MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc rgb input gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(config::MLP_INPUT_WIDTH) * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc density input gradients", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_forward_hidden, static_cast<std::size_t>(DENSITY_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_density_forward_hidden, static_cast<std::size_t>(config::DENSITY_HIDDEN_LAYERS) * config::MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc density forward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_forward_hidden, static_cast<std::size_t>(RGB_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_rgb_forward_hidden, static_cast<std::size_t>(config::RGB_HIDDEN_LAYERS) * config::MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_density_input_gradients, out_rgb_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc rgb forward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_density_backward_hidden, static_cast<std::size_t>(DENSITY_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_density_backward_hidden, static_cast<std::size_t>(config::DENSITY_HIDDEN_LAYERS) * config::MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc density backward hidden", status);
         }
-        if (const cudaError_t status = cudaMalloc(&out_rgb_backward_hidden, static_cast<std::size_t>(RGB_HIDDEN_LAYERS) * MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
-            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
+        if (const cudaError_t status = cudaMalloc(&out_rgb_backward_hidden, static_cast<std::size_t>(config::RGB_HIDDEN_LAYERS) * config::MLP_WIDTH * batch_size * sizeof(__half)); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
             return cuda_error("cudaMalloc rgb backward hidden", status);
         }
 
-        const std::size_t workspace_bytes = cutlass_workspace_size(batch_size);
-        if (workspace_bytes > 0u) {
-            if (const cudaError_t status = cudaMalloc(&out_cutlass_workspace, workspace_bytes); status != cudaSuccess) {
-                free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cutlass_workspace);
-                return cuda_error("cudaMalloc cutlass workspace", status);
-            }
+        if (const cudaError_t status = cudaMalloc(&out_cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES); status != cudaSuccess) {
+            destroy_cublaslt_once(out_cublaslt_handle);
+            free_device_data(out_density_input, out_rgb_input, out_network_output, out_network_output_gradients, out_rgb_output_gradients, out_rgb_input_gradients, out_density_input_gradients, out_density_forward_hidden, out_rgb_forward_hidden, out_density_backward_hidden, out_rgb_backward_hidden, out_cublaslt_workspace);
+            return cuda_error("cudaMalloc cublasLt workspace", status);
         }
 
         return {};
@@ -1186,9 +1127,9 @@ namespace ngp::cuda {
         if (params_full_precision == nullptr) return "mlp full precision params are null.";
         if (params == nullptr) return "mlp params are null.";
         if (param_gradients == nullptr) return "mlp param gradients are null.";
-        if (density_input_width != MLP_INPUT_WIDTH || rgb_input_width != MLP_INPUT_WIDTH) return "mlp input width does not match the compiled fully fused MLP.";
-        if (density_output_width != MLP_OUTPUT_WIDTH || rgb_output_width != MLP_OUTPUT_WIDTH) return "mlp output width does not match the compiled fully fused MLP.";
-        if (density_layers != DENSITY_HIDDEN_LAYERS || rgb_layers != RGB_HIDDEN_LAYERS) return "mlp hidden layer count does not match the compiled fully fused MLP.";
+        if (density_input_width != config::MLP_INPUT_WIDTH || rgb_input_width != config::MLP_INPUT_WIDTH) return "mlp input width does not match the compiled fully fused MLP.";
+        if (density_output_width != config::MLP_OUTPUT_WIDTH || rgb_output_width != config::MLP_OUTPUT_WIDTH) return "mlp output width does not match the compiled fully fused MLP.";
+        if (density_layers != config::DENSITY_HIDDEN_LAYERS || rgb_layers != config::RGB_HIDDEN_LAYERS) return "mlp hidden layer count does not match the compiled fully fused MLP.";
 
         const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + DENSITY_NETWORK_PARAMS, rgb_param_offset + RGB_NETWORK_PARAMS);
         std::vector host_params(mlp_param_count, 0.0f);
@@ -1199,11 +1140,11 @@ namespace ngp::cuda {
             for (std::uint32_t i = 0u; i < rows * cols; ++i) host_params[offset + i] = rng.next_float() * 2.0f * scale - scale;
         };
 
-        initialize_matrix(density_param_offset, MLP_WIDTH, MLP_INPUT_WIDTH);
-        initialize_matrix(density_param_offset + MLP_FIRST_LAYER_PARAMS, MLP_OUTPUT_WIDTH, MLP_WIDTH);
-        initialize_matrix(rgb_param_offset, MLP_WIDTH, MLP_INPUT_WIDTH);
-        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS, MLP_WIDTH, MLP_WIDTH);
-        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS + MLP_HIDDEN_LAYER_PARAMS, MLP_OUTPUT_WIDTH, MLP_WIDTH);
+        initialize_matrix(density_param_offset, config::MLP_WIDTH, config::MLP_INPUT_WIDTH);
+        initialize_matrix(density_param_offset + MLP_FIRST_LAYER_PARAMS, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH);
+        initialize_matrix(rgb_param_offset, config::MLP_WIDTH, config::MLP_INPUT_WIDTH);
+        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS, config::MLP_WIDTH, config::MLP_WIDTH);
+        initialize_matrix(rgb_param_offset + MLP_FIRST_LAYER_PARAMS + MLP_HIDDEN_LAYER_PARAMS, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH);
 
         if (const cudaError_t status = cudaMemcpy(params_full_precision, host_params.data(), host_params.size() * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) return cuda_error("cudaMemcpy mlp full precision params", status);
         if (const cudaError_t status = cudaMemset(param_gradients, 0, host_params.size() * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset mlp gradients", status);
@@ -1234,17 +1175,17 @@ namespace ngp::cuda {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
         if (base_resolution == 0u) return "grid base resolution is zero.";
         if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (grid_params == nullptr) return "grid params are null.";
         if (encoded_positions == nullptr) return "grid encoded positions are null.";
 
         GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
+        for (std::uint32_t i = 0u; i <= config::GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
 
-        const dim3 blocks{(sample_count + GRID_FORWARD_THREADS - 1u) / GRID_FORWARD_THREADS, GRID_N_LEVELS, 1u};
+        const dim3 blocks{(sample_count + GRID_FORWARD_THREADS - 1u) / GRID_FORWARD_THREADS, config::GRID_N_LEVELS, 1u};
         encode_grid_forward_kernel<<<blocks, GRID_FORWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(grid_params), reinterpret_cast<__half*>(encoded_positions));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_forward_kernel", status);
@@ -1255,20 +1196,20 @@ namespace ngp::cuda {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
         if (base_resolution == 0u) return "grid base resolution is zero.";
         if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (encoded_position_gradients == nullptr) return "grid encoded position gradients are null.";
         if (grid_param_gradients == nullptr) return "grid param gradients are null.";
 
         GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
+        for (std::uint32_t i = 0u; i <= config::GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
 
-        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(offset_table.data[GRID_N_LEVELS]) * GRID_FEATURES_PER_LEVEL * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
+        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(offset_table.data[config::GRID_N_LEVELS]) * config::GRID_FEATURES_PER_LEVEL * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
 
-        const std::uint32_t threads = (sample_count * GRID_FEATURES_PER_LEVEL / GRID_BACKWARD_FEATURES + GRID_BACKWARD_THREADS - 1u) / GRID_BACKWARD_THREADS;
-        const dim3 blocks{threads, GRID_N_LEVELS, 1u};
+        const std::uint32_t threads = (sample_count * config::GRID_FEATURES_PER_LEVEL / GRID_BACKWARD_FEATURES + GRID_BACKWARD_THREADS - 1u) / GRID_BACKWARD_THREADS;
+        const dim3 blocks{threads, config::GRID_N_LEVELS, 1u};
         encode_grid_backward_kernel<<<blocks, GRID_BACKWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(encoded_position_gradients), reinterpret_cast<__half*>(grid_param_gradients));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_backward_kernel", status);
@@ -1288,7 +1229,7 @@ namespace ngp::cuda {
         if (rgb_input == nullptr) return "network inference rgb input is null.";
         if (network_output == nullptr) return "network inference output is null.";
 
-        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
         constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
 
@@ -1299,17 +1240,17 @@ namespace ngp::cuda {
             if (const std::string error = encode_grid_forward(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
             const std::uint32_t linear_blocks = (chunk + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-            encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * chunk);
+            encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::MLP_OUTPUT_WIDTH) * chunk);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_spherical_harmonics_kernel", status);
 
             const dim3 blocks{chunk / (16u * MLP_FORWARD_ITERS), 1u, 1u};
-            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), nullptr, reinterpret_cast<__half*>(rgb_input), false, DENSITY_HIDDEN_LAYERS);
+            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), nullptr, reinterpret_cast<__half*>(rgb_input), false, config::DENSITY_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp inference", status);
 
-            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH, true, RGB_HIDDEN_LAYERS);
+            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * config::MLP_OUTPUT_WIDTH, true, config::RGB_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp inference", status);
 
-            extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH);
+            extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * config::MLP_OUTPUT_WIDTH);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_density_kernel inference", status);
         }
 
@@ -1331,18 +1272,18 @@ namespace ngp::cuda {
         if (const std::string error = encode_grid_forward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
         const std::uint32_t linear_blocks = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * batch_size);
+        encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::MLP_OUTPUT_WIDTH) * batch_size);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_spherical_harmonics_kernel", status);
 
-        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
         constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
         const dim3 blocks{batch_size / (16u * MLP_FORWARD_ITERS), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_forward_64_relu_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, forward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute mlp_forward_64_relu_kernel", status);
-        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<__half*>(density_forward_hidden), reinterpret_cast<__half*>(rgb_input), false, DENSITY_HIDDEN_LAYERS);
+        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<__half*>(density_forward_hidden), reinterpret_cast<__half*>(rgb_input), false, config::DENSITY_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp forward", status);
 
-        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<__half*>(rgb_forward_hidden), reinterpret_cast<__half*>(network_output), true, RGB_HIDDEN_LAYERS);
+        mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<__half*>(rgb_forward_hidden), reinterpret_cast<__half*>(network_output), true, config::RGB_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp forward", status);
 
         extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output));
@@ -1352,7 +1293,7 @@ namespace ngp::cuda {
 
     std::string network_backward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const params, std::uint16_t* const gradients, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset,
         const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients, std::uint16_t* const density_backward_hidden,
-        std::uint16_t* const rgb_backward_hidden, std::uint8_t* const cutlass_workspace) {
+        std::uint16_t* const rgb_backward_hidden, void* const cublaslt_handle, std::uint8_t* const cublaslt_workspace) {
         if (batch_size == 0u) return {};
         if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network sample coords are null.";
@@ -1369,44 +1310,724 @@ namespace ngp::cuda {
         if (density_input_gradients == nullptr) return "density input gradients are null.";
         if (density_backward_hidden == nullptr) return "density backward hidden is null.";
         if (rgb_backward_hidden == nullptr) return "rgb backward hidden is null.";
-        if (cutlass_workspace == nullptr && cutlass_workspace_size(batch_size) > 0u) return "cutlass workspace is null.";
+        if (cublaslt_handle == nullptr) return "cublasLt handle is null.";
+        if (cublaslt_workspace == nullptr) return "cublasLt workspace is null.";
 
         const std::uint32_t linear_blocks       = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        const std::uint64_t hidden_layer_stride = static_cast<std::uint64_t>(MLP_WIDTH) * batch_size;
+        const std::uint64_t hidden_layer_stride = static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size;
         const int batch                         = static_cast<int>(batch_size);
-        const int split_k                       = static_cast<int>(batch_size / ::cuda::std::min(1u << 12u, batch_size));
-        void* const workspace                   = cutlass_workspace;
+        const auto cublaslt         = reinterpret_cast<cublasLtHandle_t>(cublaslt_handle);
 
         extract_rgb_gradients_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_rgb_gradients_kernel", status);
 
-        constexpr int backward_shmem = sizeof(__half) * (16u * MLP_FORWARD_ITERS) * (MLP_WIDTH + MLP_SKEW);
+        constexpr int backward_shmem = sizeof(__half) * (16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
         constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
         const dim3 blocks{batch_size / (16u * MLP_FORWARD_ITERS), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute rgb mlp backward", status);
-        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), MLP_OUTPUT_WIDTH, RGB_HIDDEN_LAYERS);
+        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), config::MLP_OUTPUT_WIDTH, config::RGB_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("rgb mlp backward hidden", status);
 
-        if (std::string error = run_cutlass_split_k<CutlassLastLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(
-                MLP_OUTPUT_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_output_gradients), MLP_OUTPUT_WIDTH, reinterpret_cast<const __half*>(rgb_forward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), MLP_WIDTH, workspace, split_k);
-            !error.empty())
-            return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_backward_hidden), MLP_WIDTH, reinterpret_cast<const __half*>(rgb_forward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), MLP_WIDTH, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_INPUT_WIDTH, batch, reinterpret_cast<const __half*>(rgb_backward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<const __half*>(rgb_input), batch, reinterpret_cast<__half*>(gradients + rgb_param_offset), MLP_INPUT_WIDTH, workspace, split_k); !error.empty())
-            return error;
-        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_INPUT_WIDTH, batch, MLP_WIDTH, reinterpret_cast<const __half*>(params + rgb_param_offset), MLP_INPUT_WIDTH, reinterpret_cast<const __half*>(rgb_backward_hidden) + (RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, MLP_WIDTH, reinterpret_cast<__half*>(rgb_input_gradients), batch, workspace); !error.empty()) return error;
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, config::MLP_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb last gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt rgb last weight gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_output_gradients), a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), d_desc,
+                    reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul rgb last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
+
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb hidden gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb hidden gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt rgb hidden weight gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden), a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden), b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul rgb hidden weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
+
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb first gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt rgb first weight gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, a_desc, reinterpret_cast<const __half*>(rgb_input), b_desc, &beta, reinterpret_cast<__half*>(gradients + rgb_param_offset), d_desc, reinterpret_cast<__half*>(gradients + rgb_param_offset), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul rgb first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
+
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate rgb input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate rgb input gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate rgb input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute rgb input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic rgb input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt rgb input gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(params + rgb_param_offset), a_desc, reinterpret_cast<const __half*>(rgb_backward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, b_desc, &beta, reinterpret_cast<__half*>(rgb_input_gradients), d_desc, reinterpret_cast<__half*>(rgb_input_gradients), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul rgb input gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
 
         add_density_gradient_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_input_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("add_density_gradient_kernel", status);
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) return cuda_error("cudaFuncSetAttribute density mlp backward", status);
-        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input_gradients), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<const __half*>(density_forward_hidden), reinterpret_cast<__half*>(density_backward_hidden), batch_size, DENSITY_HIDDEN_LAYERS);
+        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::col_major><<<blocks, threads, backward_shmem>>>(batch_size, reinterpret_cast<const __half*>(rgb_input_gradients), reinterpret_cast<const __half*>(params + density_param_offset), reinterpret_cast<const __half*>(density_forward_hidden), reinterpret_cast<__half*>(density_backward_hidden), batch_size, config::DENSITY_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("density mlp backward hidden", status);
 
-        if (std::string error = run_cutlass_split_k<CutlassLastLayerK, cutlass::layout::RowMajor, cutlass::layout::RowMajor, cutlass::layout::RowMajor>(MLP_OUTPUT_WIDTH, MLP_WIDTH, batch, reinterpret_cast<const __half*>(rgb_input_gradients), batch, reinterpret_cast<const __half*>(density_forward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), MLP_WIDTH, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_split_k<CutlassFullLayerK, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_WIDTH, MLP_INPUT_WIDTH, batch, reinterpret_cast<const __half*>(density_backward_hidden), MLP_WIDTH, reinterpret_cast<const __half*>(density_input), batch, reinterpret_cast<__half*>(gradients + density_param_offset), MLP_INPUT_WIDTH, workspace, split_k); !error.empty()) return error;
-        if (std::string error = run_cutlass_gemm<CutlassFullLayer, cutlass::layout::ColumnMajor, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>(MLP_INPUT_WIDTH, batch, MLP_WIDTH, reinterpret_cast<const __half*>(params + density_param_offset), MLP_INPUT_WIDTH, reinterpret_cast<const __half*>(density_backward_hidden), MLP_WIDTH, reinterpret_cast<__half*>(density_input_gradients), batch, workspace); !error.empty()) return error;
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_ROW;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density last weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density last gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density last gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density last gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density last gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate density last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute density last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic density last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt density last weight gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status =
+                    cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_input_gradients), a_desc, reinterpret_cast<const __half*>(density_forward_hidden), b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, reinterpret_cast<__half*>(gradients + density_param_offset + MLP_FIRST_LAYER_PARAMS), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr);
+                status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul density last weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
+
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density first weight gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density first gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, batch, config::MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density first gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_WIDTH, config::MLP_INPUT_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density first gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density first gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate density first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute density first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic density first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt density first weight gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(density_backward_hidden), a_desc, reinterpret_cast<const __half*>(density_input), b_desc, &beta, reinterpret_cast<__half*>(gradients + density_param_offset), d_desc, reinterpret_cast<__half*>(gradients + density_param_offset), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul density first weight gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
+
+        {
+            cublasLtMatmulDesc_t operation_desc       = nullptr;
+            cublasLtMatrixLayout_t a_desc             = nullptr;
+            cublasLtMatrixLayout_t b_desc             = nullptr;
+            cublasLtMatrixLayout_t d_desc             = nullptr;
+            cublasLtMatmulPreference_t preference     = nullptr;
+            const auto alpha                        = static_cast<__half>(1.0f);
+            const auto beta                         = static_cast<__half>(0.0f);
+            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
+            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
+            cublasLtMatmulHeuristicResult_t heuristic = {};
+            int returned_algo_count                   = 0;
+
+            if (const cublasStatus_t status = cublasLtMatmulDescCreate(&operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) return std::string{"cublasLtMatmulDescCreate density input gradients failed: "} + cublasGetStatusString(status);
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&a_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, config::MLP_WIDTH, config::MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density input gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density input gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&d_desc, CUDA_R_16F, config::MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutCreate density input gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients A failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients B failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatrixLayoutSetAttribute density input gradients D failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceCreate(&preference); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceCreate density input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulPreferenceSetAttribute density input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, operation_desc, a_desc, b_desc, d_desc, d_desc, preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmulAlgoGetHeuristic density input gradients failed: "} + cublasGetStatusString(status);
+            }
+            if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return "cublasLt density input gradients returned no supported algorithm.";
+            }
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, operation_desc, &alpha, reinterpret_cast<const __half*>(params + density_param_offset), a_desc, reinterpret_cast<const __half*>(density_backward_hidden), b_desc, &beta, reinterpret_cast<__half*>(density_input_gradients), d_desc, reinterpret_cast<__half*>(density_input_gradients), d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
+                cublasLtMatmulPreferenceDestroy(preference);
+                cublasLtMatrixLayoutDestroy(d_desc);
+                cublasLtMatrixLayoutDestroy(b_desc);
+                cublasLtMatrixLayoutDestroy(a_desc);
+                cublasLtMatmulDescDestroy(operation_desc);
+                return std::string{"cublasLtMatmul density input gradients failed: "} + cublasGetStatusString(status);
+            }
+            cublasLtMatmulPreferenceDestroy(preference);
+            cublasLtMatrixLayoutDestroy(d_desc);
+            cublasLtMatrixLayoutDestroy(b_desc);
+            cublasLtMatrixLayoutDestroy(a_desc);
+            cublasLtMatmulDescDestroy(operation_desc);
+        }
 
         return encode_grid_backward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, density_input_gradients, gradients + grid_param_offset);
     }
@@ -1507,8 +2128,8 @@ namespace ngp::cuda {
         if (compacted_sample_coords == nullptr) return "rollover compacted sample coords are null.";
         if (network_output_gradients == nullptr) return "rollover network output gradients are null.";
 
-        const std::uint32_t gradient_elements = batch_size * MLP_OUTPUT_WIDTH;
-        fill_rollover_and_rescale_half_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(batch_size, MLP_OUTPUT_WIDTH, compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
+        const std::uint32_t gradient_elements = batch_size * config::MLP_OUTPUT_WIDTH;
+        fill_rollover_and_rescale_half_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(batch_size, config::MLP_OUTPUT_WIDTH, compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("fill_rollover_and_rescale_half_kernel", status);
 
         const std::uint32_t coord_elements = batch_size * SAMPLE_COORD_FLOATS;

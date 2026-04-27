@@ -88,7 +88,8 @@ target_sources(
         ngp.dataset.ixx
         ngp.train.ixx
 )
-target_include_directories(instant-ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor" "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/cutlass/include")
+target_include_directories(instant-ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+target_link_libraries(instant-ngp PRIVATE CUDA::cublas CUDA::cublasLt)
 set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 
 

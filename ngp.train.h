@@ -43,6 +43,7 @@ namespace ngp::cuda::config {
 namespace ngp::cuda {
     // Device memory.
     void free_device_data(void** pointers, std::size_t count) noexcept;
+    void destroy_cublaslt_once(void*& handle) noexcept;
 
     template <typename... Pointers>
         requires ((std::is_pointer_v<Pointers> && ...))
@@ -69,7 +70,7 @@ namespace ngp::cuda {
 
     // Network buffers and parameters.
     std::string allocate_network_once(std::uint32_t batch_size, std::uint32_t max_samples, std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden,
-        std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, std::uint8_t*& out_cutlass_workspace);
+        std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace);
     std::string allocate_trainable_params_once(std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients);
     std::string initialize_mlp_params_once(std::uint64_t seed, std::uint32_t density_input_width, std::uint32_t density_output_width, std::uint32_t density_hidden_layers, std::uint32_t density_param_offset, std::uint32_t rgb_input_width, std::uint32_t rgb_output_width, std::uint32_t rgb_hidden_layers, std::uint32_t rgb_param_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
     std::string initialize_grid_params_once(std::uint32_t param_count, std::uint64_t seed, std::uint64_t rng_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
@@ -82,7 +83,7 @@ namespace ngp::cuda {
     std::string network_forward_once(std::uint32_t batch_size, const float* sample_coords, const std::uint32_t* grid_offsets, std::uint32_t grid_n_levels, std::uint32_t grid_features_per_level, std::uint32_t grid_base_resolution, float grid_per_level_scale, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, std::uint16_t* density_input, std::uint16_t* rgb_input,
         std::uint16_t* density_forward_hidden, std::uint16_t* rgb_forward_hidden, std::uint16_t* network_output);
     std::string network_backward_once(std::uint32_t batch_size, const float* sample_coords, const std::uint32_t* grid_offsets, std::uint32_t grid_n_levels, std::uint32_t grid_features_per_level, std::uint32_t grid_base_resolution, float grid_per_level_scale, const std::uint16_t* params, std::uint16_t* gradients, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, const std::uint16_t* density_input,
-        const std::uint16_t* rgb_input, const std::uint16_t* density_forward_hidden, const std::uint16_t* rgb_forward_hidden, const std::uint16_t* network_output, const std::uint16_t* network_output_gradients, std::uint16_t* rgb_output_gradients, std::uint16_t* rgb_input_gradients, std::uint16_t* density_input_gradients, std::uint16_t* density_backward_hidden, std::uint16_t* rgb_backward_hidden, std::uint8_t* cutlass_workspace);
+        const std::uint16_t* rgb_input, const std::uint16_t* density_forward_hidden, const std::uint16_t* rgb_forward_hidden, const std::uint16_t* network_output, const std::uint16_t* network_output_gradients, std::uint16_t* rgb_output_gradients, std::uint16_t* rgb_input_gradients, std::uint16_t* density_input_gradients, std::uint16_t* density_backward_hidden, std::uint16_t* rgb_backward_hidden, void* cublaslt_handle, std::uint8_t* cublaslt_workspace);
 
     // Optimizer.
     std::string allocate_adam_state_once(std::uint32_t param_count, float*& out_first_moments, float*& out_second_moments, std::uint32_t*& out_param_steps);

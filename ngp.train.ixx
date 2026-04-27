@@ -106,7 +106,7 @@ namespace ngp::train {
 
                 if (const std::string error = cuda::allocate_sampler_once(this->host.max_rays_per_batch, this->host.max_samples, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_network_once(
-                        config::NETWORK_BATCH_SIZE, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
+                        config::NETWORK_BATCH_SIZE, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
                     !error.empty())
                     throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_training_loss_once(config::NETWORK_BATCH_SIZE, this->host.max_rays_per_batch, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values); !error.empty()) throw std::runtime_error{error};
@@ -115,16 +115,18 @@ namespace ngp::train {
                 if (const std::string error = cuda::initialize_mlp_params_once(this->host.seed, config::GRID_OUTPUT_WIDTH, config::DENSITY_OUTPUT_WIDTH, config::DENSITY_HIDDEN_LAYERS, this->host.density_param_offset, config::RGB_INPUT_WIDTH, config::NETWORK_OUTPUT_WIDTH, config::RGB_HIDDEN_LAYERS, this->host.rgb_param_offset, this->device.params_full_precision, this->device.params, this->device.param_gradients); !error.empty()) throw std::runtime_error{error};
                 if (const std::string error = cuda::initialize_grid_params_once(this->host.grid_param_count, this->host.seed, this->host.mlp_param_count, this->device.params_full_precision + this->host.grid_param_offset, this->device.params + this->host.grid_param_offset, this->device.param_gradients + this->host.grid_param_offset); !error.empty()) throw std::runtime_error{error};
             } catch (...) {
+                cuda::destroy_cublaslt_once(this->device.cublaslt_handle);
                 cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients,
-                    this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments,
+                    this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments,
                     this->device.optimizer_param_steps);
                 throw;
             }
         }
 
         ~InstantNGP() noexcept {
+            cuda::destroy_cublaslt_once(this->device.cublaslt_handle);
             cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients,
-                this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments,
+                this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments,
                 this->device.optimizer_param_steps);
         }
 
@@ -157,7 +159,7 @@ namespace ngp::train {
                     !error.empty())
                     return std::unexpected{error};
                 if (const std::string error = cuda::network_backward_once(config::NETWORK_BATCH_SIZE, this->device.compacted_sample_coords, this->host.grid_offsets.data(), config::GRID_N_LEVELS, config::GRID_FEATURES_PER_LEVEL, config::GRID_BASE_RESOLUTION, config::GRID_PER_LEVEL_SCALE, this->device.params, this->device.param_gradients, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input,
-                        this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cutlass_workspace);
+                        this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
                     !error.empty())
                     return std::unexpected{error};
                 if (const std::string error = cuda::optimize(
@@ -259,7 +261,8 @@ namespace ngp::train {
             std::uint16_t* rgb_forward_hidden      = nullptr;
             std::uint16_t* density_backward_hidden = nullptr;
             std::uint16_t* rgb_backward_hidden     = nullptr;
-            std::uint8_t* cutlass_workspace        = nullptr;
+            void* cublaslt_handle                  = nullptr;
+            std::uint8_t* cublaslt_workspace       = nullptr;
 
             // Trainable parameters.
             float* params_full_precision   = nullptr;
