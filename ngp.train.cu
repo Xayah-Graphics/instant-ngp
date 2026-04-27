@@ -17,7 +17,7 @@ namespace ngp::cuda {
     }
 
     void destroy_cublaslt_once(void*& handle) noexcept {
-        if (handle != nullptr) cublasLtDestroy(reinterpret_cast<cublasLtHandle_t>(handle));
+        if (handle != nullptr) cublasLtDestroy(static_cast<cublasLtHandle_t>(handle));
         handle = nullptr;
     }
 
@@ -39,6 +39,7 @@ namespace ngp::cuda {
         inline constexpr std::uint32_t GRID_FORWARD_THREADS   = 512u;
         inline constexpr std::uint32_t GRID_BACKWARD_THREADS  = 256u;
         inline constexpr std::uint32_t GRID_BACKWARD_FEATURES = 2u;
+        static_assert(config::GRID_N_LEVELS == 8u);
 
         // Fully fused MLP.
         inline constexpr std::uint32_t MLP_FORWARD_ITERS       = 8u;
@@ -61,11 +62,6 @@ namespace ngp::cuda {
         std::string cuda_error(const char* operation, const cudaError_t status) {
             return std::string{operation} + " failed: " + cudaGetErrorString(status);
         }
-
-        // Small POD helpers.
-        struct GridOffsetTable final {
-            std::uint32_t data[config::GRID_N_LEVELS + 1u] = {};
-        };
 
         struct Pcg32 final {
             std::uint64_t state = PCG32_DEFAULT_STATE;
@@ -509,13 +505,16 @@ namespace ngp::cuda {
         }
 
         // Encoding kernels.
-        __global__ void encode_grid_forward_kernel(const std::uint32_t sample_count, const GridOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const float* __restrict__ sample_coords, const __half* __restrict__ grid, __half* __restrict__ encoded_positions) {
+        __global__ void encode_grid_forward_kernel(const std::uint32_t sample_count, const std::uint32_t grid_offset_0, const std::uint32_t grid_offset_1, const std::uint32_t grid_offset_2, const std::uint32_t grid_offset_3, const std::uint32_t grid_offset_4, const std::uint32_t grid_offset_5, const std::uint32_t grid_offset_6, const std::uint32_t grid_offset_7, const std::uint32_t grid_offset_8, const std::uint32_t base_resolution, const float log2_per_level_scale,
+            const float* __restrict__ sample_coords, const __half* __restrict__ grid, __half* __restrict__ encoded_positions) {
             const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
             if (i >= sample_count) return;
 
-            const std::uint32_t level = blockIdx.y;
-            grid += offset_table.data[level] * config::GRID_FEATURES_PER_LEVEL;
-            const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
+            const std::uint32_t level             = blockIdx.y;
+            const std::uint32_t level_offset      = level == 0u ? grid_offset_0 : level == 1u ? grid_offset_1 : level == 2u ? grid_offset_2 : level == 3u ? grid_offset_3 : level == 4u ? grid_offset_4 : level == 5u ? grid_offset_5 : level == 6u ? grid_offset_6 : grid_offset_7;
+            const std::uint32_t next_level_offset = level == 0u ? grid_offset_1 : level == 1u ? grid_offset_2 : level == 2u ? grid_offset_3 : level == 3u ? grid_offset_4 : level == 4u ? grid_offset_5 : level == 5u ? grid_offset_6 : level == 6u ? grid_offset_7 : grid_offset_8;
+            grid += level_offset * config::GRID_FEATURES_PER_LEVEL;
+            const std::uint32_t hashmap_size = next_level_offset - level_offset;
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
             const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
@@ -554,15 +553,18 @@ namespace ngp::cuda {
             encoded_positions[i + (level * config::GRID_FEATURES_PER_LEVEL + 3u) * sample_count] = result3;
         }
 
-        __global__ void encode_grid_backward_kernel(const std::uint32_t sample_count, const GridOffsetTable offset_table, const std::uint32_t base_resolution, const float log2_per_level_scale, const float* __restrict__ sample_coords, const __half* __restrict__ encoded_position_gradients, __half* __restrict__ grid_gradients) {
+        __global__ void encode_grid_backward_kernel(const std::uint32_t sample_count, const std::uint32_t grid_offset_0, const std::uint32_t grid_offset_1, const std::uint32_t grid_offset_2, const std::uint32_t grid_offset_3, const std::uint32_t grid_offset_4, const std::uint32_t grid_offset_5, const std::uint32_t grid_offset_6, const std::uint32_t grid_offset_7, const std::uint32_t grid_offset_8, const std::uint32_t base_resolution, const float log2_per_level_scale,
+            const float* __restrict__ sample_coords, const __half* __restrict__ encoded_position_gradients, __half* __restrict__ grid_gradients) {
             const std::uint32_t thread = blockIdx.x * blockDim.x + threadIdx.x;
             const std::uint32_t i      = (thread * GRID_BACKWARD_FEATURES) / config::GRID_FEATURES_PER_LEVEL;
             if (i >= sample_count) return;
 
-            const std::uint32_t level   = blockIdx.y;
-            const std::uint32_t feature = thread * GRID_BACKWARD_FEATURES - i * config::GRID_FEATURES_PER_LEVEL;
-            grid_gradients += offset_table.data[level] * config::GRID_FEATURES_PER_LEVEL;
-            const std::uint32_t hashmap_size = offset_table.data[level + 1u] - offset_table.data[level];
+            const std::uint32_t level             = blockIdx.y;
+            const std::uint32_t feature           = thread * GRID_BACKWARD_FEATURES - i * config::GRID_FEATURES_PER_LEVEL;
+            const std::uint32_t level_offset      = level == 0u ? grid_offset_0 : level == 1u ? grid_offset_1 : level == 2u ? grid_offset_2 : level == 3u ? grid_offset_3 : level == 4u ? grid_offset_4 : level == 5u ? grid_offset_5 : level == 6u ? grid_offset_6 : grid_offset_7;
+            const std::uint32_t next_level_offset = level == 0u ? grid_offset_1 : level == 1u ? grid_offset_2 : level == 2u ? grid_offset_3 : level == 3u ? grid_offset_4 : level == 4u ? grid_offset_5 : level == 5u ? grid_offset_6 : level == 6u ? grid_offset_7 : grid_offset_8;
+            grid_gradients += level_offset * config::GRID_FEATURES_PER_LEVEL;
+            const std::uint32_t hashmap_size = next_level_offset - level_offset;
             const float scale                = exp2f(static_cast<float>(level) * log2_per_level_scale) * static_cast<float>(base_resolution) - 1.0f;
             const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
             const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
@@ -1123,13 +1125,14 @@ namespace ngp::cuda {
     }
 
     // Parameter initialization.
-    std::string initialize_mlp_params_once(const std::uint64_t seed, const std::uint32_t density_input_width, const std::uint32_t density_output_width, const std::uint32_t density_layers, const std::uint32_t density_param_offset, const std::uint32_t rgb_input_width, const std::uint32_t rgb_output_width, const std::uint32_t rgb_layers, const std::uint32_t rgb_param_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
+    std::string initialize_mlp_params_once(
+        const std::uint64_t seed, const std::uint32_t density_input_width, const std::uint32_t density_output_width, const std::uint32_t density_hidden_layers, const std::uint32_t density_param_offset, const std::uint32_t rgb_input_width, const std::uint32_t rgb_output_width, const std::uint32_t rgb_hidden_layers, const std::uint32_t rgb_param_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (params_full_precision == nullptr) return "mlp full precision params are null.";
         if (params == nullptr) return "mlp params are null.";
         if (param_gradients == nullptr) return "mlp param gradients are null.";
         if (density_input_width != config::MLP_INPUT_WIDTH || rgb_input_width != config::MLP_INPUT_WIDTH) return "mlp input width does not match the compiled fully fused MLP.";
         if (density_output_width != config::MLP_OUTPUT_WIDTH || rgb_output_width != config::MLP_OUTPUT_WIDTH) return "mlp output width does not match the compiled fully fused MLP.";
-        if (density_layers != config::DENSITY_HIDDEN_LAYERS || rgb_layers != config::RGB_HIDDEN_LAYERS) return "mlp hidden layer count does not match the compiled fully fused MLP.";
+        if (density_hidden_layers != config::DENSITY_HIDDEN_LAYERS || rgb_hidden_layers != config::RGB_HIDDEN_LAYERS) return "mlp hidden layer count does not match the compiled fully fused MLP.";
 
         const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + DENSITY_NETWORK_PARAMS, rgb_param_offset + RGB_NETWORK_PARAMS);
         std::vector host_params(mlp_param_count, 0.0f);
@@ -1171,54 +1174,48 @@ namespace ngp::cuda {
     }
 
     // Encoding execution.
-    std::string encode_grid_forward(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const grid_params, std::uint16_t* const encoded_positions) {
+    std::string encode_grid_forward(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_n_levels, const std::uint32_t grid_features_per_level, const std::uint32_t grid_base_resolution, const float grid_per_level_scale, const std::uint16_t* const grid_params, std::uint16_t* const encoded_positions) {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
-        if (base_resolution == 0u) return "grid base resolution is zero.";
-        if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
+        if (grid_n_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (grid_features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_base_resolution == 0u) return "grid base resolution is zero.";
+        if (grid_per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (grid_params == nullptr) return "grid params are null.";
         if (encoded_positions == nullptr) return "grid encoded positions are null.";
 
-        GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= config::GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
-
         const dim3 blocks{(sample_count + GRID_FORWARD_THREADS - 1u) / GRID_FORWARD_THREADS, config::GRID_N_LEVELS, 1u};
-        encode_grid_forward_kernel<<<blocks, GRID_FORWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(grid_params), reinterpret_cast<__half*>(encoded_positions));
+        encode_grid_forward_kernel<<<blocks, GRID_FORWARD_THREADS>>>(sample_count, grid_offsets[0u], grid_offsets[1u], grid_offsets[2u], grid_offsets[3u], grid_offsets[4u], grid_offsets[5u], grid_offsets[6u], grid_offsets[7u], grid_offsets[8u], grid_base_resolution, log2f(grid_per_level_scale), sample_coords, reinterpret_cast<const __half*>(grid_params), reinterpret_cast<__half*>(encoded_positions));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_forward_kernel", status);
         return {};
     }
 
-    std::string encode_grid_backward(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const encoded_position_gradients, std::uint16_t* const grid_param_gradients) {
+    std::string encode_grid_backward(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_n_levels, const std::uint32_t grid_features_per_level, const std::uint32_t grid_base_resolution, const float grid_per_level_scale, const std::uint16_t* const encoded_position_gradients, std::uint16_t* const grid_param_gradients) {
         if (sample_count == 0u) return {};
         if (sample_coords == nullptr) return "grid sample coords are null.";
         if (grid_offsets == nullptr) return "grid offsets are null.";
-        if (grid_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
-        if (features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
-        if (base_resolution == 0u) return "grid base resolution is zero.";
-        if (per_level_scale <= 0.0f) return "grid per level scale must be positive.";
+        if (grid_n_levels != config::GRID_N_LEVELS) return "grid level count does not match the compiled grid encoder.";
+        if (grid_features_per_level != config::GRID_FEATURES_PER_LEVEL) return "grid features per level does not match the compiled grid encoder.";
+        if (grid_base_resolution == 0u) return "grid base resolution is zero.";
+        if (grid_per_level_scale <= 0.0f) return "grid per level scale must be positive.";
         if (encoded_position_gradients == nullptr) return "grid encoded position gradients are null.";
         if (grid_param_gradients == nullptr) return "grid param gradients are null.";
 
-        GridOffsetTable offset_table = {};
-        for (std::uint32_t i = 0u; i <= config::GRID_N_LEVELS; ++i) offset_table.data[i] = grid_offsets[i];
-
-        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(offset_table.data[config::GRID_N_LEVELS]) * config::GRID_FEATURES_PER_LEVEL * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
+        if (const cudaError_t status = cudaMemset(grid_param_gradients, 0, static_cast<std::size_t>(grid_offsets[config::GRID_N_LEVELS]) * config::GRID_FEATURES_PER_LEVEL * sizeof(__half)); status != cudaSuccess) return cuda_error("cudaMemset grid param gradients", status);
 
         const std::uint32_t threads = (sample_count * config::GRID_FEATURES_PER_LEVEL / GRID_BACKWARD_FEATURES + GRID_BACKWARD_THREADS - 1u) / GRID_BACKWARD_THREADS;
         const dim3 blocks{threads, config::GRID_N_LEVELS, 1u};
-        encode_grid_backward_kernel<<<blocks, GRID_BACKWARD_THREADS>>>(sample_count, offset_table, base_resolution, log2f(per_level_scale), sample_coords, reinterpret_cast<const __half*>(encoded_position_gradients), reinterpret_cast<__half*>(grid_param_gradients));
+        encode_grid_backward_kernel<<<blocks, GRID_BACKWARD_THREADS>>>(sample_count, grid_offsets[0u], grid_offsets[1u], grid_offsets[2u], grid_offsets[3u], grid_offsets[4u], grid_offsets[5u], grid_offsets[6u], grid_offsets[7u], grid_offsets[8u], grid_base_resolution, log2f(grid_per_level_scale), sample_coords, reinterpret_cast<const __half*>(encoded_position_gradients), reinterpret_cast<__half*>(grid_param_gradients));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("encode_grid_backward_kernel", status);
         return {};
     }
 
     // Network execution.
-    std::string network_inference_once(const std::uint32_t sample_count, const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset,
-        std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
+    std::string network_inference_once(const std::uint32_t sample_count, const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_n_levels, const std::uint32_t grid_features_per_level, const std::uint32_t grid_base_resolution, const float grid_per_level_scale, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset,
+        const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
         if (sample_count == 0u) return {};
         if (batch_size == 0u) return "network inference batch size is zero.";
         if (sample_count % (16u * MLP_FORWARD_ITERS) != 0u) return "network inference sample count does not match the fully fused MLP tile size.";
@@ -1237,7 +1234,7 @@ namespace ngp::cuda {
             const std::uint32_t chunk = ::cuda::std::min(batch_size, sample_count - offset);
             if (chunk % (16u * MLP_FORWARD_ITERS) != 0u) return "network inference chunk size does not match the fully fused MLP tile size.";
 
-            if (const std::string error = encode_grid_forward(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
+            if (const std::string error = encode_grid_forward(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, grid_offsets, grid_n_levels, grid_features_per_level, grid_base_resolution, grid_per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
             const std::uint32_t linear_blocks = (chunk + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
             encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, sample_coords + static_cast<std::uint64_t>(offset) * SAMPLE_COORD_FLOATS, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::MLP_OUTPUT_WIDTH) * chunk);
@@ -1257,8 +1254,8 @@ namespace ngp::cuda {
         return {};
     }
 
-    std::string network_forward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input,
-        std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
+    std::string network_forward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_n_levels, const std::uint32_t grid_features_per_level, const std::uint32_t grid_base_resolution, const float grid_per_level_scale, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset,
+        std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
         if (batch_size == 0u) return {};
         if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network sample coords are null.";
@@ -1269,7 +1266,7 @@ namespace ngp::cuda {
         if (rgb_forward_hidden == nullptr) return "rgb forward hidden is null.";
         if (network_output == nullptr) return "network output is null.";
 
-        if (const std::string error = encode_grid_forward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
+        if (const std::string error = encode_grid_forward(batch_size, sample_coords, grid_offsets, grid_n_levels, grid_features_per_level, grid_base_resolution, grid_per_level_scale, params + grid_param_offset, density_input); !error.empty()) return error;
 
         const std::uint32_t linear_blocks = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::MLP_OUTPUT_WIDTH) * batch_size);
@@ -1291,9 +1288,9 @@ namespace ngp::cuda {
         return {};
     }
 
-    std::string network_backward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_levels, const std::uint32_t features_per_level, const std::uint32_t base_resolution, const float per_level_scale, const std::uint16_t* const params, std::uint16_t* const gradients, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset,
-        const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients, std::uint16_t* const density_backward_hidden,
-        std::uint16_t* const rgb_backward_hidden, void* const cublaslt_handle, std::uint8_t* const cublaslt_workspace) {
+    std::string network_backward_once(const std::uint32_t batch_size, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint32_t grid_n_levels, const std::uint32_t grid_features_per_level, const std::uint32_t grid_base_resolution, const float grid_per_level_scale, const std::uint16_t* const params, std::uint16_t* const gradients, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset,
+        const std::uint32_t grid_param_offset, const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients,
+        std::uint16_t* const density_backward_hidden, std::uint16_t* const rgb_backward_hidden, void* const cublaslt_handle, std::uint8_t* const cublaslt_workspace) {
         if (batch_size == 0u) return {};
         if (batch_size % (16u * MLP_FORWARD_ITERS) != 0u) return "network batch size does not match the fully fused MLP tile size.";
         if (sample_coords == nullptr) return "network sample coords are null.";
@@ -1316,7 +1313,7 @@ namespace ngp::cuda {
         const std::uint32_t linear_blocks       = (batch_size + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         const std::uint64_t hidden_layer_stride = static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size;
         const int batch                         = static_cast<int>(batch_size);
-        const auto cublaslt         = reinterpret_cast<cublasLtHandle_t>(cublaslt_handle);
+        const auto cublaslt                     = static_cast<cublasLtHandle_t>(cublaslt_handle);
 
         extract_rgb_gradients_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(batch_size, reinterpret_cast<const __half*>(network_output_gradients), reinterpret_cast<__half*>(rgb_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) return cuda_error("extract_rgb_gradients_kernel", status);
@@ -1335,11 +1332,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_ROW;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1435,11 +1432,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_ROW;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1534,11 +1531,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1633,11 +1630,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1739,11 +1736,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_ROW;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_ROW;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_ROW;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_ROW;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1839,11 +1836,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -1937,11 +1934,11 @@ namespace ngp::cuda {
             cublasLtMatrixLayout_t b_desc             = nullptr;
             cublasLtMatrixLayout_t d_desc             = nullptr;
             cublasLtMatmulPreference_t preference     = nullptr;
-            const auto alpha                        = static_cast<__half>(1.0f);
-            const auto beta                         = static_cast<__half>(0.0f);
-            const cublasLtOrder_t a_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t b_order             = CUBLASLT_ORDER_COL;
-            const cublasLtOrder_t d_order             = CUBLASLT_ORDER_ROW;
+            const auto alpha                          = static_cast<__half>(1.0f);
+            const auto beta                           = static_cast<__half>(0.0f);
+            constexpr cublasLtOrder_t a_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t b_order         = CUBLASLT_ORDER_COL;
+            constexpr cublasLtOrder_t d_order         = CUBLASLT_ORDER_ROW;
             std::size_t max_workspace_bytes           = CUBLASLT_WORKSPACE_BYTES;
             cublasLtMatmulHeuristicResult_t heuristic = {};
             int returned_algo_count                   = 0;
@@ -2029,7 +2026,7 @@ namespace ngp::cuda {
             cublasLtMatmulDescDestroy(operation_desc);
         }
 
-        return encode_grid_backward(batch_size, sample_coords, grid_offsets, grid_levels, features_per_level, base_resolution, per_level_scale, density_input_gradients, gradients + grid_param_offset);
+        return encode_grid_backward(batch_size, sample_coords, grid_offsets, grid_n_levels, grid_features_per_level, grid_base_resolution, grid_per_level_scale, density_input_gradients, gradients + grid_param_offset);
     }
 
     // Optimizer.

@@ -105,8 +105,8 @@ namespace ngp::train {
                 this->host.total_param_count                   = this->host.mlp_param_count + this->host.grid_param_count;
 
                 if (const std::string error = cuda::allocate_sampler_once(this->host.max_rays_per_batch, this->host.max_samples, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy); !error.empty()) throw std::runtime_error{error};
-                if (const std::string error = cuda::allocate_network_once(
-                        config::NETWORK_BATCH_SIZE, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
+                if (const std::string error = cuda::allocate_network_once(config::NETWORK_BATCH_SIZE, this->host.max_samples, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden,
+                        this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
                     !error.empty())
                     throw std::runtime_error{error};
                 if (const std::string error = cuda::allocate_training_loss_once(config::NETWORK_BATCH_SIZE, this->host.max_rays_per_batch, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values); !error.empty()) throw std::runtime_error{error};
