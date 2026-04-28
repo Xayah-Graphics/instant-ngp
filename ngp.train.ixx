@@ -43,8 +43,11 @@ namespace ngp::train {
         std::uint32_t rays_per_batch                          = 0u;
         std::uint32_t measured_sample_count_before_compaction = 0u;
         std::uint32_t measured_sample_count                   = 0u;
+        std::uint32_t density_grid_occupied_cells             = 0u;
         float loss                                            = 0.0f;
         float elapsed_ms                                      = 0.0f;
+        float density_grid_update_ms                          = 0.0f;
+        float density_grid_occupancy_ratio                    = 0.0f;
     };
 
     export class InstantNGP final {
@@ -104,6 +107,7 @@ namespace ngp::train {
 
                 cuda::allocate_sampler_once(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy);
                 cuda::allocate_network_once(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
+                cuda::allocate_density_grid_once(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count);
                 cuda::allocate_training_loss_once(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values);
                 cuda::allocate_trainable_params_once(this->host.total_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients);
                 cuda::allocate_adam_state_once(this->host.total_param_count, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
@@ -111,14 +115,16 @@ namespace ngp::train {
                 cuda::initialize_grid_params_once(this->host.grid_param_count, this->host.mlp_param_count, this->device.params_full_precision + this->host.grid_param_offset, this->device.params + this->host.grid_param_offset, this->device.param_gradients + this->host.grid_param_offset);
             } catch (...) {
                 cuda::destroy_cublaslt_once(this->device.cublaslt_handle);
-                cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+                cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params,
+                    this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
                 throw;
             }
         }
 
         ~InstantNGP() noexcept {
             cuda::destroy_cublaslt_once(this->device.cublaslt_handle);
-            cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+            cuda::free_device_data(this->device.pixels, this->device.camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients,
+                this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
         }
 
         InstantNGP(const InstantNGP&)                = delete;
@@ -130,8 +136,12 @@ namespace ngp::train {
             try {
                 const auto train_start            = std::chrono::steady_clock::now();
                 std::uint32_t loss_rays_per_batch = this->host.rays_per_batch;
+                this->host.density_grid_update_ms = 0.0f;
                 for (std::int32_t i = 0; i < iters; ++i) {
-                    loss_rays_per_batch = this->host.rays_per_batch;
+                    loss_rays_per_batch          = this->host.rays_per_batch;
+                    float density_grid_update_ms = 0.0f;
+                    cuda::update_density_grid_once(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, density_grid_update_ms);
+                    this->host.density_grid_update_ms += density_grid_update_ms;
                     cuda::sample_training_batch(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                     cuda::network_inference_once(this->host.inference_sample_count, this->device.sample_coords, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.network_output);
                     cuda::compute_loss_and_compact_once(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
@@ -141,7 +151,10 @@ namespace ngp::train {
                     cuda::optimize(this->host.total_param_count, this->host.mlp_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
                     cuda::read_counter_once(this->device.sample_counter, this->host.measured_sample_count_before_compaction);
                     cuda::read_counter_once(this->device.compacted_sample_counter, this->host.measured_sample_count);
-                    if (this->host.measured_sample_count == 0u) throw std::runtime_error{"Training stopped unexpectedly."};
+                    if (this->host.measured_sample_count == 0u) {
+                        cuda::read_counter_once(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
+                        throw std::runtime_error{std::format("Training stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
+                    }
 
                     this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, config::MAX_SAMPLES) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY;
                     this->host.rays_per_batch         = std::min(std::max(((static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * config::NETWORK_BATCH_SIZE) / this->host.measured_sample_count, static_cast<std::uint64_t>(config::NETWORK_BATCH_SIZE))) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY, config::NETWORK_BATCH_GRANULARITY), config::NETWORK_BATCH_SIZE);
@@ -151,13 +164,17 @@ namespace ngp::train {
 
                 float loss_sum = 0.0f;
                 cuda::read_loss_sum_once(this->device.loss_values, loss_rays_per_batch, loss_sum);
+                cuda::read_counter_once(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
                 return TrainStats{
                     .step                                    = this->host.current_step,
                     .rays_per_batch                          = this->host.rays_per_batch,
                     .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
                     .measured_sample_count                   = this->host.measured_sample_count,
+                    .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
                     .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::NETWORK_BATCH_SIZE),
                     .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
+                    .density_grid_update_ms                  = this->host.density_grid_update_ms,
+                    .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / (128.0f * 128.0f * 128.0f),
                 };
             } catch (const std::exception& error) {
                 return std::unexpected{std::string{error.what()}};
@@ -189,6 +206,9 @@ namespace ngp::train {
             std::uint32_t inference_sample_count                  = config::MAX_SAMPLES;
             std::uint32_t measured_sample_count_before_compaction = 0u;
             std::uint32_t measured_sample_count                   = 0u;
+            std::uint32_t density_grid_ema_step                   = 0u;
+            std::uint32_t density_grid_occupied_cells             = 0u;
+            float density_grid_update_ms                          = 0.0f;
         } host;
 
         struct DeviceData {
@@ -197,13 +217,18 @@ namespace ngp::train {
             const float* camera        = nullptr;
 
             // Sampler.
-            std::uint8_t* occupancy       = nullptr;
-            float* sample_coords          = nullptr;
-            float* rays                   = nullptr;
-            std::uint32_t* ray_indices    = nullptr;
-            std::uint32_t* numsteps       = nullptr;
-            std::uint32_t* ray_counter    = nullptr;
-            std::uint32_t* sample_counter = nullptr;
+            std::uint8_t* occupancy                    = nullptr;
+            float* sample_coords                       = nullptr;
+            float* rays                                = nullptr;
+            std::uint32_t* ray_indices                 = nullptr;
+            std::uint32_t* numsteps                    = nullptr;
+            std::uint32_t* ray_counter                 = nullptr;
+            std::uint32_t* sample_counter              = nullptr;
+            float* density_grid_values                 = nullptr;
+            float* density_grid_scratch                = nullptr;
+            std::uint32_t* density_grid_indices        = nullptr;
+            float* density_grid_mean                   = nullptr;
+            std::uint32_t* density_grid_occupied_count = nullptr;
 
             // Loss and compaction.
             std::uint32_t* compacted_sample_counter = nullptr;
