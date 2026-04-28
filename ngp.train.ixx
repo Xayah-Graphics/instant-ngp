@@ -164,92 +164,17 @@ namespace ngp::train {
             }
         }
 
-        ~InstantNGP() noexcept {
-            cuda::destroy_cublaslt(this->device.cublaslt_handle);
-            cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden,
-                this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
-        }
+        ~InstantNGP() noexcept;
 
         InstantNGP(const InstantNGP&)                = delete;
         InstantNGP& operator=(const InstantNGP&)     = delete;
         InstantNGP(InstantNGP&&) noexcept            = delete;
         InstantNGP& operator=(InstantNGP&&) noexcept = delete;
 
-        std::expected<TrainStats, std::string> train(const std::int32_t iters) {
-            try {
-                const auto train_start            = std::chrono::steady_clock::now();
-                std::uint32_t loss_rays_per_batch = this->host.rays_per_batch;
-                this->host.density_grid_update_ms = 0.0f;
-                for (std::int32_t i = 0; i < iters; ++i) {
-                    loss_rays_per_batch          = this->host.rays_per_batch;
-                    float density_grid_update_ms = 0.0f;
-                    cuda::update_density_grid(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, this->host.density_grid_rng, density_grid_update_ms);
-                    this->host.density_grid_update_ms += density_grid_update_ms;
-                    cuda::sample_training_batch(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
-                    cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.network_output);
-                    cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
-                    cuda::pad_compacted_training_batch(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.network_output_gradients);
-                    cuda::forward_network(this->device.compacted_sample_coords, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output);
-                    cuda::backward_network(this->device.compacted_sample_coords, this->host.grid_offsets.data(), this->device.params, this->device.param_gradients, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
-                    cuda::step_optimizer(this->host.total_param_count, this->host.mlp_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
-                    cuda::read_counter(this->device.sample_counter, this->host.measured_sample_count_before_compaction);
-                    cuda::read_counter(this->device.compacted_sample_counter, this->host.measured_sample_count);
-                    if (this->host.measured_sample_count == 0u) {
-                        cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-                        throw std::runtime_error{std::format("Training stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
-                    }
-
-                    this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, config::MAX_SAMPLES) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY;
-                    this->host.rays_per_batch         = std::min(std::max(((static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * config::NETWORK_BATCH_SIZE) / this->host.measured_sample_count, static_cast<std::uint64_t>(config::NETWORK_BATCH_SIZE))) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY, config::NETWORK_BATCH_GRANULARITY), config::NETWORK_BATCH_SIZE);
-
-                    ++this->host.current_step;
-                }
-
-                float loss_sum = 0.0f;
-                cuda::read_loss_sum(this->device.loss_values, loss_rays_per_batch, loss_sum);
-                cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-                return TrainStats{
-                    .step                                    = this->host.current_step,
-                    .rays_per_batch                          = this->host.rays_per_batch,
-                    .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
-                    .measured_sample_count                   = this->host.measured_sample_count,
-                    .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
-                    .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::NETWORK_BATCH_SIZE),
-                    .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
-                    .density_grid_update_ms                  = this->host.density_grid_update_ms,
-                    .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / (128.0f * 128.0f * 128.0f),
-                };
-            } catch (const std::exception& error) {
-                return std::unexpected{std::string{error.what()}};
-            }
-        }
-
-        std::expected<ValidationStats, std::string> validate() const {
-            try {
-                if (this->host.validation_frame_count == 0u) throw std::runtime_error{"No validation images are available in the current dataset."};
-
-                const auto validation_start          = std::chrono::steady_clock::now();
-                const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.validation_width) * this->host.validation_height;
-                const std::uint64_t pixel_count      = pixels_per_image * this->host.validation_frame_count;
-                double validation_loss_sum           = 0.0;
-
-                cuda::run_validation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum, validation_loss_sum);
-
-                const double mse = validation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
-                if (!std::isfinite(mse)) throw std::runtime_error{"validation produced non-finite MSE."};
-
-                return ValidationStats{
-                    .step        = this->host.current_step,
-                    .image_count = this->host.validation_frame_count,
-                    .pixel_count = pixel_count,
-                    .mse         = static_cast<float>(mse),
-                    .psnr        = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
-                    .elapsed_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - validation_start).count(),
-                };
-            } catch (const std::exception& error) {
-                return std::unexpected{std::string{error.what()}};
-            }
-        }
+        std::expected<TrainStats, std::string> train(std::int32_t iters);
+        std::expected<ValidationStats, std::string> validate() const;
+        std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
+        std::expected<void, std::string> load_weights(const std::filesystem::path& path);
 
     private:
         struct HostData {
@@ -341,7 +266,5 @@ namespace ngp::train {
             float* optimizer_second_moments      = nullptr;
             std::uint32_t* optimizer_param_steps = nullptr;
         } device;
-
-        static constexpr std::array<float, 6> AABB = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
     };
 } // namespace ngp::train

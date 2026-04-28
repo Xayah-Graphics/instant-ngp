@@ -1381,6 +1381,29 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"initialize_grid_params_kernel failed: "} + cudaGetErrorString(status)};
     }
 
+    void download_trainable_parameters(const std::uint32_t param_count, const float* const params_full_precision, float* const out_params_full_precision) {
+        if (param_count == 0u) return;
+        if (params_full_precision == nullptr || out_params_full_precision == nullptr) throw std::runtime_error{"invalid trainable parameter download input."};
+        if (const cudaError_t status = cudaMemcpy(out_params_full_precision, params_full_precision, static_cast<std::size_t>(param_count) * sizeof(float), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy trainable params download failed: "} + cudaGetErrorString(status)};
+    }
+
+    void upload_trainable_parameters(const std::uint32_t param_count, const float* const params_full_precision, float* const out_params_full_precision, std::uint16_t* const out_params, std::uint16_t* const out_param_gradients, float* const optimizer_first_moments, float* const optimizer_second_moments, std::uint32_t* const optimizer_param_steps) {
+        if (param_count == 0u) return;
+        if (params_full_precision == nullptr || out_params_full_precision == nullptr || out_params == nullptr || out_param_gradients == nullptr || optimizer_first_moments == nullptr || optimizer_second_moments == nullptr || optimizer_param_steps == nullptr) throw std::runtime_error{"invalid trainable parameter upload input."};
+
+        const std::size_t param_bytes = static_cast<std::size_t>(param_count) * sizeof(float);
+        if (const cudaError_t status = cudaMemcpy(out_params_full_precision, params_full_precision, param_bytes, cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy trainable params upload failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(out_param_gradients, 0, static_cast<std::size_t>(param_count) * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded param gradients failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(optimizer_first_moments, 0, param_bytes); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer first moments failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(optimizer_second_moments, 0, param_bytes); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer second moments failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(optimizer_param_steps, 0, static_cast<std::size_t>(param_count) * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer param steps failed: "} + cudaGetErrorString(status)};
+
+        const std::uint32_t blocks = (param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        cast_params_to_half_kernel<<<blocks, THREADS_PER_BLOCK>>>(param_count, out_params_full_precision, reinterpret_cast<__half*>(out_params));
+
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"cast_params_to_half_kernel loaded params failed: "} + cudaGetErrorString(status)};
+    }
+
     void evaluate_network(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
         if (sample_count == 0u) return;
         if (sample_count % (16u * MLP_FORWARD_ITERS) != 0u || sample_coords == nullptr || grid_offsets == nullptr || params == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr) throw std::runtime_error{"invalid network inference input."};

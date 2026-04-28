@@ -147,6 +147,8 @@ namespace ngp::cuda {
     void allocate_trainable_parameter_buffers(std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients);
     void initialize_mlp_parameters(std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
     void initialize_grid_parameters(std::uint32_t param_count, std::uint64_t rng_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
+    void download_trainable_parameters(std::uint32_t param_count, const float* params_full_precision, float* out_params_full_precision);
+    void upload_trainable_parameters(std::uint32_t param_count, const float* params_full_precision, float* out_params_full_precision, std::uint16_t* out_params, std::uint16_t* out_param_gradients, float* optimizer_first_moments, float* optimizer_second_moments, std::uint32_t* optimizer_param_steps);
 
     // Network execution.
     void evaluate_network(std::uint32_t sample_count, const float* sample_coords, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output);

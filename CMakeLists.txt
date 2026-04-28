@@ -81,6 +81,7 @@ target_sources(
         instant-ngp
         PRIVATE
         ngp.dataset.cpp
+        ngp.train.cpp
         ngp.train.cu
         ngp.train.h
         PUBLIC
