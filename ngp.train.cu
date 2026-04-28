@@ -1539,7 +1539,7 @@ namespace ngp::cuda {
         const std::uint64_t total_pixels_64 = static_cast<std::uint64_t>(width) * height;
         if (total_pixels_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"evaluation image has too many pixels."};
         const auto total_pixels           = static_cast<std::uint32_t>(total_pixels_64);
-        std::size_t comparison_byte_count = 0uz;
+        std::size_t comparison_byte_count = 0u;
         if (writes_comparison) {
             const std::uint64_t comparison_byte_count_64 = total_pixels_64 * 2u * 3u;
             if (comparison_byte_count_64 > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"test comparison image is too large."};
