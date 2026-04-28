@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import csv
 import dataclasses
 import json
 import math
 import pathlib
+import time
 
 try:
     import PIL.Image
@@ -86,11 +88,13 @@ EXPECTED_TENSORS = {
 
 
 @dataclasses.dataclass(frozen=True)
-class CameraFrame:
+class TestFrame:
     camera: torch.Tensor
     width: int
     height: int
     focal_length: float
+    image_path: pathlib.Path
+    relative_path: pathlib.Path
 
 
 class HashGridEncoder(torch.nn.Module):
@@ -336,69 +340,67 @@ def load_weights(weights_path: pathlib.Path, architecture: InstantNGPArchitectur
     return network.to(device=device, dtype=dtype)
 
 
-def load_nerf_synthetic_camera(dataset_path: pathlib.Path, split: str, image_index: int, max_size: int | None) -> CameraFrame:
-    split_json_path = dataset_path / f"transforms_{split}.json"
+def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path) -> list[TestFrame]:
+    split_json_path = dataset_path / "transforms_test.json"
     with split_json_path.open("r", encoding="utf-8") as input_file:
         transforms = json.load(input_file)
 
     frames = transforms["frames"]
-    if image_index < 0 or image_index >= len(frames):
-        raise RuntimeError(f"image_index must be in [0, {len(frames) - 1}].")
+    if len(frames) == 0:
+        raise RuntimeError("transforms_test.json contains no frames.")
 
-    frame = frames[image_index]
-    image_path = pathlib.Path(frame["file_path"])
-    if image_path.suffix == "":
-        image_path = image_path.with_suffix(".png")
-    if not image_path.is_absolute():
-        image_path = split_json_path.parent / image_path
-    image_path = image_path.resolve()
+    test_frames = []
+    for frame in frames:
+        relative_path = pathlib.Path(frame["file_path"])
+        if relative_path.is_absolute():
+            raise RuntimeError("test frame file_path must be relative.")
+        if ".." in relative_path.parts:
+            raise RuntimeError("test frame file_path must not contain '..'.")
+        if relative_path.suffix == "":
+            relative_path = relative_path.with_suffix(".png")
 
-    with PIL.Image.open(image_path) as image:
-        width, height = image.size
+        image_path = (split_json_path.parent / relative_path).resolve()
+        if not image_path.is_file():
+            raise RuntimeError(f"test image '{image_path}' does not exist.")
 
-    original_width = width
-    if max_size is not None:
-        if max_size <= 0:
-            raise RuntimeError("max_size must be positive.")
-        scale = min(1.0, max_size / max(width, height))
-        width = max(1, round(width * scale))
-        height = max(1, round(height * scale))
-    else:
-        scale = 1.0
+        with PIL.Image.open(image_path) as image:
+            width, height = image.size
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"test image '{image_path}' has invalid resolution.")
 
-    transform_matrix = frame["transform_matrix"]
-    camera = [[float(transform_matrix[row][column]) for row in range(4)] for column in range(4)]
-    for i in range(4):
-        camera[1][i] = -camera[1][i]
-        camera[2][i] = -camera[2][i]
+        transform_matrix = frame["transform_matrix"]
+        camera = [[float(transform_matrix[row][column]) for row in range(4)] for column in range(4)]
+        for i in range(4):
+            camera[1][i] = -camera[1][i]
+            camera[2][i] = -camera[2][i]
 
-    camera[3][0] = camera[3][0] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
-    camera[3][1] = camera[3][1] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
-    camera[3][2] = camera[3][2] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
+        camera[3][0] = camera[3][0] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
+        camera[3][1] = camera[3][1] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
+        camera[3][2] = camera[3][2] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
 
-    camera_row0 = [camera[0][0], camera[1][0], camera[2][0], camera[3][0]]
-    camera_row1 = [camera[0][1], camera[1][1], camera[2][1], camera[3][1]]
-    camera_row2 = [camera[0][2], camera[1][2], camera[2][2], camera[3][2]]
-    ngp_camera = torch.tensor(
-        [
-            camera_row1[0], camera_row2[0], camera_row0[0],
-            camera_row1[1], camera_row2[1], camera_row0[1],
-            camera_row1[2], camera_row2[2], camera_row0[2],
-            camera_row1[3], camera_row2[3], camera_row0[3],
-        ],
-        dtype=torch.float32,
-    )
-    focal_length = 0.5 * float(original_width) / math.tan(float(transforms["camera_angle_x"]) * 0.5)
-    return CameraFrame(camera=ngp_camera, width=width, height=height, focal_length=focal_length * scale)
+        camera_row0 = [camera[0][0], camera[1][0], camera[2][0], camera[3][0]]
+        camera_row1 = [camera[0][1], camera[1][1], camera[2][1], camera[3][1]]
+        camera_row2 = [camera[0][2], camera[1][2], camera[2][2], camera[3][2]]
+        ngp_camera = torch.tensor(
+            [
+                camera_row1[0], camera_row2[0], camera_row0[0],
+                camera_row1[1], camera_row2[1], camera_row0[1],
+                camera_row1[2], camera_row2[2], camera_row0[2],
+                camera_row1[3], camera_row2[3], camera_row0[3],
+            ],
+            dtype=torch.float32,
+        )
+        focal_length = 0.5 * float(width) / math.tan(float(transforms["camera_angle_x"]) * 0.5)
+        test_frames.append(TestFrame(camera=ngp_camera, width=width, height=height, focal_length=focal_length, image_path=image_path, relative_path=relative_path))
+
+    return test_frames
 
 
 @torch.inference_mode()
-def render_frame(model: InstantNGPInference, frame: CameraFrame, ray_batch: int, marcher: str) -> torch.Tensor:
+def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int) -> tuple[torch.Tensor, int]:
     if ray_batch <= 0:
         raise RuntimeError("ray_batch must be positive.")
-    if marcher not in {"occupancy", "dense"}:
-        raise RuntimeError("marcher must be either 'occupancy' or 'dense'.")
-    if marcher == "occupancy" and model.occupancy_grid is None:
+    if model.occupancy_grid is None:
         model.rebuild_occupancy_grid()
 
     camera = frame.camera.to(model.device)
@@ -408,6 +410,7 @@ def render_frame(model: InstantNGPInference, frame: CameraFrame, ray_batch: int,
     ray_origin = camera[9:12]
     pixel_count = frame.width * frame.height
     rendered = torch.zeros((pixel_count, 3), device=model.device, dtype=torch.float32)
+    total_sample_count = torch.zeros((), device=model.device, dtype=torch.int64)
 
     for start in range(0, pixel_count, ray_batch):
         end = min(start + ray_batch, pixel_count)
@@ -447,14 +450,11 @@ def render_frame(model: InstantNGPInference, frame: CameraFrame, ray_batch: int,
             if not torch.any(inside):
                 break
 
-            if marcher == "occupancy":
-                voxel = torch.floor(position * model.architecture.nerf_grid_size).to(torch.int64)
-                voxel_inside = inside & torch.all((voxel >= 0) & (voxel < model.architecture.nerf_grid_size), dim=1)
-                occupied = torch.zeros_like(active)
-                occupied[voxel_inside] = model.occupancy_grid[voxel[voxel_inside, 2], voxel[voxel_inside, 1], voxel[voxel_inside, 0]]
-                sample_mask = inside & occupied
-            else:
-                sample_mask = inside
+            voxel = torch.floor(position * model.architecture.nerf_grid_size).to(torch.int64)
+            voxel_inside = inside & torch.all((voxel >= 0) & (voxel < model.architecture.nerf_grid_size), dim=1)
+            occupied = torch.zeros_like(active)
+            occupied[voxel_inside] = model.occupancy_grid[voxel[voxel_inside, 2], voxel[voxel_inside, 1], voxel[voxel_inside, 0]]
+            sample_mask = inside & occupied
 
             if torch.any(sample_mask):
                 ray_indices = torch.nonzero(sample_mask, as_tuple=False).flatten()
@@ -465,14 +465,13 @@ def render_frame(model: InstantNGPInference, frame: CameraFrame, ray_batch: int,
                 sample_counts[sample_mask] += 1
 
             active = inside
-            if marcher == "occupancy":
-                empty_mask = active & ~sample_mask
-                if torch.any(sample_mask):
-                    t[sample_mask] += model.architecture.min_cone_stepsize
-                if torch.any(empty_mask):
-                    t[empty_mask] = advance_to_next_density_voxel(model.architecture, t[empty_mask], position[empty_mask], ray_direction[empty_mask])
-            else:
-                t[active] += model.architecture.min_cone_stepsize
+            empty_mask = active & ~sample_mask
+            if torch.any(sample_mask):
+                t[sample_mask] += model.architecture.min_cone_stepsize
+            if torch.any(empty_mask):
+                t[empty_mask] = advance_to_next_density_voxel(model.architecture, t[empty_mask], position[empty_mask], ray_direction[empty_mask])
+
+        total_sample_count += sample_counts.sum()
 
         if sample_positions:
             positions = torch.cat(sample_positions, dim=0)
@@ -490,7 +489,7 @@ def render_frame(model: InstantNGPInference, frame: CameraFrame, ray_batch: int,
             weights = alpha_by_ray * survival * (survival >= model.architecture.transmittance_epsilon)
             rendered[start:end] = torch.clamp((weights.unsqueeze(2) * rgb_by_ray).sum(dim=1), 0.0, 1.0)
 
-    return rendered.reshape(frame.height, frame.width, 3)
+    return rendered.reshape(frame.height, frame.width, 3), int(total_sample_count.item())
 
 
 def intersect_unit_aabb(origin: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
@@ -513,37 +512,175 @@ def advance_to_next_density_voxel(architecture: InstantNGPArchitecture, t: torch
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Torch-native instant-ngp-new safetensors inference example.")
+    parser = argparse.ArgumentParser(description="Render the complete NeRF-synthetic test split with torch-native instant-ngp-new weights and write benchmark data.")
     parser.add_argument("--weights", required=True, type=pathlib.Path)
     parser.add_argument("--dataset", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
-    parser.add_argument("--split", default="test", choices=("train", "val", "test"))
-    parser.add_argument("--image-index", default=0, type=int)
     parser.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
     parser.add_argument("--dtype", default="float16", choices=("float16", "float32"))
-    parser.add_argument("--max-size", default=None, type=int)
     parser.add_argument("--ray-batch", default=4096, type=int)
     parser.add_argument("--sample-batch", default=262144, type=int)
-    parser.add_argument("--marcher", default="occupancy", choices=("occupancy", "dense"))
     args = parser.parse_args()
 
     if not args.dataset.is_dir():
         raise RuntimeError(f"dataset path '{args.dataset}' is not a directory.")
     if not args.weights.is_file():
         raise RuntimeError(f"weights path '{args.weights}' is not a file.")
-    if args.output.parent != pathlib.Path("") and not args.output.parent.is_dir():
-        raise RuntimeError(f"output parent directory '{args.output.parent}' does not exist.")
-    if args.image_index < 0:
-        raise RuntimeError("image-index must be non-negative.")
+    if args.output.exists() and not args.output.is_dir():
+        raise RuntimeError(f"output path '{args.output}' exists and is not a directory.")
+    if args.ray_batch <= 0:
+        raise RuntimeError("ray-batch must be positive.")
+    if args.sample_batch <= 0:
+        raise RuntimeError("sample-batch must be positive.")
+    args.output.mkdir(parents=True, exist_ok=True)
 
+    script_start = time.perf_counter()
     torch.set_float32_matmul_precision("high")
+    test_frames = load_nerf_synthetic_test_frames(args.dataset)
+    model_load_start = time.perf_counter()
     model = InstantNGPInference(args.weights, args.device, args.dtype, args.sample_batch)
-    frame = load_nerf_synthetic_camera(args.dataset, args.split, args.image_index, args.max_size)
-    print(f"torch={torch.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True marcher={args.marcher}")
-    image = render_frame(model, frame, args.ray_batch, args.marcher)
-    image_bytes = torch.round(image.mul(255.0)).to(torch.uint8).cpu().contiguous().flatten().tolist()
-    PIL.Image.frombytes("RGB", (frame.width, frame.height), bytes(image_bytes)).save(args.output)
-    print(f"saved {args.output} ({frame.width}x{frame.height}, split={args.split}, image_index={args.image_index})")
+    if model.device.type == "cuda":
+        torch.cuda.synchronize(model.device)
+    model_load_ms = (time.perf_counter() - model_load_start) * 1000.0
+
+    occupancy_start = time.perf_counter()
+    occupancy_grid = model.rebuild_occupancy_grid()
+    if model.device.type == "cuda":
+        torch.cuda.synchronize(model.device)
+    occupancy_ms = (time.perf_counter() - occupancy_start) * 1000.0
+    occupied_cells = int(occupancy_grid.sum().item())
+    occupancy_ratio = occupied_cells / model.architecture.nerf_grid_cells
+
+    print(f"torch={torch.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True marcher=occupancy")
+    print(f"test_frames={len(test_frames)} output={args.output} occupancy={occupied_cells}/{model.architecture.nerf_grid_cells} ratio={occupancy_ratio:.6f} rebuild={occupancy_ms:.3f}ms")
+
+    rows = []
+    total_pixels = 0
+    total_samples = 0
+    total_sse = 0.0
+    total_render_ms = 0.0
+    total_save_ms = 0.0
+    loop_start = time.perf_counter()
+
+    for image_index, frame in enumerate(test_frames):
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
+        render_start = time.perf_counter()
+        image, sample_count = render_frame(model, frame, args.ray_batch)
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
+        render_ms = (time.perf_counter() - render_start) * 1000.0
+
+        with PIL.Image.open(frame.image_path) as ground_truth_image:
+            ground_truth_rgba = ground_truth_image.convert("RGBA")
+            if ground_truth_rgba.size != (frame.width, frame.height):
+                raise RuntimeError(f"ground truth size mismatch for '{frame.image_path}'.")
+            ground_truth = torch.frombuffer(bytearray(ground_truth_rgba.tobytes()), dtype=torch.uint8).reshape(frame.height, frame.width, 4).to(torch.float32).mul_(1.0 / 255.0)
+
+        ground_truth_rgb = ground_truth[:, :, 0:3]
+        ground_truth_alpha = ground_truth[:, :, 3:4]
+        ground_truth_linear = torch.where(ground_truth_rgb <= 0.04045, ground_truth_rgb / 12.92, torch.pow((ground_truth_rgb + 0.055) / 1.055, 2.4))
+        ground_truth_premultiplied = ground_truth_linear * ground_truth_alpha
+        ground_truth_target = torch.where(ground_truth_premultiplied < 0.0031308, 12.92 * ground_truth_premultiplied, 1.055 * torch.pow(ground_truth_premultiplied, 0.41666) - 0.055).clamp_(0.0, 1.0).to(model.device)
+        prediction = image.clamp(0.0, 1.0)
+        mse = float(torch.mean(torch.square(prediction - ground_truth_target)).item())
+        if not math.isfinite(mse):
+            raise RuntimeError(f"non-finite MSE for '{frame.relative_path}'.")
+        psnr = math.inf if mse == 0.0 else -10.0 * math.log10(mse)
+
+        output_path = args.output / frame.relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
+        save_start = time.perf_counter()
+        image_uint8 = torch.round(prediction.mul(255.0)).to(torch.uint8).cpu().contiguous()
+        PIL.Image.fromarray(image_uint8.numpy()).save(output_path)
+        save_ms = (time.perf_counter() - save_start) * 1000.0
+
+        pixel_count = frame.width * frame.height
+        total_pixels += pixel_count
+        total_samples += sample_count
+        total_sse += mse * pixel_count * 3.0
+        total_render_ms += render_ms
+        total_save_ms += save_ms
+        row = {
+            "image_index": image_index,
+            "file_path": frame.relative_path.as_posix(),
+            "output_path": output_path.as_posix(),
+            "width": frame.width,
+            "height": frame.height,
+            "pixels": pixel_count,
+            "render_ms": render_ms,
+            "save_ms": save_ms,
+            "mse": mse,
+            "psnr": psnr,
+            "sample_count": sample_count,
+            "samples_per_ray": sample_count / pixel_count,
+        }
+        rows.append(row)
+        print(f"[{image_index + 1:03d}/{len(test_frames):03d}] {frame.relative_path.as_posix()} render={render_ms:.3f}ms save={save_ms:.3f}ms mse={mse:.8f} psnr={psnr:.2f} samples/ray={row['samples_per_ray']:.2f}")
+
+    total_loop_ms = (time.perf_counter() - loop_start) * 1000.0
+    total_mse = total_sse / (total_pixels * 3.0)
+    total_psnr = math.inf if total_mse == 0.0 else -10.0 * math.log10(total_mse)
+    finite_psnrs = [row["psnr"] for row in rows if math.isfinite(row["psnr"])]
+    mean_image_psnr = math.inf if len(finite_psnrs) != len(rows) else sum(finite_psnrs) / len(finite_psnrs)
+    render_mpix_per_second = (total_pixels / 1_000_000.0) / (total_render_ms / 1000.0)
+    end_to_end_ms = (time.perf_counter() - script_start) * 1000.0
+
+    csv_path = args.output / "per_image.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=("image_index", "file_path", "output_path", "width", "height", "pixels", "render_ms", "save_ms", "mse", "psnr", "sample_count", "samples_per_ray"))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    benchmark = {
+        "schema": "instant-ngp-new.example.test_benchmark.v1",
+        "weights": args.weights.as_posix(),
+        "dataset": args.dataset.as_posix(),
+        "output": args.output.as_posix(),
+        "environment": {
+            "torch": torch.__version__,
+            "cuda": torch.version.cuda,
+            "device": str(model.device),
+            "device_name": torch.cuda.get_device_name(model.device) if model.device.type == "cuda" else "cpu",
+            "dtype": args.dtype,
+            "compiled": True,
+        },
+        "config": {
+            "ray_batch": args.ray_batch,
+            "sample_batch": args.sample_batch,
+            "marcher": "occupancy",
+            "split": "test",
+            "resolution": "original",
+        },
+        "occupancy": {
+            "rebuild_ms": occupancy_ms,
+            "occupied_cells": occupied_cells,
+            "total_cells": model.architecture.nerf_grid_cells,
+            "ratio": occupancy_ratio,
+        },
+        "summary": {
+            "image_count": len(test_frames),
+            "pixel_count": total_pixels,
+            "sample_count": total_samples,
+            "samples_per_ray": total_samples / total_pixels,
+            "mse": total_mse,
+            "psnr": total_psnr,
+            "mean_image_psnr": mean_image_psnr,
+            "model_load_ms": model_load_ms,
+            "render_ms": total_render_ms,
+            "save_ms": total_save_ms,
+            "test_loop_ms": total_loop_ms,
+            "end_to_end_ms": end_to_end_ms,
+            "render_mpix_per_second": render_mpix_per_second,
+        },
+        "frames": rows,
+    }
+    (args.output / "benchmark.json").write_text(json.dumps(benchmark, indent=2) + "\n", encoding="utf-8")
+    print(f"summary images={len(test_frames)} pixels={total_pixels} mse={total_mse:.8f} psnr={total_psnr:.2f} render={total_render_ms:.3f}ms save={total_save_ms:.3f}ms mpix/s={render_mpix_per_second:.6f}")
+    print(f"wrote {args.output / 'benchmark.json'}")
+    print(f"wrote {csv_path}")
     return 0
 
 
