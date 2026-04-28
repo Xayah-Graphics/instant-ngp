@@ -7,6 +7,9 @@ import std;
 
 namespace ngp::dataset {
     namespace {
+        inline constexpr float NERF_SYNTHETIC_SCENE_SCALE  = 0.33f;
+        inline constexpr float NERF_SYNTHETIC_SCENE_OFFSET = 0.5f;
+
         std::vector<NeRFSynthetic::Frame> load_split(const std::filesystem::path& dataset_path, const std::string_view file_name) {
             const std::filesystem::path json_path  = dataset_path / file_name;
             const std::filesystem::path split_root = json_path.parent_path();
@@ -51,9 +54,9 @@ namespace ngp::dataset {
                 std::ranges::for_each(camera[1], [](float& value) { value = -value; });
                 std::ranges::for_each(camera[2], [](float& value) { value = -value; });
 
-                camera[3][0] = camera[3][0] * 0.33f + 0.5f;
-                camera[3][1] = camera[3][1] * 0.33f + 0.5f;
-                camera[3][2] = camera[3][2] * 0.33f + 0.5f;
+                camera[3][0] = camera[3][0] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
+                camera[3][1] = camera[3][1] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
+                camera[3][2] = camera[3][2] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
 
                 const std::array camera_row0{camera[0][0], camera[1][0], camera[2][0], camera[3][0]};
                 const std::array camera_row1{camera[0][1], camera[1][1], camera[2][1], camera[3][1]};
