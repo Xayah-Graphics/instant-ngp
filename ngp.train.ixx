@@ -166,22 +166,13 @@ namespace ngp::train {
 
     private:
         struct HostData {
-            // Dataset.
+            // Stable after construction: dataset metadata.
             std::uint32_t frame_count = 0u;
             std::uint32_t width       = 0u;
             std::uint32_t height      = 0u;
             float focal_length        = 0.0f;
 
-            // Training state.
-            std::uint32_t current_step = 0u;
-
-            // Sampler and loss.
-            std::uint32_t rays_per_batch                          = config::INITIAL_RAYS_PER_BATCH;
-            std::uint32_t inference_sample_count                  = config::MAX_SAMPLES;
-            std::uint32_t measured_sample_count_before_compaction = 0u;
-            std::uint32_t measured_sample_count                   = 0u;
-
-            // Network parameter layout.
+            // Stable after construction: network parameter layout.
             std::array<std::uint32_t, config::GRID_OFFSET_COUNT> grid_offsets = {};
             std::uint32_t density_param_offset                                = 0u;
             std::uint32_t density_param_count                                 = 0u;
@@ -192,6 +183,12 @@ namespace ngp::train {
             std::uint32_t grid_param_count                                    = 0u;
             std::uint32_t total_param_count                                   = 0u;
 
+            // Mutated by train(): step, adaptive batch shape, and latest counters.
+            std::uint32_t current_step                            = 0u;
+            std::uint32_t rays_per_batch                          = config::INITIAL_RAYS_PER_BATCH;
+            std::uint32_t inference_sample_count                  = config::MAX_SAMPLES;
+            std::uint32_t measured_sample_count_before_compaction = 0u;
+            std::uint32_t measured_sample_count                   = 0u;
         } host;
 
         struct DeviceData {
