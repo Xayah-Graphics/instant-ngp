@@ -99,6 +99,28 @@ class TestFrame:
     relative_path: pathlib.Path
 
 
+@dataclasses.dataclass(frozen=True)
+class OccupancyStats:
+    rebuild_ms: float
+    mode: str
+    threshold: float
+    threshold_scale: float
+    min_ratio: float
+    dilation: int
+    supersamples: int
+    occupied_cells_before_dilation: int
+    occupied_cells_after_dilation: int
+    total_cells: int
+
+    @property
+    def ratio_before_dilation(self) -> float:
+        return self.occupied_cells_before_dilation / self.total_cells
+
+    @property
+    def ratio_after_dilation(self) -> float:
+        return self.occupied_cells_after_dilation / self.total_cells
+
+
 @triton.jit
 def generate_samples_kernel(camera, occupancy, sample_positions, sample_directions, ray_numsteps, ray_base, sample_counter, overflow_counter, pixel_offset, tile_pixels, width, height, focal_length, sample_capacity, BLOCK_RAYS: tl.constexpr, NERF_STEPS: tl.constexpr, GRID_SIZE: tl.constexpr, DT: tl.constexpr) -> None:
     lanes = tl.arange(0, BLOCK_RAYS)
@@ -229,6 +251,103 @@ def generate_samples_kernel(camera, occupancy, sample_positions, sample_directio
         t_target = t + tl.maximum(tl.minimum(tl.minimum(tx, ty), tz) / GRID_SIZE, 0.0)
         t_skip = t + tl.ceil(tl.maximum((t_target - t) / DT, 0.5)) * DT
         t = tl.where(occupied, t + DT, tl.where(inside, t_skip, t))
+        active = inside
+
+
+@triton.jit
+def generate_full_samples_kernel(camera, sample_positions, sample_directions, ray_numsteps, ray_base, sample_counter, overflow_counter, pixel_offset, tile_pixels, width, height, focal_length, sample_capacity, BLOCK_RAYS: tl.constexpr, NERF_STEPS: tl.constexpr, DT: tl.constexpr) -> None:
+    lanes = tl.arange(0, BLOCK_RAYS)
+    ray = tl.program_id(0) * BLOCK_RAYS + lanes
+    valid = ray < tile_pixels
+    global_pixel = pixel_offset + ray
+    pixel_x = global_pixel % width
+    pixel_y = global_pixel // width
+    u = (pixel_x.to(tl.float32) + 0.5) / width
+    v = (pixel_y.to(tl.float32) + 0.5) / height
+    ray_x = (u - 0.5) * width / focal_length
+    ray_y = (v - 0.5) * height / focal_length
+
+    camera_x0 = tl.load(camera + 0)
+    camera_x1 = tl.load(camera + 1)
+    camera_x2 = tl.load(camera + 2)
+    camera_y0 = tl.load(camera + 3)
+    camera_y1 = tl.load(camera + 4)
+    camera_y2 = tl.load(camera + 5)
+    camera_z0 = tl.load(camera + 6)
+    camera_z1 = tl.load(camera + 7)
+    camera_z2 = tl.load(camera + 8)
+    origin_x = tl.load(camera + 9)
+    origin_y = tl.load(camera + 10)
+    origin_z = tl.load(camera + 11)
+
+    direction_x = camera_x0 * ray_x + camera_y0 * ray_y + camera_z0
+    direction_y = camera_x1 * ray_x + camera_y1 * ray_y + camera_z1
+    direction_z = camera_x2 * ray_x + camera_y2 * ray_y + camera_z2
+    direction_length = tl.sqrt(direction_x * direction_x + direction_y * direction_y + direction_z * direction_z)
+    direction_valid = direction_length > 0.0
+    inv_length = 1.0 / tl.maximum(direction_length, 1.0e-20)
+    direction_x = tl.where(direction_valid, direction_x * inv_length, camera_z0)
+    direction_y = tl.where(direction_valid, direction_y * inv_length, camera_z1)
+    direction_z = tl.where(direction_valid, direction_z * inv_length, camera_z2)
+
+    inv_x = 1.0 / direction_x
+    inv_y = 1.0 / direction_y
+    inv_z = 1.0 / direction_z
+    t0x = -origin_x * inv_x
+    t0y = -origin_y * inv_y
+    t0z = -origin_z * inv_z
+    t1x = (1.0 - origin_x) * inv_x
+    t1y = (1.0 - origin_y) * inv_y
+    t1z = (1.0 - origin_z) * inv_z
+    tx_min = tl.minimum(t0x, t1x)
+    ty_min = tl.minimum(t0y, t1y)
+    tz_min = tl.minimum(t0z, t1z)
+    tx_max = tl.maximum(t0x, t1x)
+    ty_max = tl.maximum(t0y, t1y)
+    tz_max = tl.maximum(t0z, t1z)
+    t_min = tl.maximum(tl.maximum(tl.maximum(tx_min, ty_min), tz_min), 0.0)
+    t_max = tl.minimum(tl.minimum(tx_max, ty_max), tz_max)
+    active = valid & direction_valid & (t_max >= t_min)
+    t = t_min + 0.5 * DT
+    numsteps = tl.full((BLOCK_RAYS,), 0, tl.int32)
+
+    for _ in range(NERF_STEPS):
+        pos_x = origin_x + direction_x * t
+        pos_y = origin_y + direction_y * t
+        pos_z = origin_z + direction_z * t
+        inside = active & (pos_x >= 0.0) & (pos_x <= 1.0) & (pos_y >= 0.0) & (pos_y <= 1.0) & (pos_z >= 0.0) & (pos_z <= 1.0)
+        numsteps += inside.to(tl.int32)
+        t += DT
+        active = inside
+
+    total_samples = tl.sum(numsteps, axis=0)
+    block_base = tl.atomic_add(sample_counter, total_samples)
+    overflow = block_base + total_samples > sample_capacity
+    tl.atomic_add(overflow_counter, overflow.to(tl.int32))
+    prefix = tl.cumsum(numsteps, 0) - numsteps
+    bases = block_base + prefix
+    tl.store(ray_numsteps + ray, tl.where(overflow, 0, numsteps), mask=valid)
+    tl.store(ray_base + ray, bases, mask=valid & ~overflow)
+
+    t = t_min + 0.5 * DT
+    active = valid & direction_valid & (t_max >= t_min)
+    local_step = tl.full((BLOCK_RAYS,), 0, tl.int32)
+
+    for _ in range(NERF_STEPS):
+        pos_x = origin_x + direction_x * t
+        pos_y = origin_y + direction_y * t
+        pos_z = origin_z + direction_z * t
+        inside = active & (pos_x >= 0.0) & (pos_x <= 1.0) & (pos_y >= 0.0) & (pos_y <= 1.0) & (pos_z >= 0.0) & (pos_z <= 1.0)
+        sample_index = bases + local_step
+        write_mask = inside & ~overflow & (sample_index < sample_capacity)
+        tl.store(sample_positions + sample_index * 3 + 0, pos_x, mask=write_mask)
+        tl.store(sample_positions + sample_index * 3 + 1, pos_y, mask=write_mask)
+        tl.store(sample_positions + sample_index * 3 + 2, pos_z, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 0, direction_x, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 1, direction_y, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 2, direction_z, mask=write_mask)
+        local_step += inside.to(tl.int32)
+        t += DT
         active = inside
 
 
@@ -413,6 +532,7 @@ class InstantNGPInference:
         self.forward_compiled = torch.compile(self.network, mode="max-autotune", fullgraph=True)
         self.density_compiled = torch.compile(self.network.forward_density, mode="max-autotune", fullgraph=True)
         self.occupancy_grid: torch.Tensor | None = None
+        self.occupancy_stats: OccupancyStats | None = None
 
     @torch.inference_mode()
     def forward(self, positions: torch.Tensor, directions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -452,7 +572,28 @@ class InstantNGPInference:
         return torch.cat(rgb_chunks, dim=0), torch.cat(density_chunks, dim=0)
 
     @torch.inference_mode()
-    def rebuild_occupancy_grid(self) -> torch.Tensor:
+    def rebuild_occupancy_grid(self, mode: str, threshold_scale: float, min_ratio: float, dilation: int) -> torch.Tensor:
+        if mode not in ("center", "conservative"):
+            raise RuntimeError("occupancy mode must be 'center' or 'conservative'.")
+        if not math.isfinite(threshold_scale) or threshold_scale <= 0.0:
+            raise RuntimeError("occupancy threshold scale must be positive.")
+        if not math.isfinite(min_ratio) or min_ratio < 0.0 or min_ratio > 1.0:
+            raise RuntimeError("occupancy min ratio must be in [0, 1].")
+        if dilation < 0:
+            raise RuntimeError("occupancy dilation must be non-negative.")
+
+        rebuild_start = time.perf_counter()
+        sample_offsets = ((0.5, 0.5, 0.5),) if mode == "center" else (
+            (0.25, 0.25, 0.25),
+            (0.25, 0.25, 0.75),
+            (0.25, 0.75, 0.25),
+            (0.25, 0.75, 0.75),
+            (0.75, 0.25, 0.25),
+            (0.75, 0.25, 0.75),
+            (0.75, 0.75, 0.25),
+            (0.75, 0.75, 0.75),
+            (0.5, 0.5, 0.5),
+        )
         density_grid = torch.empty((self.architecture.nerf_grid_cells,), device=self.device, dtype=torch.float32)
         for start in range(0, self.architecture.nerf_grid_cells, self.sample_batch):
             end = min(start + self.sample_batch, self.architecture.nerf_grid_cells)
@@ -460,11 +601,44 @@ class InstantNGPInference:
             z = torch.div(index, self.architecture.nerf_grid_size * self.architecture.nerf_grid_size, rounding_mode="floor")
             y = torch.div(index - z * self.architecture.nerf_grid_size * self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, rounding_mode="floor")
             x = index - z * self.architecture.nerf_grid_size * self.architecture.nerf_grid_size - y * self.architecture.nerf_grid_size
-            positions = torch.stack((x, y, z), dim=1).to(torch.float32).add_(0.5).mul_(1.0 / self.architecture.nerf_grid_size)
-            density_grid[start:end] = self.density_compiled(positions) * self.architecture.min_cone_stepsize
+            xyz = torch.stack((x, y, z), dim=1).to(torch.float32)
+            chunk_density = torch.zeros((end - start,), device=self.device, dtype=torch.float32)
+            for offset_x, offset_y, offset_z in sample_offsets:
+                positions = torch.empty((end - start, 3), device=self.device, dtype=torch.float32)
+                positions[:, 0] = (xyz[:, 0] + offset_x) * (1.0 / self.architecture.nerf_grid_size)
+                positions[:, 1] = (xyz[:, 1] + offset_y) * (1.0 / self.architecture.nerf_grid_size)
+                positions[:, 2] = (xyz[:, 2] + offset_z) * (1.0 / self.architecture.nerf_grid_size)
+                chunk_density = torch.maximum(chunk_density, self.density_compiled(positions) * self.architecture.min_cone_stepsize)
+            density_grid[start:end] = chunk_density
 
-        threshold = torch.minimum(torch.clamp_min(density_grid, 0.0).mean(), torch.tensor(self.architecture.nerf_min_optical_thickness, device=self.device, dtype=torch.float32))
-        self.occupancy_grid = (density_grid > threshold).to(torch.uint8).reshape(self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size).contiguous()
+        threshold = torch.minimum(torch.clamp_min(density_grid, 0.0).mean(), torch.tensor(self.architecture.nerf_min_optical_thickness, device=self.device, dtype=torch.float32)) * threshold_scale
+        occupancy = density_grid > threshold
+        min_cells = math.ceil(min_ratio * self.architecture.nerf_grid_cells)
+        if min_cells > 0:
+            occupied_cells = int(occupancy.sum().item())
+            if occupied_cells < min_cells:
+                threshold = torch.minimum(threshold, torch.topk(density_grid, min_cells, largest=True).values[-1])
+                occupancy = density_grid >= threshold
+
+        occupied_cells_before_dilation = int(occupancy.sum().item())
+        occupancy = occupancy.reshape(1, 1, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size).to(torch.float32)
+        if dilation != 0:
+            kernel_size = dilation * 2 + 1
+            occupancy = torch.nn.functional.max_pool3d(occupancy, kernel_size=kernel_size, stride=1, padding=dilation)
+        self.occupancy_grid = occupancy.reshape(self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size).to(torch.uint8).contiguous()
+        occupied_cells_after_dilation = int(self.occupancy_grid.sum().item())
+        self.occupancy_stats = OccupancyStats(
+            rebuild_ms=(time.perf_counter() - rebuild_start) * 1000.0,
+            mode=mode,
+            threshold=float(threshold.item()),
+            threshold_scale=threshold_scale,
+            min_ratio=min_ratio,
+            dilation=dilation,
+            supersamples=1 if mode == "center" else 9,
+            occupied_cells_before_dilation=occupied_cells_before_dilation,
+            occupied_cells_after_dilation=occupied_cells_after_dilation,
+            total_cells=self.architecture.nerf_grid_cells,
+        )
         return self.occupancy_grid
 
 
@@ -557,13 +731,15 @@ def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path) -> list[TestFram
 
 
 @torch.inference_mode()
-def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int, sample_capacity: int) -> tuple[torch.Tensor, int]:
+def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int, sample_capacity: int, marcher: str) -> tuple[torch.Tensor, int]:
     if ray_batch <= 0:
         raise RuntimeError("ray_batch must be positive.")
     if sample_capacity <= 0:
         raise RuntimeError("sample_capacity must be positive.")
-    if model.occupancy_grid is None:
-        model.rebuild_occupancy_grid()
+    if marcher not in ("occupancy", "full"):
+        raise RuntimeError("marcher must be 'occupancy' or 'full'.")
+    if marcher == "occupancy" and model.occupancy_grid is None:
+        raise RuntimeError("occupancy grid has not been rebuilt.")
 
     camera = frame.camera.to(model.device)
     pixel_count = frame.width * frame.height
@@ -585,26 +761,46 @@ def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int, s
         overflow_counter.zero_()
         ray_numsteps.zero_()
         ray_base.zero_()
-        generate_samples_kernel[(triton.cdiv(ray_batch, block_rays),)](
-            camera,
-            model.occupancy_grid,
-            sample_positions,
-            sample_directions,
-            ray_numsteps,
-            ray_base,
-            sample_counter,
-            overflow_counter,
-            start,
-            tile_pixels,
-            frame.width,
-            frame.height,
-            frame.focal_length,
-            sample_capacity,
-            BLOCK_RAYS=block_rays,
-            NERF_STEPS=model.architecture.nerf_steps,
-            GRID_SIZE=model.architecture.nerf_grid_size,
-            DT=model.architecture.min_cone_stepsize,
-        )
+        if marcher == "occupancy":
+            generate_samples_kernel[(triton.cdiv(ray_batch, block_rays),)](
+                camera,
+                model.occupancy_grid,
+                sample_positions,
+                sample_directions,
+                ray_numsteps,
+                ray_base,
+                sample_counter,
+                overflow_counter,
+                start,
+                tile_pixels,
+                frame.width,
+                frame.height,
+                frame.focal_length,
+                sample_capacity,
+                BLOCK_RAYS=block_rays,
+                NERF_STEPS=model.architecture.nerf_steps,
+                GRID_SIZE=model.architecture.nerf_grid_size,
+                DT=model.architecture.min_cone_stepsize,
+            )
+        else:
+            generate_full_samples_kernel[(triton.cdiv(ray_batch, block_rays),)](
+                camera,
+                sample_positions,
+                sample_directions,
+                ray_numsteps,
+                ray_base,
+                sample_counter,
+                overflow_counter,
+                start,
+                tile_pixels,
+                frame.width,
+                frame.height,
+                frame.focal_length,
+                sample_capacity,
+                BLOCK_RAYS=block_rays,
+                NERF_STEPS=model.architecture.nerf_steps,
+                DT=model.architecture.min_cone_stepsize,
+            )
         used_samples = int(sample_counter.item())
         overflowed_blocks = int(overflow_counter.item())
         if overflowed_blocks != 0 or used_samples > sample_capacity:
@@ -644,6 +840,12 @@ def main() -> int:
     parser.add_argument("--ray-batch", default=4096, type=int)
     parser.add_argument("--sample-batch", default=262144, type=int)
     parser.add_argument("--sample-capacity", default=None, type=int)
+    parser.add_argument("--marcher", default="occupancy", choices=("occupancy", "full"))
+    parser.add_argument("--occupancy-mode", default="center", choices=("center", "conservative"))
+    parser.add_argument("--occupancy-threshold-scale", default=0.07, type=float)
+    parser.add_argument("--occupancy-min-ratio", default=0.0, type=float)
+    parser.add_argument("--occupancy-dilation", default=0, type=int)
+    parser.add_argument("--max-frames", default=None, type=int)
     args = parser.parse_args()
 
     if not args.dataset.is_dir():
@@ -660,27 +862,43 @@ def main() -> int:
         args.sample_capacity = args.ray_batch * ARCHITECTURE.nerf_steps
     if args.sample_capacity <= 0:
         raise RuntimeError("sample-capacity must be positive.")
+    if not math.isfinite(args.occupancy_threshold_scale) or args.occupancy_threshold_scale <= 0.0:
+        raise RuntimeError("occupancy-threshold-scale must be positive.")
+    if not math.isfinite(args.occupancy_min_ratio) or args.occupancy_min_ratio < 0.0 or args.occupancy_min_ratio > 1.0:
+        raise RuntimeError("occupancy-min-ratio must be in [0, 1].")
+    if args.occupancy_dilation < 0:
+        raise RuntimeError("occupancy-dilation must be non-negative.")
+    if args.max_frames is not None and args.max_frames <= 0:
+        raise RuntimeError("max-frames must be positive.")
     args.output.mkdir(parents=True, exist_ok=True)
 
     script_start = time.perf_counter()
     torch.set_float32_matmul_precision("high")
     test_frames = load_nerf_synthetic_test_frames(args.dataset)
+    if args.max_frames is not None:
+        test_frames = test_frames[:args.max_frames]
     model_load_start = time.perf_counter()
     model = InstantNGPInference(args.weights, args.device, args.dtype, args.sample_batch)
     if model.device.type == "cuda":
         torch.cuda.synchronize(model.device)
     model_load_ms = (time.perf_counter() - model_load_start) * 1000.0
 
-    occupancy_start = time.perf_counter()
-    occupancy_grid = model.rebuild_occupancy_grid()
-    if model.device.type == "cuda":
-        torch.cuda.synchronize(model.device)
-    occupancy_ms = (time.perf_counter() - occupancy_start) * 1000.0
-    occupied_cells = int(occupancy_grid.sum().item())
-    occupancy_ratio = occupied_cells / model.architecture.nerf_grid_cells
+    if args.marcher == "occupancy":
+        occupancy_grid = model.rebuild_occupancy_grid(args.occupancy_mode, args.occupancy_threshold_scale, args.occupancy_min_ratio, args.occupancy_dilation)
+        if model.device.type == "cuda":
+            torch.cuda.synchronize(model.device)
+        if model.occupancy_stats is None:
+            raise RuntimeError("occupancy stats were not produced.")
+        occupancy_ms = model.occupancy_stats.rebuild_ms
+        occupied_cells = int(occupancy_grid.sum().item())
+        occupancy_ratio = occupied_cells / model.architecture.nerf_grid_cells
+    else:
+        occupancy_ms = 0.0
+        occupied_cells = model.architecture.nerf_grid_cells
+        occupancy_ratio = 1.0
 
-    print(f"torch={torch.__version__} triton={triton.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True renderer=triton marcher=occupancy")
-    print(f"test_frames={len(test_frames)} output={args.output} occupancy={occupied_cells}/{model.architecture.nerf_grid_cells} ratio={occupancy_ratio:.6f} rebuild={occupancy_ms:.3f}ms")
+    print(f"torch={torch.__version__} triton={triton.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True renderer=triton marcher={args.marcher}")
+    print(f"test_frames={len(test_frames)} output={args.output} occupancy_mode={args.occupancy_mode if args.marcher == 'occupancy' else 'disabled'} occupancy={occupied_cells}/{model.architecture.nerf_grid_cells} ratio={occupancy_ratio:.6f} rebuild={occupancy_ms:.3f}ms")
 
     rows = []
     total_pixels = 0
@@ -694,7 +912,7 @@ def main() -> int:
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         render_start = time.perf_counter()
-        image, sample_count = render_frame(model, frame, args.ray_batch, args.sample_capacity)
+        image, sample_count = render_frame(model, frame, args.ray_batch, args.sample_capacity, args.marcher)
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         render_ms = (time.perf_counter() - render_start) * 1000.0
@@ -755,6 +973,7 @@ def main() -> int:
     mean_image_psnr = math.inf if len(finite_psnrs) != len(rows) else sum(finite_psnrs) / len(finite_psnrs)
     render_mpix_per_second = (total_pixels / 1_000_000.0) / (total_render_ms / 1000.0)
     end_to_end_ms = (time.perf_counter() - script_start) * 1000.0
+    occupancy_stats = model.occupancy_stats
 
     csv_path = args.output / "per_image.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as output_file:
@@ -780,14 +999,29 @@ def main() -> int:
             "ray_batch": args.ray_batch,
             "sample_batch": args.sample_batch,
             "sample_capacity": args.sample_capacity,
-            "marcher": "occupancy",
+            "marcher": args.marcher,
+            "occupancy_mode": args.occupancy_mode,
+            "occupancy_threshold_scale": args.occupancy_threshold_scale,
+            "occupancy_min_ratio": args.occupancy_min_ratio,
+            "occupancy_dilation": args.occupancy_dilation,
+            "max_frames": args.max_frames,
             "split": "test",
             "resolution": "original",
         },
         "occupancy": {
             "rebuild_ms": occupancy_ms,
+            "mode": occupancy_stats.mode if occupancy_stats is not None else "disabled",
+            "threshold": occupancy_stats.threshold if occupancy_stats is not None else None,
+            "threshold_scale": occupancy_stats.threshold_scale if occupancy_stats is not None else args.occupancy_threshold_scale,
+            "min_ratio": occupancy_stats.min_ratio if occupancy_stats is not None else args.occupancy_min_ratio,
+            "dilation": occupancy_stats.dilation if occupancy_stats is not None else args.occupancy_dilation,
+            "supersamples": occupancy_stats.supersamples if occupancy_stats is not None else 0,
+            "occupied_cells_before_dilation": occupancy_stats.occupied_cells_before_dilation if occupancy_stats is not None else model.architecture.nerf_grid_cells,
+            "occupied_cells_after_dilation": occupancy_stats.occupied_cells_after_dilation if occupancy_stats is not None else model.architecture.nerf_grid_cells,
             "occupied_cells": occupied_cells,
             "total_cells": model.architecture.nerf_grid_cells,
+            "ratio_before_dilation": occupancy_stats.ratio_before_dilation if occupancy_stats is not None else 1.0,
+            "ratio_after_dilation": occupancy_stats.ratio_after_dilation if occupancy_stats is not None else 1.0,
             "ratio": occupancy_ratio,
         },
         "summary": {
