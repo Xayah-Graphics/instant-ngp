@@ -17,7 +17,7 @@ namespace {
     constexpr std::string_view ansi_test_metric       = "\x1b[1;96m";
 
     struct CliOptions final {
-        std::filesystem::path dataset_path      = "../data/nerf-synthetic/lego";
+        std::filesystem::path dataset_path      = "../data/nerf_llff_data/fern";
         std::int32_t steps                      = 200000;
         std::int32_t chunk_steps                = 1000;
         std::uint32_t validation_interval_steps = 5000u;
@@ -163,34 +163,35 @@ namespace {
 int main(const int argc, const char* const* const argv) {
     const std::span<const char* const> arguments{argv, static_cast<std::size_t>(argc)};
     const std::string executable_name = !arguments.empty() && arguments.front() != nullptr ? std::filesystem::path{arguments.front()}.filename().string() : "instant-ngp-app";
-    const std::string usage           = std::format(
-        R"({}Usage:{}
-  {}{}{} {}[dataset-path]{} {}[options]{}
-
-{}Options:{}
-  {}--dataset <path>{}                  NeRF synthetic dataset root
-                                    {}default:{} ../data/nerf-synthetic/lego
-  {}--steps <count>{}                   total training steps
-                                    {}default:{} 200000
-  {}--chunk-steps <count>{}             training steps per progress log
-                                    {}default:{} 1000
-  {}--validation-interval <count>{}     full validation interval in steps
-                                    {}default:{} 5000
-  {}--early-stop-patience <count>{}     validation checks without improvement before stopping
-                                    {}default:{} 5
-  {}--early-stop-min-delta <mse>{}      minimum validation MSE improvement
-                                    {}default:{} 1e-6
-  {}--load-weights <path>{}             load safetensors weights before training
-  {}--export-weights <path>{}           export final safetensors weights
-  {}-h, --help{}                        print this help
-
-{}Examples:{}
-  {}{}{} {}../data/nerf-synthetic/lego{} {}--steps 30000{}
-  {}{}{} {}--dataset=../data/nerf-synthetic/lego{} {}--validation-interval=5000{}
-  {}{}{} {}--steps 1{} {}--export-weights build-codex/weights.safetensors{}
-  {}{}{} {}--load-weights build-codex/weights.safetensors{} {}--steps 30000{}
-)",
-        ansi_bold, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_yellow, ansi_reset, ansi_dim, ansi_reset, ansi_bold, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset, ansi_bold, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_yellow, ansi_reset, ansi_green, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset);
+    std::string usage;
+    usage.reserve(2048uz);
+    usage.append(ansi_bold).append("Usage:").append(ansi_reset).append("\n  ");
+    usage.append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ");
+    usage.append(ansi_yellow).append("[dataset-path]").append(ansi_reset).append(" ");
+    usage.append(ansi_dim).append("[options]").append(ansi_reset).append("\n\n");
+    usage.append(ansi_bold).append("Options:").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_green).append("--dataset <path>").append(ansi_reset).append("                  dataset root\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" ../data/nerf-synthetic/lego\n");
+    usage.append("  ").append(ansi_green).append("--steps <count>").append(ansi_reset).append("                   total training steps\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" 200000\n");
+    usage.append("  ").append(ansi_green).append("--chunk-steps <count>").append(ansi_reset).append("             training steps per progress log\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" 1000\n");
+    usage.append("  ").append(ansi_green).append("--validation-interval <count>").append(ansi_reset).append("     full validation interval in steps\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" 5000\n");
+    usage.append("  ").append(ansi_green).append("--early-stop-patience <count>").append(ansi_reset).append("     validation checks without improvement before stopping\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" 5\n");
+    usage.append("  ").append(ansi_green).append("--early-stop-min-delta <mse>").append(ansi_reset).append("      minimum validation MSE improvement\n");
+    usage.append("                                    ").append(ansi_dim).append("default:").append(ansi_reset).append(" 1e-6\n");
+    usage.append("  ").append(ansi_green).append("--load-weights <path>").append(ansi_reset).append("             load safetensors weights before training\n");
+    usage.append("  ").append(ansi_green).append("--export-weights <path>").append(ansi_reset).append("           export final safetensors weights\n");
+    usage.append("  ").append(ansi_green).append("-h, --help").append(ansi_reset).append("                        print this help\n\n");
+    usage.append(ansi_bold).append("Examples:").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_yellow).append("../data/nerf-synthetic/lego").append(ansi_reset).append(" ").append(ansi_green).append("--steps 30000").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_green).append("--dataset=../data/nerf-synthetic/lego").append(ansi_reset).append(" ").append(ansi_green).append("--validation-interval=5000").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_green).append("--dataset ../data/nerf_llff_data/fern").append(ansi_reset).append(" ").append(ansi_green).append("--steps 30000").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_green).append("--dataset ../data/nerf_real_360/pinecone").append(ansi_reset).append(" ").append(ansi_green).append("--steps 30000").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_green).append("--steps 1").append(ansi_reset).append(" ").append(ansi_green).append("--export-weights build-codex/weights.safetensors").append(ansi_reset).append("\n");
+    usage.append("  ").append(ansi_cyan).append(executable_name).append(ansi_reset).append(" ").append(ansi_green).append("--load-weights build-codex/weights.safetensors").append(ansi_reset).append(" ").append(ansi_green).append("--steps 30000").append(ansi_reset).append("\n");
 
     const auto cli_result = parse_cli_options(arguments);
     if (!cli_result) {
@@ -220,98 +221,159 @@ int main(const int argc, const char* const* const argv) {
         return 2;
     }
 
+    const bool has_synthetic_transforms = std::filesystem::is_regular_file(cli.dataset_path / "transforms_train.json") && std::filesystem::is_regular_file(cli.dataset_path / "transforms_val.json") && std::filesystem::is_regular_file(cli.dataset_path / "transforms_test.json");
+    const bool has_pose_bounds_dataset  = std::filesystem::is_regular_file(cli.dataset_path / "poses_bounds.npy") && std::filesystem::is_directory(cli.dataset_path / "images");
+    if (has_synthetic_transforms == has_pose_bounds_dataset) {
+        std::println("{}error:{} dataset path '{}' has {}.", ansi_red, ansi_reset, cli.dataset_path.string(), has_synthetic_transforms ? "ambiguous dataset markers" : "no supported dataset markers");
+        return 2;
+    }
+
+    std::string_view dataset_format = "nerf-synthetic";
+    bool path_contains_llff         = false;
+    bool path_contains_real_360     = false;
+    if (has_pose_bounds_dataset) {
+        for (const std::filesystem::path& part : cli.dataset_path.lexically_normal()) {
+            const std::string name = part.string();
+            if (name == "nerf_llff_data") path_contains_llff = true;
+            if (name == "nerf_real_360") path_contains_real_360 = true;
+        }
+        if (path_contains_llff == path_contains_real_360) {
+            std::println("{}error:{} poses_bounds.npy dataset path '{}' must be under exactly one of 'nerf_llff_data' or 'nerf_real_360'.", ansi_red, ansi_reset, cli.dataset_path.string());
+            return 2;
+        }
+        dataset_format = path_contains_llff ? "nerf-llff-data" : "nerf-real-360";
+    }
+
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, cli.dataset_path.string(), cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
+    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset_format={} dataset={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_format, cli.dataset_path.string(), cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     std::println("{}[{:%F %T}]{} {}{:<7}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
 
-    const auto result = ngp::dataset::load_nerf_synthetic(cli.dataset_path)
-                            .and_then([](const auto& dataset) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
-                                try {
-                                    return std::make_unique<ngp::train::InstantNGP>(dataset);
-                                } catch (const std::exception& error) {
-                                    return std::unexpected{std::string{error.what()}};
-                                }
-                            })
-                            .and_then([&](auto&& ngp) -> std::expected<void, std::string> {
-                                if (cli.load_weights_path.has_value()) {
-                                    const auto loaded_weights = ngp->load_weights(*cli.load_weights_path);
-                                    if (!loaded_weights) return std::unexpected{loaded_weights.error()};
-                                    const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                    std::println("{}[{:%F %T}]{} {}{:<7}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, cli.load_weights_path->string());
-                                }
+    std::unique_ptr<ngp::train::InstantNGP> ngp;
+    try {
+        if (has_synthetic_transforms) {
+            const auto dataset = ngp::dataset::load_nerf_synthetic(cli.dataset_path);
+            if (!dataset) {
+                const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, dataset.error());
+                return 1;
+            }
+            ngp = std::make_unique<ngp::train::InstantNGP>(*dataset);
+        } else if (path_contains_llff) {
+            const auto dataset = ngp::dataset::load_nerf_llff_data(cli.dataset_path);
+            if (!dataset) {
+                const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, dataset.error());
+                return 1;
+            }
+            ngp = std::make_unique<ngp::train::InstantNGP>(*dataset);
+        } else {
+            const auto dataset = ngp::dataset::load_nerf_real_360(cli.dataset_path);
+            if (!dataset) {
+                const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, dataset.error());
+                return 1;
+            }
+            ngp = std::make_unique<ngp::train::InstantNGP>(*dataset);
+        }
+    } catch (const std::exception& error) {
+        const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, error.what());
+        return 1;
+    }
 
-                                float first_loss                                    = 0.0f;
-                                float last_loss                                     = 0.0f;
-                                float train_ms                                      = 0.0f;
-                                float best_validation_mse                           = std::numeric_limits<float>::infinity();
-                                float best_validation_psnr                          = 0.0f;
-                                std::uint32_t final_step                            = 0u;
-                                std::uint32_t best_validation_step                  = 0u;
-                                std::uint32_t validation_checks_without_improvement = 0u;
-                                bool stopped_early                                  = false;
-                                std::uint32_t next_validation_step                  = cli.validation_interval_steps;
+    if (cli.load_weights_path.has_value()) {
+        const auto loaded_weights = ngp->load_weights(*cli.load_weights_path);
+        if (!loaded_weights) {
+            const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, loaded_weights.error());
+            return 1;
+        }
+        const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::println("{}[{:%F %T}]{} {}{:<7}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, cli.load_weights_path->string());
+    }
 
-                                for (std::int32_t trained_steps = 0; trained_steps < cli.steps;) {
-                                    const std::int32_t requested_steps = std::min(cli.chunk_steps, cli.steps - trained_steps);
-                                    const auto stats                   = ngp->train(requested_steps);
-                                    if (!stats) return std::unexpected{stats.error()};
+    float first_loss                                    = 0.0f;
+    float last_loss                                     = 0.0f;
+    float train_ms                                      = 0.0f;
+    float best_validation_mse                           = std::numeric_limits<float>::infinity();
+    float best_validation_psnr                          = 0.0f;
+    std::uint32_t final_step                            = 0u;
+    std::uint32_t best_validation_step                  = 0u;
+    std::uint32_t validation_checks_without_improvement = 0u;
+    bool stopped_early                                  = false;
+    std::uint32_t next_validation_step                  = cli.validation_interval_steps;
 
-                                    if (trained_steps == 0) first_loss = stats->loss;
-                                    last_loss = stats->loss;
-                                    train_ms += stats->elapsed_ms;
-                                    final_step = stats->step;
-                                    trained_steps += requested_steps;
-                                    const auto train_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                    std::println("{}[{:%F %T}]{} {}{:<7}{} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms grid={:>7.3f}ms rate={:>7.2f} step/s rays={:>6} samples={:>7}/{:<7} occupied={:>7} occupancy={:>6.2f}%", ansi_dim, train_timestamp, ansi_reset, ansi_green, "TRAIN", ansi_reset, stats->step, cli.steps, stats->loss, stats->elapsed_ms, stats->density_grid_update_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
+    for (std::int32_t trained_steps = 0; trained_steps < cli.steps;) {
+        const std::int32_t requested_steps = std::min(cli.chunk_steps, cli.steps - trained_steps);
+        const auto stats                   = ngp->train(requested_steps);
+        if (!stats) {
+            const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, stats.error());
+            return 1;
+        }
 
-                                    if (stats->step >= next_validation_step || stats->step >= static_cast<std::uint32_t>(cli.steps)) {
-                                        const auto validation = ngp->validate();
-                                        if (!validation) return std::unexpected{validation.error()};
+        if (trained_steps == 0) first_loss = stats->loss;
+        last_loss = stats->loss;
+        train_ms += stats->elapsed_ms;
+        final_step = stats->step;
+        trained_steps += requested_steps;
+        const auto train_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::println("{}[{:%F %T}]{} {}{:<7}{} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms grid={:>7.3f}ms rate={:>7.2f} step/s rays={:>6} samples={:>7}/{:<7} occupied={:>7} occupancy={:>6.2f}%", ansi_dim, train_timestamp, ansi_reset, ansi_green, "TRAIN", ansi_reset, stats->step, cli.steps, stats->loss, stats->elapsed_ms, stats->density_grid_update_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
 
-                                        const bool validation_improved = validation->mse < best_validation_mse - cli.early_stop_min_delta_mse;
-                                        if (validation_improved) {
-                                            best_validation_mse                   = validation->mse;
-                                            best_validation_psnr                  = validation->psnr;
-                                            best_validation_step                  = validation->step;
-                                            validation_checks_without_improvement = 0u;
-                                        } else {
-                                            ++validation_checks_without_improvement;
-                                        }
+        if (stats->step >= next_validation_step || stats->step >= static_cast<std::uint32_t>(cli.steps)) {
+            const auto validation = ngp->validate();
+            if (!validation) {
+                const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, validation.error());
+                return 1;
+            }
 
-                                        const auto validation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                        std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | patience={}{}{}/{} | images={:>3} pixels={} val={:>8.3f}ms", ansi_dim, validation_timestamp, ansi_reset, ansi_validation_badge, "VALID", ansi_reset, validation->step, validation_improved ? ansi_green : ansi_yellow, validation_improved ? "improved" : "stalled", ansi_reset, ansi_validation_metric, validation->mse, ansi_reset, ansi_cyan, validation->psnr, ansi_reset, ansi_validation_best, best_validation_mse, best_validation_step, ansi_reset, validation_checks_without_improvement == 0u ? ansi_green : ansi_yellow, validation_checks_without_improvement, ansi_reset, cli.early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
-                                        if (validation_checks_without_improvement >= cli.early_stop_patience) {
-                                            stopped_early = true;
-                                            break;
-                                        }
-                                        while (next_validation_step <= stats->step) next_validation_step += cli.validation_interval_steps;
-                                    }
-                                }
+            const bool validation_improved = validation->mse < best_validation_mse - cli.early_stop_min_delta_mse;
+            if (validation_improved) {
+                best_validation_mse                   = validation->mse;
+                best_validation_psnr                  = validation->psnr;
+                best_validation_step                  = validation->step;
+                validation_checks_without_improvement = 0u;
+            } else {
+                ++validation_checks_without_improvement;
+            }
 
-                                const auto summary_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
-                                const auto test = ngp->test();
-                                if (!test) return std::unexpected{test.error()};
+            const auto validation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | patience={}{}{}/{} | images={:>3} pixels={} val={:>8.3f}ms", ansi_dim, validation_timestamp, ansi_reset, ansi_validation_badge, "VALID", ansi_reset, validation->step, validation_improved ? ansi_green : ansi_yellow, validation_improved ? "improved" : "stalled", ansi_reset, ansi_validation_metric, validation->mse, ansi_reset, ansi_cyan, validation->psnr, ansi_reset, ansi_validation_best, best_validation_mse, best_validation_step, ansi_reset, validation_checks_without_improvement == 0u ? ansi_green : ansi_yellow, validation_checks_without_improvement, ansi_reset, cli.early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
+            if (validation_checks_without_improvement >= cli.early_stop_patience) {
+                stopped_early = true;
+                break;
+            }
+            while (next_validation_step <= stats->step) next_validation_step += cli.validation_interval_steps;
+        }
+    }
 
-                                const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
+    const auto summary_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
+    const auto test = ngp->test();
+    if (!test) {
+        const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, test.error());
+        return 1;
+    }
 
-                                if (cli.export_weights_path.has_value()) {
-                                    const auto exported_weights = ngp->export_weights(*cli.export_weights_path);
-                                    if (!exported_weights) return std::unexpected{exported_weights.error()};
-                                    const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                    std::println("{}[{:%F %T}]{} {}{:<7}{} exported={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, cli.export_weights_path->string());
-                                }
-                                return {};
-                            });
+    const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
+
+    if (cli.export_weights_path.has_value()) {
+        const auto exported_weights = ngp->export_weights(*cli.export_weights_path);
+        if (!exported_weights) {
+            const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, exported_weights.error());
+            return 1;
+        }
+        const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::println("{}[{:%F %T}]{} {}{:<7}{} exported={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, cli.export_weights_path->string());
+    }
 
     const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    if (result.has_value()) {
-        std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=succeeded", ansi_dim, finish_timestamp, ansi_reset, ansi_bold, "DONE", ansi_reset);
-    } else {
-        std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, result.error());
-    }
-    return result.has_value() ? 0 : 1;
+    std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=succeeded", ansi_dim, finish_timestamp, ansi_reset, ansi_bold, "DONE", ansi_reset);
+    return 0;
 }
