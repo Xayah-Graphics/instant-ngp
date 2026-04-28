@@ -13,14 +13,14 @@
 #include <vector>
 
 namespace ngp::cuda {
-    void free_device_data(void** const pointers, const std::size_t count) noexcept {
+    void free_device_buffers(void** const pointers, const std::size_t count) noexcept {
         for (std::size_t i = 0; i < count; ++i) {
             if (pointers[i] != nullptr) cudaFree(pointers[i]);
             pointers[i] = nullptr;
         }
     }
 
-    void destroy_cublaslt_once(void*& handle) noexcept {
+    void destroy_cublaslt(void*& handle) noexcept {
         if (handle != nullptr) cublasLtDestroy(static_cast<cublasLtHandle_t>(handle));
         handle = nullptr;
     }
@@ -130,18 +130,18 @@ namespace ngp::cuda {
             return index % hashmap_size;
         }
 
-        __device__ void pos_fract(const float input, float& pos, std::uint32_t& pos_grid, const float scale) {
+        __device__ void grid_position_fraction(const float input, float& pos, std::uint32_t& pos_grid, const float scale) {
             pos                 = fmaf(scale, input, 0.5f);
             const float floored = floorf(pos);
             pos_grid            = static_cast<std::uint32_t>(static_cast<int>(floored));
             pos -= floored;
         }
 
-        __device__ bool contains_unit_aabb(const float3 pos) {
+        __device__ bool unit_aabb_contains(const float3 pos) {
             return pos.x >= 0.0f && pos.x <= 1.0f && pos.y >= 0.0f && pos.y <= 1.0f && pos.z >= 0.0f && pos.z <= 1.0f;
         }
 
-        __device__ bool ray_intersect_unit_aabb(const float3 origin, const float3 direction, float& out_tmin) {
+        __device__ bool intersect_unit_aabb(const float3 origin, const float3 direction, float& out_tmin) {
             const float3 inv_dir = {1.0f / direction.x, 1.0f / direction.y, 1.0f / direction.z};
             const float3 t0      = {-origin.x * inv_dir.x, -origin.y * inv_dir.y, -origin.z * inv_dir.z};
             const float3 t1      = {(1.0f - origin.x) * inv_dir.x, (1.0f - origin.y) * inv_dir.y, (1.0f - origin.z) * inv_dir.z};
@@ -159,7 +159,7 @@ namespace ngp::cuda {
             return tmax >= out_tmin;
         }
 
-        __device__ bool density_grid_occupied_at(const float3 pos, const std::uint8_t* occupancy) {
+        __device__ bool is_density_grid_occupied(const float3 pos, const std::uint8_t* occupancy) {
             const int x = static_cast<int>(pos.x * static_cast<float>(NERF_GRID_SIZE));
             const int y = static_cast<int>(pos.y * static_cast<float>(NERF_GRID_SIZE));
             const int z = static_cast<int>(pos.z * static_cast<float>(NERF_GRID_SIZE));
@@ -183,7 +183,7 @@ namespace ngp::cuda {
             return (occupancy[index / 8u] & (1u << (index % 8u))) != 0u;
         }
 
-        __device__ float advance_to_next_voxel(const float t, const float3 pos, const float3 direction, const float3 inv_direction) {
+        __device__ float advance_to_next_density_voxel(const float t, const float3 pos, const float3 direction, const float3 inv_direction) {
             constexpr auto scale = static_cast<float>(NERF_GRID_SIZE);
             const float3 p       = {(pos.x - 0.5f) * scale, (pos.y - 0.5f) * scale, (pos.z - 0.5f) * scale};
             const float tx       = (floorf(p.x + 0.5f + 0.5f * copysignf(1.0f, direction.x)) - p.x) * inv_direction.x;
@@ -193,16 +193,16 @@ namespace ngp::cuda {
             return t + ceilf(fmaxf((t_target - t) / MIN_CONE_STEPSIZE, 0.5f)) * MIN_CONE_STEPSIZE;
         }
 
-        __device__ float logistic(const float x) {
+        __device__ float sigmoid(const float x) {
             return 1.0f / (1.0f + expf(-x));
         }
 
-        __device__ float network_to_density(const float value) {
+        __device__ float density_activation(const float value) {
             return expf(value);
         }
 
-        __device__ float network_to_rgb_derivative(const float value) {
-            const float rgb = logistic(value);
+        __device__ float rgb_activation_derivative(const float value) {
+            const float rgb = sigmoid(value);
             return rgb * (1.0f - rgb);
         }
 
@@ -222,7 +222,7 @@ namespace ngp::cuda {
             };
         }
 
-        __device__ float4 read_rgba(const std::uint32_t pixel_x, const std::uint32_t pixel_y, const std::uint32_t image, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* pixels) {
+        __device__ float4 read_premultiplied_linear_rgba(const std::uint32_t pixel_x, const std::uint32_t pixel_y, const std::uint32_t image, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* pixels) {
             const std::uint32_t rgba32 = reinterpret_cast<const std::uint32_t*>(pixels)[pixel_x + static_cast<std::uint64_t>(pixel_y) * width + static_cast<std::uint64_t>(image) * width * height];
             float4 result              = {
                 static_cast<float>((rgba32 & 0x000000FFu) >> 0u) * (1.0f / 255.0f),
@@ -237,11 +237,11 @@ namespace ngp::cuda {
             return result;
         }
 
-        __device__ std::uint32_t image_index(const std::uint32_t ray_index, const std::uint32_t rays_per_batch, const std::uint32_t frame_count) {
+        __device__ std::uint32_t training_image_index(const std::uint32_t ray_index, const std::uint32_t rays_per_batch, const std::uint32_t frame_count) {
             return static_cast<std::uint32_t>((static_cast<std::uint64_t>(ray_index) * frame_count) / rays_per_batch) % frame_count;
         }
 
-        __device__ void random_image_pos_training(Pcg32& rng, const std::uint32_t width, const std::uint32_t height, float& out_u, float& out_v) {
+        __device__ void sample_training_pixel(Pcg32& rng, const std::uint32_t width, const std::uint32_t height, float& out_u, float& out_v) {
             out_u = rng.next_float();
             out_v = rng.next_float();
             if (!SNAP_TO_PIXEL_CENTERS) return;
@@ -371,11 +371,11 @@ namespace ngp::cuda {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            const float thickness = network_to_density(__half2float(density_output[i])) * MIN_CONE_STEPSIZE;
+            const float thickness = density_activation(__half2float(density_output[i])) * MIN_CONE_STEPSIZE;
             atomicMax(reinterpret_cast<unsigned int*>(density_grid_scratch + density_grid_indices[i]), __float_as_uint(thickness));
         }
 
-        __global__ void ema_density_grid_kernel(const float* __restrict__ density_grid_scratch, float* __restrict__ density_grid_values) {
+        __global__ void update_density_grid_ema_kernel(const float* __restrict__ density_grid_scratch, float* __restrict__ density_grid_values) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= NERF_GRID_CELLS) return;
 
@@ -404,7 +404,7 @@ namespace ngp::cuda {
             if (threadIdx.x == 0u) atomicAdd(density_grid_mean, sums[0] / static_cast<float>(NERF_GRID_CELLS));
         }
 
-        __global__ void density_grid_to_bitfield_kernel(const float* __restrict__ density_grid_values, const float* __restrict__ density_grid_mean, std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ density_grid_occupied_count) {
+        __global__ void build_density_grid_bitfield_kernel(const float* __restrict__ density_grid_values, const float* __restrict__ density_grid_mean, std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ density_grid_occupied_count) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= NERF_GRID_CELLS / 8u) return;
 
@@ -417,7 +417,7 @@ namespace ngp::cuda {
             if (occupied != 0u) atomicAdd(density_grid_occupied_count, occupied);
         }
 
-        __global__ void generate_training_samples(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= rays_per_batch) return;
 
@@ -454,7 +454,7 @@ namespace ngp::cuda {
             const float3 ray_direction_normalized = {ray_direction.x / direction_length, ray_direction.y / direction_length, ray_direction.z / direction_length};
 
             float tmin = 0.0f;
-            if (!ray_intersect_unit_aabb(ray_origin, ray_direction_normalized, tmin)) return;
+            if (!intersect_unit_aabb(ray_origin, ray_direction_normalized, tmin)) return;
 
             constexpr float dt         = MIN_CONE_STEPSIZE;
             const float start_t        = tmin + rng.next_float() * dt;
@@ -466,13 +466,13 @@ namespace ngp::cuda {
 
             while (numsteps < NERF_STEPS) {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
-                if (!contains_unit_aabb(pos)) break;
+                if (!unit_aabb_contains(pos)) break;
 
-                if (density_grid_occupied_at(pos, occupancy)) {
+                if (is_density_grid_occupied(pos, occupancy)) {
                     ++numsteps;
                     t += dt;
                 } else {
-                    t = advance_to_next_voxel(t, pos, ray_direction_normalized, inv_direction);
+                    t = advance_to_next_density_voxel(t, pos, ray_direction_normalized, inv_direction);
                 }
             }
 
@@ -501,9 +501,9 @@ namespace ngp::cuda {
 
             while (j < numsteps) {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
-                if (!contains_unit_aabb(pos)) break;
+                if (!unit_aabb_contains(pos)) break;
 
-                if (density_grid_occupied_at(pos, occupancy)) {
+                if (is_density_grid_occupied(pos, occupancy)) {
                     float* coord = coords_out + static_cast<std::uint64_t>(base + j) * SAMPLE_COORD_FLOATS;
                     coord[0]     = pos.x;
                     coord[1]     = pos.y;
@@ -516,7 +516,7 @@ namespace ngp::cuda {
                     ++j;
                     t += dt;
                 } else {
-                    t = advance_to_next_voxel(t, pos, ray_direction_normalized, inv_direction);
+                    t = advance_to_next_density_voxel(t, pos, ray_direction_normalized, inv_direction);
                 }
             }
         }
@@ -553,7 +553,7 @@ namespace ngp::cuda {
             const float3 ray_direction_normalized = {ray_direction.x / direction_length, ray_direction.y / direction_length, ray_direction.z / direction_length};
 
             float tmin = 0.0f;
-            if (!ray_intersect_unit_aabb(ray_origin, ray_direction_normalized, tmin)) return;
+            if (!intersect_unit_aabb(ray_origin, ray_direction_normalized, tmin)) return;
 
             constexpr float dt         = MIN_CONE_STEPSIZE;
             const float start_t        = tmin + 0.5f * dt;
@@ -565,13 +565,13 @@ namespace ngp::cuda {
 
             while (numsteps < NERF_STEPS) {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
-                if (!contains_unit_aabb(pos)) break;
+                if (!unit_aabb_contains(pos)) break;
 
-                if (density_grid_occupied_at(pos, occupancy)) {
+                if (is_density_grid_occupied(pos, occupancy)) {
                     ++numsteps;
                     t += dt;
                 } else {
-                    t = advance_to_next_voxel(t, pos, ray_direction_normalized, inv_direction);
+                    t = advance_to_next_density_voxel(t, pos, ray_direction_normalized, inv_direction);
                 }
             }
 
@@ -592,9 +592,9 @@ namespace ngp::cuda {
 
             while (j < numsteps) {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
-                if (!contains_unit_aabb(pos)) break;
+                if (!unit_aabb_contains(pos)) break;
 
-                if (density_grid_occupied_at(pos, occupancy)) {
+                if (is_density_grid_occupied(pos, occupancy)) {
                     float* coord = coords_out + static_cast<std::uint64_t>(base + j) * SAMPLE_COORD_FLOATS;
                     coord[0]     = pos.x;
                     coord[1]     = pos.y;
@@ -607,12 +607,12 @@ namespace ngp::cuda {
                     ++j;
                     t += dt;
                 } else {
-                    t = advance_to_next_voxel(t, pos, ray_direction_normalized, inv_direction);
+                    t = advance_to_next_density_voxel(t, pos, ray_direction_normalized, inv_direction);
                 }
             }
         }
 
-        __global__ void fill_validation_rollover_coords_kernel(const std::uint32_t used_sample_count, const std::uint32_t padded_sample_count, float* __restrict__ inout) {
+        __global__ void pad_validation_rollover_coords_kernel(const std::uint32_t used_sample_count, const std::uint32_t padded_sample_count, float* __restrict__ inout) {
             const std::uint32_t i             = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t used_elements = used_sample_count * SAMPLE_COORD_FLOATS;
             if (used_sample_count == 0u || i < used_elements || i >= padded_sample_count * SAMPLE_COORD_FLOATS) return;
@@ -636,10 +636,10 @@ namespace ngp::cuda {
                 const __half* output = network_output + static_cast<std::uint64_t>(base) * MLP_OUTPUT_WIDTH;
 
                 for (std::uint32_t j = 0u; j < numsteps; ++j) {
-                    const float rgb_x   = logistic(__half2float(output[0u]));
-                    const float rgb_y   = logistic(__half2float(output[1u]));
-                    const float rgb_z   = logistic(__half2float(output[2u]));
-                    const float density = network_to_density(__half2float(output[3u]));
+                    const float rgb_x   = sigmoid(__half2float(output[0u]));
+                    const float rgb_y   = sigmoid(__half2float(output[1u]));
+                    const float rgb_z   = sigmoid(__half2float(output[2u]));
+                    const float density = density_activation(__half2float(output[3u]));
                     const float alpha   = 1.0f - __expf(-density * coord[3u]);
                     const float weight  = alpha * transmittance;
                     rgb_ray.x += weight * rgb_x;
@@ -652,7 +652,7 @@ namespace ngp::cuda {
                     output += MLP_OUTPUT_WIDTH;
                 }
 
-                const float4 texel       = read_rgba(pixel_x, pixel_y, validation_image_index, width, height, validation_pixels);
+                const float4 texel       = read_premultiplied_linear_rgba(pixel_x, pixel_y, validation_image_index, width, height, validation_pixels);
                 const float3 rgb_target  = linear_to_srgb({texel.x, texel.y, texel.z});
                 const float prediction_r = fminf(fmaxf(rgb_ray.x, 0.0f), 1.0f);
                 const float prediction_g = fminf(fmaxf(rgb_ray.y, 0.0f), 1.0f);
@@ -678,7 +678,7 @@ namespace ngp::cuda {
             if (threadIdx.x == 0u) atomicAdd(validation_loss_sum, sums[0]);
         }
 
-        __global__ void compute_loss_and_compact_kernel(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* __restrict__ ray_counter, const std::uint8_t* __restrict__ pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const __half* __restrict__ network_output, std::uint32_t* __restrict__ compacted_sample_counter, const std::uint32_t* __restrict__ ray_indices_in, const float* __restrict__ rays_in, std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, float* __restrict__ coords_out, __half* __restrict__ dloss_doutput, float* __restrict__ loss_output) {
+        __global__ void compute_training_loss_and_compact_kernel(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* __restrict__ ray_counter, const std::uint8_t* __restrict__ pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const __half* __restrict__ network_output, std::uint32_t* __restrict__ compacted_sample_counter, const std::uint32_t* __restrict__ ray_indices_in, const float* __restrict__ rays_in, std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, float* __restrict__ coords_out, __half* __restrict__ dloss_doutput, float* __restrict__ loss_output) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= *ray_counter) return;
 
@@ -697,10 +697,10 @@ namespace ngp::cuda {
             for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
                 if (transmittance < TRANSMITTANCE_EPSILON) break;
 
-                const float rgb_x   = logistic(__half2float(output[0u]));
-                const float rgb_y   = logistic(__half2float(output[1u]));
-                const float rgb_z   = logistic(__half2float(output[2u]));
-                const float density = network_to_density(__half2float(output[3u]));
+                const float rgb_x   = sigmoid(__half2float(output[0u]));
+                const float rgb_y   = sigmoid(__half2float(output[1u]));
+                const float rgb_z   = sigmoid(__half2float(output[2u]));
+                const float density = density_activation(__half2float(output[3u]));
                 const float alpha   = 1.0f - __expf(-density * coord_in[3u]);
                 const float weight  = alpha * transmittance;
                 rgb_ray.x += weight * rgb_x;
@@ -717,15 +717,15 @@ namespace ngp::cuda {
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(ray_index) * MAX_RANDOM_SAMPLES_PER_RAY);
 
-            const std::uint32_t image = image_index(ray_index, rays_per_batch, frame_count);
+            const std::uint32_t image = training_image_index(ray_index, rays_per_batch, frame_count);
             float u                   = 0.0f;
             float v                   = 0.0f;
-            random_image_pos_training(rng, width, height, u, v);
+            sample_training_pixel(rng, width, height, u, v);
 
             const float3 background_color  = {rng.next_float(), rng.next_float(), rng.next_float()};
             const std::uint32_t pixel_x    = ::cuda::std::min(static_cast<std::uint32_t>(u * static_cast<float>(width)), width - 1u);
             const std::uint32_t pixel_y    = ::cuda::std::min(static_cast<std::uint32_t>(v * static_cast<float>(height)), height - 1u);
-            const float4 texel             = read_rgba(pixel_x, pixel_y, image, width, height, pixels);
+            const float4 texel             = read_premultiplied_linear_rgba(pixel_x, pixel_y, image, width, height, pixels);
             const float3 background_linear = srgb_to_linear(background_color);
             const float3 rgb_target        = linear_to_srgb({texel.x + (1.0f - texel.w) * background_linear.x, texel.y + (1.0f - texel.w) * background_linear.y, texel.z + (1.0f - texel.w) * background_linear.z});
 
@@ -768,8 +768,8 @@ namespace ngp::cuda {
                 const float mlp_rgb_y   = __half2float(output[1u]);
                 const float mlp_rgb_z   = __half2float(output[2u]);
                 const float mlp_density = __half2float(output[3u]);
-                const float3 rgb        = {logistic(mlp_rgb_x), logistic(mlp_rgb_y), logistic(mlp_rgb_z)};
-                const float density     = network_to_density(mlp_density);
+                const float3 rgb        = {sigmoid(mlp_rgb_x), sigmoid(mlp_rgb_y), sigmoid(mlp_rgb_z)};
+                const float density     = density_activation(mlp_density);
                 const float alpha       = 1.0f - __expf(-density * dt);
                 const float weight      = alpha * transmittance;
                 rgb_ray2.x += weight * rgb.x;
@@ -780,9 +780,9 @@ namespace ngp::cuda {
                 const float3 suffix        = {rgb_ray.x - rgb_ray2.x, rgb_ray.y - rgb_ray2.y, rgb_ray.z - rgb_ray2.z};
                 const float3 dloss_by_drgb = {weight * gradient.x, weight * gradient.y, weight * gradient.z};
 
-                dloss_doutput[0u] = __float2half(scaled_loss * (dloss_by_drgb.x * network_to_rgb_derivative(mlp_rgb_x)));
-                dloss_doutput[1u] = __float2half(scaled_loss * (dloss_by_drgb.y * network_to_rgb_derivative(mlp_rgb_y)));
-                dloss_doutput[2u] = __float2half(scaled_loss * (dloss_by_drgb.z * network_to_rgb_derivative(mlp_rgb_z)));
+                dloss_doutput[0u] = __float2half(scaled_loss * (dloss_by_drgb.x * rgb_activation_derivative(mlp_rgb_x)));
+                dloss_doutput[1u] = __float2half(scaled_loss * (dloss_by_drgb.y * rgb_activation_derivative(mlp_rgb_y)));
+                dloss_doutput[2u] = __float2half(scaled_loss * (dloss_by_drgb.z * rgb_activation_derivative(mlp_rgb_z)));
 
                 const float density_derivative = expf(::cuda::std::clamp(mlp_density, static_cast<float>(DENSITY_GRADIENT_CLAMP_MIN), static_cast<float>(DENSITY_GRADIENT_CLAMP_MAX)));
                 const float dloss_by_dmlp      = density_derivative * (dt * (gradient.x * (transmittance * rgb.x - suffix.x) + gradient.y * (transmittance * rgb.y - suffix.y) + gradient.z * (transmittance * rgb.z - suffix.z)));
@@ -793,14 +793,14 @@ namespace ngp::cuda {
             }
         }
 
-        __global__ void fill_rollover_coords_kernel(const std::uint32_t* __restrict__ input_count, float* __restrict__ inout) {
+        __global__ void pad_rollover_coords_kernel(const std::uint32_t* __restrict__ input_count, float* __restrict__ inout) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n = *input_count;
             if (i < n * SAMPLE_COORD_FLOATS || i >= config::NETWORK_BATCH_SIZE * SAMPLE_COORD_FLOATS || n == 0u) return;
             inout[i] = inout[i % (n * SAMPLE_COORD_FLOATS)];
         }
 
-        __global__ void fill_rollover_network_output_gradients_kernel(const std::uint32_t* __restrict__ input_count, __half* __restrict__ inout) {
+        __global__ void pad_rollover_network_output_gradients_kernel(const std::uint32_t* __restrict__ input_count, __half* __restrict__ inout) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n = *input_count;
             if (i < n * MLP_OUTPUT_WIDTH || i >= config::NETWORK_BATCH_SIZE * MLP_OUTPUT_WIDTH || n == 0u) return;
@@ -826,9 +826,9 @@ namespace ngp::cuda {
             std::uint32_t grid_x = 0u;
             std::uint32_t grid_y = 0u;
             std::uint32_t grid_z = 0u;
-            pos_fract(sample[0], pos_x, grid_x, scale);
-            pos_fract(sample[1], pos_y, grid_y, scale);
-            pos_fract(sample[2], pos_z, grid_z, scale);
+            grid_position_fraction(sample[0], pos_x, grid_x, scale);
+            grid_position_fraction(sample[1], pos_y, grid_y, scale);
+            grid_position_fraction(sample[2], pos_z, grid_z, scale);
 
             __half result0 = 0.0f;
             __half result1 = 0.0f;
@@ -875,9 +875,9 @@ namespace ngp::cuda {
             std::uint32_t grid_x = 0u;
             std::uint32_t grid_y = 0u;
             std::uint32_t grid_z = 0u;
-            pos_fract(sample[0], pos_x, grid_x, scale);
-            pos_fract(sample[1], pos_y, grid_y, scale);
-            pos_fract(sample[2], pos_z, grid_z, scale);
+            grid_position_fraction(sample[0], pos_x, grid_x, scale);
+            grid_position_fraction(sample[1], pos_y, grid_y, scale);
+            grid_position_fraction(sample[2], pos_z, grid_z, scale);
 
             const __half grad0 = encoded_position_gradients[i + (level * config::GRID_FEATURES_PER_LEVEL + feature + 0u) * sample_count];
             const __half grad1 = encoded_position_gradients[i + (level * config::GRID_FEATURES_PER_LEVEL + feature + 1u) * sample_count];
@@ -1187,7 +1187,7 @@ namespace ngp::cuda {
             density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u];
         }
 
-        __global__ void adam_step(const std::uint32_t param_count, const std::uint32_t mlp_param_count, float* __restrict__ params_full_precision, __half* __restrict__ params, const __half* __restrict__ gradients, float* __restrict__ first_moments, float* __restrict__ second_moments, std::uint32_t* __restrict__ param_steps) {
+        __global__ void adam_step_kernel(const std::uint32_t param_count, const std::uint32_t mlp_param_count, float* __restrict__ params_full_precision, __half* __restrict__ params, const __half* __restrict__ gradients, float* __restrict__ first_moments, float* __restrict__ second_moments, std::uint32_t* __restrict__ param_steps) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= param_count) return;
 
@@ -1209,7 +1209,7 @@ namespace ngp::cuda {
         }
     } // namespace
 
-    void copy_dataset_to_device_once(const std::uint8_t* const pixels, const std::size_t pixels_bytes, const float* const camera, const std::size_t camera_count, const std::uint8_t*& out_pixels, const float*& out_camera) {
+    void upload_dataset(const std::uint8_t* const pixels, const std::size_t pixels_bytes, const float* const camera, const std::size_t camera_count, const std::uint8_t*& out_pixels, const float*& out_camera) {
         out_pixels = nullptr;
         out_camera = nullptr;
 
@@ -1228,7 +1228,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemcpy(const_cast<float*>(out_camera), camera, camera_count * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy camera failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_sampler_once(float*& out_sample_coords, float*& out_rays, std::uint32_t*& out_ray_indices, std::uint32_t*& out_numsteps, std::uint32_t*& out_ray_counter, std::uint32_t*& out_sample_counter, std::uint8_t*& out_occupancy) {
+    void allocate_sampler_buffers(float*& out_sample_coords, float*& out_rays, std::uint32_t*& out_ray_indices, std::uint32_t*& out_numsteps, std::uint32_t*& out_ray_counter, std::uint32_t*& out_sample_counter, std::uint8_t*& out_occupancy) {
         out_sample_coords  = nullptr;
         out_rays           = nullptr;
         out_ray_indices    = nullptr;
@@ -1250,7 +1250,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_occupancy, 0xFF, NERF_GRID_CELLS / 8u); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler occupancy failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_density_grid_once(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_density_grid_occupied_count) {
+    void allocate_density_grid_buffers(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_density_grid_occupied_count) {
         out_density_grid_values         = nullptr;
         out_density_grid_scratch        = nullptr;
         out_density_grid_indices        = nullptr;
@@ -1269,7 +1269,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_density_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid occupied count failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_network_once(std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden, std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace) {
+    void allocate_network_buffers(std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden, std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace) {
         out_density_input            = nullptr;
         out_rgb_input                = nullptr;
         out_network_output           = nullptr;
@@ -1307,7 +1307,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc cublasLt workspace failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_training_loss_once(std::uint32_t*& out_compacted_sample_counter, float*& out_compacted_sample_coords, float*& out_loss_values) {
+    void allocate_training_loss_buffers(std::uint32_t*& out_compacted_sample_counter, float*& out_compacted_sample_coords, float*& out_loss_values) {
         out_compacted_sample_counter = nullptr;
         out_compacted_sample_coords  = nullptr;
         out_loss_values              = nullptr;
@@ -1319,7 +1319,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_loss_values, static_cast<std::size_t>(config::NETWORK_BATCH_SIZE) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc loss values failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_validation_once(std::uint32_t*& out_validation_numsteps, std::uint32_t*& out_validation_sample_counter, std::uint32_t*& out_validation_overflow_counter, double*& out_validation_loss_sum) {
+    void allocate_validation_buffers(std::uint32_t*& out_validation_numsteps, std::uint32_t*& out_validation_sample_counter, std::uint32_t*& out_validation_overflow_counter, double*& out_validation_loss_sum) {
         out_validation_numsteps         = nullptr;
         out_validation_sample_counter   = nullptr;
         out_validation_overflow_counter = nullptr;
@@ -1331,7 +1331,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_validation_loss_sum, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc validation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_trainable_params_once(const std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients) {
+    void allocate_trainable_parameter_buffers(const std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients) {
         out_params_full_precision = nullptr;
         out_params                = nullptr;
         out_param_gradients       = nullptr;
@@ -1343,7 +1343,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_param_gradients, static_cast<std::size_t>(param_count) * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc trainable param gradients failed: "} + cudaGetErrorString(status)};
     }
 
-    void initialize_mlp_params_once(const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
+    void initialize_mlp_parameters(const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"invalid mlp parameter initialization input."};
 
         const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + DENSITY_NETWORK_PARAMS, rgb_param_offset + RGB_NETWORK_PARAMS);
@@ -1370,7 +1370,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"cast_params_to_half_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void initialize_grid_params_once(const std::uint32_t param_count, const std::uint64_t rng_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
+    void initialize_grid_parameters(const std::uint32_t param_count, const std::uint64_t rng_offset, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (param_count == 0u) return;
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"grid parameter buffers are null."};
 
@@ -1381,7 +1381,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"initialize_grid_params_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void network_inference_once(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
+    void evaluate_network(const std::uint32_t sample_count, const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output) {
         if (sample_count == 0u) return;
         if (sample_count % (16u * MLP_FORWARD_ITERS) != 0u || sample_coords == nullptr || grid_offsets == nullptr || params == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr) throw std::runtime_error{"invalid network inference input."};
 
@@ -1413,7 +1413,7 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid_once(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
+    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
         out_elapsed_ms                  = 0.0f;
         std::uint32_t density_grid_skip = current_step / DENSITY_GRID_SKIP_INTERVAL;
         if (density_grid_skip < 1u) density_grid_skip = 1u;
@@ -1469,8 +1469,8 @@ namespace ngp::cuda {
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"splat_density_grid_samples_kernel failed: "} + cudaGetErrorString(status)};
         }
 
-        ema_density_grid_kernel<<<(NERF_GRID_CELLS + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_scratch, density_grid_values);
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"ema_density_grid_kernel failed: "} + cudaGetErrorString(status)};
+        update_density_grid_ema_kernel<<<(NERF_GRID_CELLS + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_scratch, density_grid_values);
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"update_density_grid_ema_kernel failed: "} + cudaGetErrorString(status)};
         ++density_grid_ema_step;
 
         if (const cudaError_t status = cudaMemset(density_grid_mean, 0, sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid mean failed: "} + cudaGetErrorString(status)};
@@ -1479,14 +1479,14 @@ namespace ngp::cuda {
         reduce_density_grid_mean_kernel<<<(NERF_GRID_CELLS / 4u + 1023u) / 1024u, 1024u>>>(density_grid_values, density_grid_mean);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"reduce_density_grid_mean_kernel failed: "} + cudaGetErrorString(status)};
 
-        density_grid_to_bitfield_kernel<<<(NERF_GRID_CELLS / 8u + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_values, density_grid_mean, occupancy, density_grid_occupied_count);
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"density_grid_to_bitfield_kernel failed: "} + cudaGetErrorString(status)};
+        build_density_grid_bitfield_kernel<<<(NERF_GRID_CELLS / 8u + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_values, density_grid_mean, occupancy, density_grid_occupied_count);
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"build_density_grid_bitfield_kernel failed: "} + cudaGetErrorString(status)};
 
         if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"density grid update synchronization failed: "} + cudaGetErrorString(status)};
         out_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
-    void validate_once(const std::uint8_t* const validation_pixels, const float* const validation_camera, const std::uint32_t validation_frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const validation_numsteps, std::uint32_t* const validation_sample_counter, std::uint32_t* const validation_overflow_counter, double* const validation_loss_sum, double& out_loss_sum) {
+    void run_validation(const std::uint8_t* const validation_pixels, const float* const validation_camera, const std::uint32_t validation_frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const validation_numsteps, std::uint32_t* const validation_sample_counter, std::uint32_t* const validation_overflow_counter, double* const validation_loss_sum, double& out_loss_sum) {
         out_loss_sum = 0.0;
         if (validation_pixels == nullptr || validation_camera == nullptr || validation_frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || validation_numsteps == nullptr || validation_sample_counter == nullptr || validation_overflow_counter == nullptr || validation_loss_sum == nullptr) throw std::runtime_error{"invalid validation input."};
 
@@ -1520,10 +1520,10 @@ namespace ngp::cuda {
                     if (padded_used_samples > VALIDATION_MAX_SAMPLES) throw std::runtime_error{"validation padded sample count exceeded validation sample budget."};
 
                     const std::uint32_t coord_elements = padded_used_samples * SAMPLE_COORD_FLOATS;
-                    fill_validation_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(used_samples, padded_used_samples, sample_coords);
-                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"fill_validation_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
+                    pad_validation_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(used_samples, padded_used_samples, sample_coords);
+                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_validation_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
 
-                    network_inference_once(padded_used_samples, sample_coords, grid_offsets, params, density_param_offset, rgb_param_offset, grid_param_offset, density_input, rgb_input, network_output);
+                    evaluate_network(padded_used_samples, sample_coords, grid_offsets, params, density_param_offset, rgb_param_offset, grid_param_offset, density_input, rgb_input, network_output);
                 }
 
                 accumulate_validation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, validation_image_index, width, height, validation_pixels, validation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), validation_loss_sum);
@@ -1535,7 +1535,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemcpy(&out_loss_sum, validation_loss_sum, sizeof(double), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy validation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
-    void network_forward_once(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
+    void forward_network(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
         if (sample_coords == nullptr || grid_offsets == nullptr || params == nullptr || density_input == nullptr || rgb_input == nullptr || density_forward_hidden == nullptr || rgb_forward_hidden == nullptr || network_output == nullptr) throw std::runtime_error{"invalid network forward input."};
 
         constexpr dim3 grid_blocks{(config::NETWORK_BATCH_SIZE + GRID_FORWARD_THREADS - 1u) / GRID_FORWARD_THREADS, config::GRID_N_LEVELS, 1u};
@@ -1561,7 +1561,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"extract_density_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void network_backward_once(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, std::uint16_t* const gradients, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients, std::uint16_t* const density_backward_hidden, std::uint16_t* const rgb_backward_hidden, void* const cublaslt_handle, std::uint8_t* const cublaslt_workspace) {
+    void backward_network(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, std::uint16_t* const gradients, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, const std::uint16_t* const density_input, const std::uint16_t* const rgb_input, const std::uint16_t* const density_forward_hidden, const std::uint16_t* const rgb_forward_hidden, const std::uint16_t* const network_output, const std::uint16_t* const network_output_gradients, std::uint16_t* const rgb_output_gradients, std::uint16_t* const rgb_input_gradients, std::uint16_t* const density_input_gradients, std::uint16_t* const density_backward_hidden, std::uint16_t* const rgb_backward_hidden, void* const cublaslt_handle, std::uint8_t* const cublaslt_workspace) {
         if (sample_coords == nullptr || grid_offsets == nullptr || params == nullptr || gradients == nullptr || density_input == nullptr || rgb_input == nullptr || density_forward_hidden == nullptr || rgb_forward_hidden == nullptr || network_output == nullptr || network_output_gradients == nullptr || rgb_output_gradients == nullptr || rgb_input_gradients == nullptr || density_input_gradients == nullptr || density_backward_hidden == nullptr || rgb_backward_hidden == nullptr || cublaslt_handle == nullptr || cublaslt_workspace == nullptr) throw std::runtime_error{"invalid network backward input."};
 
         constexpr std::uint32_t linear_blocks       = (config::NETWORK_BATCH_SIZE + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
@@ -1780,7 +1780,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"encode_grid_backward_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_adam_state_once(const std::uint32_t param_count, float*& out_first_moments, float*& out_second_moments, std::uint32_t*& out_param_steps) {
+    void allocate_adam_state(const std::uint32_t param_count, float*& out_first_moments, float*& out_second_moments, std::uint32_t*& out_param_steps) {
         out_first_moments  = nullptr;
         out_second_moments = nullptr;
         out_param_steps    = nullptr;
@@ -1804,12 +1804,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler sample counter failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        generate_training_samples<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_length, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
+        generate_training_samples_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_length, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
 
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_training_samples failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_training_samples_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void compute_loss_and_compact_once(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* const ray_counter, const std::uint8_t* const pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const std::uint16_t* const network_output, std::uint32_t* const compacted_sample_counter, const std::uint32_t* const ray_indices, const float* const rays, std::uint32_t* const numsteps, const float* const sample_coords, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients, float* const loss_values) {
+    void compute_training_loss_and_compact_samples(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* const ray_counter, const std::uint8_t* const pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const std::uint16_t* const network_output, std::uint32_t* const compacted_sample_counter, const std::uint32_t* const ray_indices, const float* const rays, std::uint32_t* const numsteps, const float* const sample_coords, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients, float* const loss_values) {
         if (rays_per_batch == 0u) return;
         if (frame_count == 0u || width == 0u || height == 0u || ray_counter == nullptr || pixels == nullptr || network_output == nullptr || compacted_sample_counter == nullptr || ray_indices == nullptr || rays == nullptr || numsteps == nullptr || sample_coords == nullptr || compacted_sample_coords == nullptr || network_output_gradients == nullptr) throw std::runtime_error{"invalid loss and compaction input."};
 
@@ -1818,29 +1818,29 @@ namespace ngp::cuda {
             if (const cudaError_t status = cudaMemset(loss_values, 0, static_cast<std::size_t>(rays_per_batch) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loss values failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        compute_loss_and_compact_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, current_step, ray_counter, pixels, frame_count, width, height, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
+        compute_training_loss_and_compact_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, current_step, ray_counter, pixels, frame_count, width, height, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
 
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"compute_loss_and_compact_kernel failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"compute_training_loss_and_compact_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void fill_rollover_once(const std::uint32_t* const compacted_sample_counter, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients) {
+    void pad_compacted_training_batch(const std::uint32_t* const compacted_sample_counter, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients) {
         if (compacted_sample_counter == nullptr || compacted_sample_coords == nullptr || network_output_gradients == nullptr) throw std::runtime_error{"rollover buffers are null."};
 
         constexpr std::uint32_t gradient_elements = config::NETWORK_BATCH_SIZE * MLP_OUTPUT_WIDTH;
-        fill_rollover_network_output_gradients_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"fill_rollover_network_output_gradients_kernel failed: "} + cudaGetErrorString(status)};
+        pad_rollover_network_output_gradients_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_rollover_network_output_gradients_kernel failed: "} + cudaGetErrorString(status)};
 
         constexpr std::uint32_t coord_elements = config::NETWORK_BATCH_SIZE * SAMPLE_COORD_FLOATS;
-        fill_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(compacted_sample_counter, compacted_sample_coords);
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"fill_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
+        pad_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(compacted_sample_counter, compacted_sample_coords);
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void read_counter_once(const std::uint32_t* const counter, std::uint32_t& out_value) {
+    void read_counter(const std::uint32_t* const counter, std::uint32_t& out_value) {
         if (counter == nullptr) throw std::runtime_error{"counter is null."};
         if (const cudaError_t status = cudaMemcpy(&out_value, counter, sizeof(std::uint32_t), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy counter failed: "} + cudaGetErrorString(status)};
     }
 
-    void read_loss_sum_once(const float* const loss_values, const std::uint32_t loss_count, float& out_loss_sum) {
+    void read_loss_sum(const float* const loss_values, const std::uint32_t loss_count, float& out_loss_sum) {
         out_loss_sum = 0.0f;
         if (loss_count == 0u) return;
         if (loss_values == nullptr) throw std::runtime_error{"loss values are null."};
@@ -1850,13 +1850,13 @@ namespace ngp::cuda {
         for (const float loss : host_loss) out_loss_sum += loss;
     }
 
-    void optimize(const std::uint32_t param_count, const std::uint32_t mlp_param_count, float* const params_full_precision, std::uint16_t* const params, const std::uint16_t* const gradients, float* const first_moments, float* const second_moments, std::uint32_t* const param_steps) {
+    void step_optimizer(const std::uint32_t param_count, const std::uint32_t mlp_param_count, float* const params_full_precision, std::uint16_t* const params, const std::uint16_t* const gradients, float* const first_moments, float* const second_moments, std::uint32_t* const param_steps) {
         if (param_count == 0u) return;
         if (mlp_param_count > param_count || params_full_precision == nullptr || params == nullptr || gradients == nullptr || first_moments == nullptr || second_moments == nullptr || param_steps == nullptr) throw std::runtime_error{"invalid optimizer input."};
 
         const std::uint32_t blocks = (param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        adam_step<<<blocks, THREADS_PER_BLOCK>>>(param_count, mlp_param_count, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<const __half*>(gradients), first_moments, second_moments, param_steps);
+        adam_step_kernel<<<blocks, THREADS_PER_BLOCK>>>(param_count, mlp_param_count, params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<const __half*>(gradients), first_moments, second_moments, param_steps);
 
-        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"adam_step failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"adam_step_kernel failed: "} + cudaGetErrorString(status)};
     }
 } // namespace ngp::cuda

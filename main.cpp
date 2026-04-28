@@ -23,7 +23,7 @@ namespace {
         float early_stop_min_delta_mse          = 1e-6f;
     };
 
-    std::expected<std::string_view, std::string> parse_option_value(const std::span<const char* const> arguments, std::size_t& index, const std::string_view option_name, const std::optional<std::string_view> inline_value) {
+    std::expected<std::string_view, std::string> parse_cli_option_value(const std::span<const char* const> arguments, std::size_t& index, const std::string_view option_name, const std::optional<std::string_view> inline_value) {
         if (inline_value.has_value()) {
             if (inline_value->empty()) return std::unexpected{std::format("{} requires a value.", option_name)};
             return *inline_value;
@@ -57,7 +57,7 @@ namespace {
         return parsed;
     }
 
-    std::expected<std::optional<CliOptions>, std::string> parse_cli(const std::span<const char* const> arguments) {
+    std::expected<std::optional<CliOptions>, std::string> parse_cli_options(const std::span<const char* const> arguments) {
         CliOptions cli            = {};
         bool dataset_path_was_set = false;
 
@@ -75,7 +75,7 @@ namespace {
 
             if (option_name == "--dataset") {
                 if (dataset_path_was_set) return std::unexpected{"dataset path was provided more than once."};
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 cli.dataset_path     = std::filesystem::path{*value};
                 dataset_path_was_set = true;
@@ -83,7 +83,7 @@ namespace {
             }
 
             if (option_name == "--steps") {
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 const auto parsed = parse_positive_int32(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
@@ -92,7 +92,7 @@ namespace {
             }
 
             if (option_name == "--chunk-steps") {
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 const auto parsed = parse_positive_int32(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
@@ -101,7 +101,7 @@ namespace {
             }
 
             if (option_name == "--validation-interval") {
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 const auto parsed = parse_positive_uint32(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
@@ -110,7 +110,7 @@ namespace {
             }
 
             if (option_name == "--early-stop-patience") {
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 const auto parsed = parse_positive_uint32(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
@@ -119,7 +119,7 @@ namespace {
             }
 
             if (option_name == "--early-stop-min-delta") {
-                const auto value = parse_option_value(arguments, i, option_name, inline_value);
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
                 if (!value) return std::unexpected{value.error()};
                 const auto parsed = parse_nonnegative_float(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
@@ -168,7 +168,7 @@ int main(const int argc, const char* const* const argv) {
 )",
         ansi_bold, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_yellow, ansi_reset, ansi_dim, ansi_reset, ansi_bold, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_dim, ansi_reset, ansi_green, ansi_reset, ansi_bold, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_yellow, ansi_reset, ansi_green, ansi_reset, ansi_cyan, executable_name, ansi_reset, ansi_green, ansi_reset, ansi_green, ansi_reset);
 
-    const auto cli_result = parse_cli(arguments);
+    const auto cli_result = parse_cli_options(arguments);
     if (!cli_result) {
         std::println("{}error:{} {}\n{}", ansi_red, ansi_reset, cli_result.error(), usage);
         return 2;

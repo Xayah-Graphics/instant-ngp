@@ -10,7 +10,7 @@ namespace ngp::dataset {
         inline constexpr float NERF_SYNTHETIC_SCENE_SCALE  = 0.33f;
         inline constexpr float NERF_SYNTHETIC_SCENE_OFFSET = 0.5f;
 
-        std::vector<NeRFSynthetic::Frame> load_split(const std::filesystem::path& dataset_path, const std::string_view file_name) {
+        std::vector<NeRFSynthetic::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name) {
             const std::filesystem::path json_path  = dataset_path / file_name;
             const std::filesystem::path split_root = json_path.parent_path();
             const nlohmann::json json              = nlohmann::json::parse(std::ifstream{json_path, std::ios::binary}, nullptr, true, true);
@@ -78,9 +78,9 @@ namespace ngp::dataset {
     } // namespace
     std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path) {
         return NeRFSynthetic{
-            .train      = load_split(path, "transforms_train.json"),
-            .validation = load_split(path, "transforms_val.json"),
-            .test       = load_split(path, "transforms_test.json"),
+            .train      = load_nerf_synthetic_split(path, "transforms_train.json"),
+            .validation = load_nerf_synthetic_split(path, "transforms_val.json"),
+            .test       = load_nerf_synthetic_split(path, "transforms_test.json"),
         };
     }
 } // namespace ngp::dataset
