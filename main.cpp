@@ -221,7 +221,7 @@ int main(const int argc, const char* const* const argv) {
     }
 
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, cli.dataset_path.string(), cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
+    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, cli.dataset_path.string(), cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     std::println("{}[{:%F %T}]{} {}{:<7}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
@@ -296,7 +296,7 @@ int main(const int argc, const char* const* const argv) {
                                 if (!test) return std::unexpected{test.error()};
 
                                 const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} pixels={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->pixel_count, test->elapsed_ms);
+                                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
 
                                 if (cli.export_weights_path.has_value()) {
                                     const auto exported_weights = ngp->export_weights(*cli.export_weights_path);

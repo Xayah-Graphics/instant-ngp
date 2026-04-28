@@ -2,6 +2,8 @@ module;
 #include "ngp.train.h"
 
 #include "json/json.hpp"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 module ngp.train;
 import std;
 
@@ -10,8 +12,8 @@ namespace ngp::train {
 
     InstantNGP::~InstantNGP() noexcept {
         cuda::destroy_cublaslt(this->device.cublaslt_handle);
-        cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients,
-            this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+        cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
+            this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
     }
 
     std::expected<TrainStats, std::string> InstantNGP::train(const std::int32_t iters) {
@@ -72,7 +74,7 @@ namespace ngp::train {
             const std::uint64_t pixel_count      = pixels_per_image * this->host.validation_frame_count;
             double evaluation_loss_sum           = 0.0;
 
-            cuda::run_evaluation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, evaluation_loss_sum);
+            cuda::run_evaluation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, 0u, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, nullptr, nullptr, evaluation_loss_sum);
 
             const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
             if (!std::isfinite(mse)) throw std::runtime_error{"validation produced non-finite MSE."};
@@ -93,24 +95,44 @@ namespace ngp::train {
     std::expected<TestStats, std::string> InstantNGP::test() const {
         try {
             if (this->host.test_frame_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};
+            const std::filesystem::path output_dir = "test";
+            if (output_dir.empty()) throw std::runtime_error{"test output directory must not be empty."};
+            if (this->device.test_comparison_pixels == nullptr) throw std::runtime_error{"test comparison image buffer is not initialized."};
+            if (std::filesystem::exists(output_dir) && !std::filesystem::is_directory(output_dir)) throw std::runtime_error{std::format("test output path '{}' is not a directory.", output_dir.string())};
+            std::filesystem::create_directories(output_dir);
+            if (!std::filesystem::is_directory(output_dir)) throw std::runtime_error{std::format("failed to create test output directory '{}'.", output_dir.string())};
+            if (this->host.test_width > static_cast<std::uint32_t>(std::numeric_limits<int>::max() / 2) || this->host.test_height > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) throw std::runtime_error{"test image dimensions exceed PNG writer limits."};
 
             const auto test_start                = std::chrono::steady_clock::now();
             const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.test_width) * this->host.test_height;
             const std::uint64_t pixel_count      = pixels_per_image * this->host.test_frame_count;
             double evaluation_loss_sum           = 0.0;
+            std::vector<std::uint8_t> comparison_image(static_cast<std::size_t>(this->host.test_width) * this->host.test_height * 2uz * 3uz);
 
-            cuda::run_evaluation(this->device.test_pixels, this->device.test_camera, this->host.test_frame_count, this->host.test_width, this->host.test_height, this->host.test_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, evaluation_loss_sum);
+            for (std::uint32_t image_index = 0u; image_index < this->host.test_frame_count; ++image_index) {
+                double image_loss_sum = 0.0;
+                cuda::run_evaluation(this->device.test_pixels, this->device.test_camera, this->host.test_frame_count, image_index, 1u, this->host.test_width, this->host.test_height, this->host.test_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, comparison_image.data(), image_loss_sum);
+                evaluation_loss_sum += image_loss_sum;
+
+                const std::filesystem::path output_path = output_dir / std::format("test_{:04}.png", image_index);
+                const std::string output_path_text      = output_path.string();
+                const int output_width                  = static_cast<int>(this->host.test_width * 2u);
+                const int output_height                 = static_cast<int>(this->host.test_height);
+                if (stbi_write_png(output_path_text.c_str(), output_width, output_height, 3, comparison_image.data(), output_width * 3) == 0) throw std::runtime_error{std::format("failed to write test comparison image '{}'.", output_path_text)};
+            }
 
             const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
             if (!std::isfinite(mse)) throw std::runtime_error{"test produced non-finite MSE."};
 
             return TestStats{
-                .step        = this->host.current_step,
-                .image_count = this->host.test_frame_count,
-                .pixel_count = pixel_count,
-                .mse         = static_cast<float>(mse),
-                .psnr        = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
-                .elapsed_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - test_start).count(),
+                .step                   = this->host.current_step,
+                .image_count            = this->host.test_frame_count,
+                .comparison_image_count = this->host.test_frame_count,
+                .pixel_count            = pixel_count,
+                .mse                    = static_cast<float>(mse),
+                .psnr                   = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
+                .elapsed_ms             = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - test_start).count(),
+                .output_dir             = output_dir,
             };
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};

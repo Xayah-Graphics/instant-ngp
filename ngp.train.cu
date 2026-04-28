@@ -619,7 +619,7 @@ namespace ngp::cuda {
             inout[i] = inout[i % used_elements];
         }
 
-        __global__ void accumulate_evaluation_loss_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t evaluation_image_index, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* __restrict__ evaluation_pixels, const std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, const __half* __restrict__ network_output, double* __restrict__ evaluation_loss_sum) {
+        __global__ void accumulate_evaluation_loss_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t evaluation_image_index, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* __restrict__ evaluation_pixels, const std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, const __half* __restrict__ network_output, double* __restrict__ evaluation_loss_sum, std::uint8_t* __restrict__ comparison_pixels) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             double squared_error  = 0.0;
 
@@ -664,6 +664,18 @@ namespace ngp::cuda {
                 const double diff_g      = static_cast<double>(prediction_g) - static_cast<double>(target_g);
                 const double diff_b      = static_cast<double>(prediction_b) - static_cast<double>(target_b);
                 squared_error            = diff_r * diff_r + diff_g * diff_g + diff_b * diff_b;
+
+                if (comparison_pixels != nullptr) {
+                    const std::uint32_t row_offset        = pixel_y * width * 2u * 3u;
+                    const std::uint32_t target_offset     = row_offset + pixel_x * 3u;
+                    const std::uint32_t render_offset     = row_offset + (width + pixel_x) * 3u;
+                    comparison_pixels[target_offset + 0u] = static_cast<std::uint8_t>(target_r * 255.0f + 0.5f);
+                    comparison_pixels[target_offset + 1u] = static_cast<std::uint8_t>(target_g * 255.0f + 0.5f);
+                    comparison_pixels[target_offset + 2u] = static_cast<std::uint8_t>(target_b * 255.0f + 0.5f);
+                    comparison_pixels[render_offset + 0u] = static_cast<std::uint8_t>(prediction_r * 255.0f + 0.5f);
+                    comparison_pixels[render_offset + 1u] = static_cast<std::uint8_t>(prediction_g * 255.0f + 0.5f);
+                    comparison_pixels[render_offset + 2u] = static_cast<std::uint8_t>(prediction_b * 255.0f + 0.5f);
+                }
             }
 
             __shared__ double sums[THREADS_PER_BLOCK];
@@ -1331,6 +1343,14 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_evaluation_loss_sum, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
+    void allocate_test_comparison_buffer(const std::uint32_t width, const std::uint32_t height, std::uint8_t*& out_test_comparison_pixels) {
+        out_test_comparison_pixels = nullptr;
+        if (width == 0u || height == 0u) throw std::runtime_error{"invalid test comparison image dimensions."};
+        const std::uint64_t byte_count = static_cast<std::uint64_t>(width) * height * 2u * 3u;
+        if (byte_count > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"test comparison image buffer is too large."};
+        if (const cudaError_t status = cudaMalloc(&out_test_comparison_pixels, static_cast<std::size_t>(byte_count)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc test comparison image failed: "} + cudaGetErrorString(status)};
+    }
+
     void allocate_trainable_parameter_buffers(const std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients) {
         out_params_full_precision = nullptr;
         out_params                = nullptr;
@@ -1509,17 +1529,27 @@ namespace ngp::cuda {
         out_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
-    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, double& out_loss_sum) {
-        out_loss_sum = 0.0;
-        if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
+    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const test_comparison_pixels, std::uint8_t* const host_test_comparison_pixels, double& out_loss_sum) {
+        out_loss_sum                 = 0.0;
+        const bool writes_comparison = test_comparison_pixels != nullptr || host_test_comparison_pixels != nullptr;
+        if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || evaluation_image_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
+        if (evaluation_image_begin >= evaluation_frame_count || evaluation_image_count > evaluation_frame_count - evaluation_image_begin) throw std::runtime_error{"evaluation image range is out of bounds."};
+        if (writes_comparison && (test_comparison_pixels == nullptr || host_test_comparison_pixels == nullptr || evaluation_image_count != 1u)) throw std::runtime_error{"test comparison output requires exactly one evaluation image."};
 
         const std::uint64_t total_pixels_64 = static_cast<std::uint64_t>(width) * height;
         if (total_pixels_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"evaluation image has too many pixels."};
-        const auto total_pixels = static_cast<std::uint32_t>(total_pixels_64);
+        const auto total_pixels           = static_cast<std::uint32_t>(total_pixels_64);
+        std::size_t comparison_byte_count = 0uz;
+        if (writes_comparison) {
+            const std::uint64_t comparison_byte_count_64 = total_pixels_64 * 2u * 3u;
+            if (comparison_byte_count_64 > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"test comparison image is too large."};
+            comparison_byte_count = static_cast<std::size_t>(comparison_byte_count_64);
+        }
 
         if (const cudaError_t status = cudaMemset(evaluation_loss_sum, 0, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation loss sum failed: "} + cudaGetErrorString(status)};
 
-        for (std::uint32_t evaluation_image_index = 0u; evaluation_image_index < evaluation_frame_count; ++evaluation_image_index) {
+        for (std::uint32_t evaluation_image_offset = 0u; evaluation_image_offset < evaluation_image_count; ++evaluation_image_offset) {
+            const std::uint32_t evaluation_image_index = evaluation_image_begin + evaluation_image_offset;
             for (std::uint32_t pixel_offset = 0u; pixel_offset < total_pixels; pixel_offset += VALIDATION_TILE_RAYS) {
                 const std::uint32_t tile_pixels = ::cuda::std::min(VALIDATION_TILE_RAYS, total_pixels - pixel_offset);
 
@@ -1549,13 +1579,17 @@ namespace ngp::cuda {
                     evaluate_network(padded_used_samples, sample_coords, grid_offsets, params, density_param_offset, rgb_param_offset, grid_param_offset, density_input, rgb_input, network_output);
                 }
 
-                accumulate_evaluation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, evaluation_image_index, width, height, evaluation_pixels, evaluation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), evaluation_loss_sum);
+                accumulate_evaluation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, evaluation_image_index, width, height, evaluation_pixels, evaluation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), evaluation_loss_sum, writes_comparison ? test_comparison_pixels : nullptr);
                 if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"accumulate_evaluation_loss_kernel failed: "} + cudaGetErrorString(status)};
             }
         }
 
         if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"evaluation synchronization failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemcpy(&out_loss_sum, evaluation_loss_sum, sizeof(double), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy evaluation loss sum failed: "} + cudaGetErrorString(status)};
+        if (writes_comparison) {
+            const cudaError_t status = cudaMemcpy(host_test_comparison_pixels, test_comparison_pixels, comparison_byte_count, cudaMemcpyDeviceToHost);
+            if (status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy test comparison image failed: "} + cudaGetErrorString(status)};
+        }
     }
 
     void forward_network(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {
