@@ -1,5 +1,6 @@
 module;
 #include "ngp.train.h"
+
 #include "json/json.hpp"
 module ngp.train;
 import std;
@@ -9,8 +10,8 @@ namespace ngp::train {
 
     InstantNGP::~InstantNGP() noexcept {
         cuda::destroy_cublaslt(this->device.cublaslt_handle);
-        cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden,
-            this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+        cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients,
+            this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
     }
 
     std::expected<TrainStats, std::string> InstantNGP::train(const std::int32_t iters) {
@@ -69,11 +70,11 @@ namespace ngp::train {
             const auto validation_start          = std::chrono::steady_clock::now();
             const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.validation_width) * this->host.validation_height;
             const std::uint64_t pixel_count      = pixels_per_image * this->host.validation_frame_count;
-            double validation_loss_sum           = 0.0;
+            double evaluation_loss_sum           = 0.0;
 
-            cuda::run_validation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum, validation_loss_sum);
+            cuda::run_evaluation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, evaluation_loss_sum);
 
-            const double mse = validation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
+            const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
             if (!std::isfinite(mse)) throw std::runtime_error{"validation produced non-finite MSE."};
 
             return ValidationStats{
@@ -83,6 +84,33 @@ namespace ngp::train {
                 .mse         = static_cast<float>(mse),
                 .psnr        = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
                 .elapsed_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - validation_start).count(),
+            };
+        } catch (const std::exception& error) {
+            return std::unexpected{std::string{error.what()}};
+        }
+    }
+
+    std::expected<TestStats, std::string> InstantNGP::test() const {
+        try {
+            if (this->host.test_frame_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};
+
+            const auto test_start                = std::chrono::steady_clock::now();
+            const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.test_width) * this->host.test_height;
+            const std::uint64_t pixel_count      = pixels_per_image * this->host.test_frame_count;
+            double evaluation_loss_sum           = 0.0;
+
+            cuda::run_evaluation(this->device.test_pixels, this->device.test_camera, this->host.test_frame_count, this->host.test_width, this->host.test_height, this->host.test_focal_length, this->device.occupancy, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, evaluation_loss_sum);
+
+            const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
+            if (!std::isfinite(mse)) throw std::runtime_error{"test produced non-finite MSE."};
+
+            return TestStats{
+                .step        = this->host.current_step,
+                .image_count = this->host.test_frame_count,
+                .pixel_count = pixel_count,
+                .mse         = static_cast<float>(mse),
+                .psnr        = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
+                .elapsed_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - test_start).count(),
             };
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
@@ -109,13 +137,13 @@ namespace ngp::train {
             const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + config::MLP_WIDTH * config::RGB_INPUT_WIDTH;
             const std::uint32_t rgb_output_offset     = rgb_hidden_offset + config::MLP_WIDTH * config::MLP_WIDTH;
             const std::array tensors                  = std::to_array<SafetensorsTensor>({
-                                 SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
-                                 SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
-                             });
+                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
+                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
+            });
 
             std::vector<float> host_params(this->host.total_param_count);
             cuda::download_trainable_parameters(this->host.total_param_count, this->device.params_full_precision, host_params.data());
@@ -126,34 +154,34 @@ namespace ngp::train {
                 grid_offsets_text += std::format("{}", this->host.grid_offsets[i]);
             }
 
-            nlohmann::json metadata                  = nlohmann::json::object();
-            metadata["format"]                       = "instant-ngp-new.weights.v1";
-            metadata["grid_n_levels"]                = std::format("{}", config::GRID_N_LEVELS);
-            metadata["grid_features_per_level"]      = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
-            metadata["grid_base_resolution"]         = std::format("{}", config::GRID_BASE_RESOLUTION);
-            metadata["grid_log2_hashmap_size"]       = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
-            metadata["grid_per_level_scale"]         = std::format("{}", config::GRID_PER_LEVEL_SCALE);
-            metadata["grid_log2_per_level_scale"]    = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
-            metadata["mlp_width"]                    = std::format("{}", config::MLP_WIDTH);
-            metadata["density_hidden_layers"]        = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
-            metadata["rgb_hidden_layers"]            = std::format("{}", config::RGB_HIDDEN_LAYERS);
-            metadata["density_output_width"]         = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
-            metadata["direction_output_width"]       = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
-            metadata["rgb_input_width"]              = std::format("{}", config::RGB_INPUT_WIDTH);
-            metadata["network_output_width"]         = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
-            metadata["grid_offsets"]                 = grid_offsets_text;
-            metadata["density_param_count"]          = std::format("{}", this->host.density_param_count);
-            metadata["rgb_param_count"]              = std::format("{}", this->host.rgb_param_count);
-            metadata["mlp_param_count"]              = std::format("{}", this->host.mlp_param_count);
-            metadata["grid_param_count"]             = std::format("{}", this->host.grid_param_count);
-            metadata["total_param_count"]            = std::format("{}", this->host.total_param_count);
+            nlohmann::json metadata               = nlohmann::json::object();
+            metadata["format"]                    = "instant-ngp-new.weights.v1";
+            metadata["grid_n_levels"]             = std::format("{}", config::GRID_N_LEVELS);
+            metadata["grid_features_per_level"]   = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
+            metadata["grid_base_resolution"]      = std::format("{}", config::GRID_BASE_RESOLUTION);
+            metadata["grid_log2_hashmap_size"]    = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
+            metadata["grid_per_level_scale"]      = std::format("{}", config::GRID_PER_LEVEL_SCALE);
+            metadata["grid_log2_per_level_scale"] = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
+            metadata["mlp_width"]                 = std::format("{}", config::MLP_WIDTH);
+            metadata["density_hidden_layers"]     = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
+            metadata["rgb_hidden_layers"]         = std::format("{}", config::RGB_HIDDEN_LAYERS);
+            metadata["density_output_width"]      = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
+            metadata["direction_output_width"]    = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
+            metadata["rgb_input_width"]           = std::format("{}", config::RGB_INPUT_WIDTH);
+            metadata["network_output_width"]      = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
+            metadata["grid_offsets"]              = grid_offsets_text;
+            metadata["density_param_count"]       = std::format("{}", this->host.density_param_count);
+            metadata["rgb_param_count"]           = std::format("{}", this->host.rgb_param_count);
+            metadata["mlp_param_count"]           = std::format("{}", this->host.mlp_param_count);
+            metadata["grid_param_count"]          = std::format("{}", this->host.grid_param_count);
+            metadata["total_param_count"]         = std::format("{}", this->host.total_param_count);
 
             nlohmann::json header  = nlohmann::json::object();
             header["__metadata__"] = metadata;
 
             std::uint64_t data_offset = 0u;
             for (const SafetensorsTensor& tensor : tensors) {
-                const std::uint64_t byte_count = tensor.rows * tensor.cols * sizeof(float);
+                const std::uint64_t byte_count   = tensor.rows * tensor.cols * sizeof(float);
                 header[std::string{tensor.name}] = nlohmann::json{
                     {"dtype", "F32"},
                     {"shape", nlohmann::json::array({tensor.rows, tensor.cols})},
@@ -162,7 +190,7 @@ namespace ngp::train {
                 data_offset += byte_count;
             }
 
-            const std::string header_text  = header.dump();
+            const std::string header_text   = header.dump();
             const std::uint64_t header_size = header_text.size();
             std::ofstream output{path, std::ios::binary | std::ios::trunc};
             if (!output) throw std::runtime_error{std::format("failed to open weights export path '{}'.", path.string())};
@@ -199,13 +227,13 @@ namespace ngp::train {
             const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + config::MLP_WIDTH * config::RGB_INPUT_WIDTH;
             const std::uint32_t rgb_output_offset     = rgb_hidden_offset + config::MLP_WIDTH * config::MLP_WIDTH;
             const std::array tensors                  = std::to_array<SafetensorsTensor>({
-                                 SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
-                                 SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                                 SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
-                             });
+                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
+                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
+                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
+            });
 
             std::string grid_offsets_text;
             for (std::uint32_t i = 0u; i < config::GRID_OFFSET_COUNT; ++i) {
@@ -213,27 +241,27 @@ namespace ngp::train {
                 grid_offsets_text += std::format("{}", this->host.grid_offsets[i]);
             }
 
-            nlohmann::json expected_metadata                  = nlohmann::json::object();
-            expected_metadata["format"]                       = "instant-ngp-new.weights.v1";
-            expected_metadata["grid_n_levels"]                = std::format("{}", config::GRID_N_LEVELS);
-            expected_metadata["grid_features_per_level"]      = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
-            expected_metadata["grid_base_resolution"]         = std::format("{}", config::GRID_BASE_RESOLUTION);
-            expected_metadata["grid_log2_hashmap_size"]       = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
-            expected_metadata["grid_per_level_scale"]         = std::format("{}", config::GRID_PER_LEVEL_SCALE);
-            expected_metadata["grid_log2_per_level_scale"]    = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
-            expected_metadata["mlp_width"]                    = std::format("{}", config::MLP_WIDTH);
-            expected_metadata["density_hidden_layers"]        = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
-            expected_metadata["rgb_hidden_layers"]            = std::format("{}", config::RGB_HIDDEN_LAYERS);
-            expected_metadata["density_output_width"]         = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
-            expected_metadata["direction_output_width"]       = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
-            expected_metadata["rgb_input_width"]              = std::format("{}", config::RGB_INPUT_WIDTH);
-            expected_metadata["network_output_width"]         = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
-            expected_metadata["grid_offsets"]                 = grid_offsets_text;
-            expected_metadata["density_param_count"]          = std::format("{}", this->host.density_param_count);
-            expected_metadata["rgb_param_count"]              = std::format("{}", this->host.rgb_param_count);
-            expected_metadata["mlp_param_count"]              = std::format("{}", this->host.mlp_param_count);
-            expected_metadata["grid_param_count"]             = std::format("{}", this->host.grid_param_count);
-            expected_metadata["total_param_count"]            = std::format("{}", this->host.total_param_count);
+            nlohmann::json expected_metadata               = nlohmann::json::object();
+            expected_metadata["format"]                    = "instant-ngp-new.weights.v1";
+            expected_metadata["grid_n_levels"]             = std::format("{}", config::GRID_N_LEVELS);
+            expected_metadata["grid_features_per_level"]   = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
+            expected_metadata["grid_base_resolution"]      = std::format("{}", config::GRID_BASE_RESOLUTION);
+            expected_metadata["grid_log2_hashmap_size"]    = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
+            expected_metadata["grid_per_level_scale"]      = std::format("{}", config::GRID_PER_LEVEL_SCALE);
+            expected_metadata["grid_log2_per_level_scale"] = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
+            expected_metadata["mlp_width"]                 = std::format("{}", config::MLP_WIDTH);
+            expected_metadata["density_hidden_layers"]     = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
+            expected_metadata["rgb_hidden_layers"]         = std::format("{}", config::RGB_HIDDEN_LAYERS);
+            expected_metadata["density_output_width"]      = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
+            expected_metadata["direction_output_width"]    = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
+            expected_metadata["rgb_input_width"]           = std::format("{}", config::RGB_INPUT_WIDTH);
+            expected_metadata["network_output_width"]      = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
+            expected_metadata["grid_offsets"]              = grid_offsets_text;
+            expected_metadata["density_param_count"]       = std::format("{}", this->host.density_param_count);
+            expected_metadata["rgb_param_count"]           = std::format("{}", this->host.rgb_param_count);
+            expected_metadata["mlp_param_count"]           = std::format("{}", this->host.mlp_param_count);
+            expected_metadata["grid_param_count"]          = std::format("{}", this->host.grid_param_count);
+            expected_metadata["total_param_count"]         = std::format("{}", this->host.total_param_count);
 
             const std::uintmax_t file_size = std::filesystem::file_size(path);
             if (file_size < sizeof(std::uint64_t)) throw std::runtime_error{"weights file is too small for a safetensors header."};

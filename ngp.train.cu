@@ -521,7 +521,7 @@ namespace ngp::cuda {
             }
         }
 
-        __global__ void generate_validation_samples_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t max_samples, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ validation_camera, const std::uint32_t validation_image_index, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_evaluation_samples_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t max_samples, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ evaluation_camera, const std::uint32_t evaluation_image_index, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= tile_pixels) return;
 
@@ -533,7 +533,7 @@ namespace ngp::cuda {
             const std::uint32_t pixel_y      = global_pixel / width;
             const float u                    = (static_cast<float>(pixel_x) + 0.5f) / static_cast<float>(width);
             const float v                    = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
-            const float* frame_camera        = validation_camera + static_cast<std::uint64_t>(validation_image_index) * 12u;
+            const float* frame_camera        = evaluation_camera + static_cast<std::uint64_t>(evaluation_image_index) * 12u;
 
             const float ray_x       = (u - 0.5f) * static_cast<float>(width) / focal_length;
             const float ray_y       = (v - 0.5f) * static_cast<float>(height) / focal_length;
@@ -612,14 +612,14 @@ namespace ngp::cuda {
             }
         }
 
-        __global__ void pad_validation_rollover_coords_kernel(const std::uint32_t used_sample_count, const std::uint32_t padded_sample_count, float* __restrict__ inout) {
+        __global__ void pad_evaluation_rollover_coords_kernel(const std::uint32_t used_sample_count, const std::uint32_t padded_sample_count, float* __restrict__ inout) {
             const std::uint32_t i             = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t used_elements = used_sample_count * SAMPLE_COORD_FLOATS;
             if (used_sample_count == 0u || i < used_elements || i >= padded_sample_count * SAMPLE_COORD_FLOATS) return;
             inout[i] = inout[i % used_elements];
         }
 
-        __global__ void accumulate_validation_loss_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t validation_image_index, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* __restrict__ validation_pixels, const std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, const __half* __restrict__ network_output, double* __restrict__ validation_loss_sum) {
+        __global__ void accumulate_evaluation_loss_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t evaluation_image_index, const std::uint32_t width, const std::uint32_t height, const std::uint8_t* __restrict__ evaluation_pixels, const std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, const __half* __restrict__ network_output, double* __restrict__ evaluation_loss_sum) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             double squared_error  = 0.0;
 
@@ -652,7 +652,7 @@ namespace ngp::cuda {
                     output += MLP_OUTPUT_WIDTH;
                 }
 
-                const float4 texel       = read_premultiplied_linear_rgba(pixel_x, pixel_y, validation_image_index, width, height, validation_pixels);
+                const float4 texel       = read_premultiplied_linear_rgba(pixel_x, pixel_y, evaluation_image_index, width, height, evaluation_pixels);
                 const float3 rgb_target  = linear_to_srgb({texel.x, texel.y, texel.z});
                 const float prediction_r = fminf(fmaxf(rgb_ray.x, 0.0f), 1.0f);
                 const float prediction_g = fminf(fmaxf(rgb_ray.y, 0.0f), 1.0f);
@@ -675,7 +675,7 @@ namespace ngp::cuda {
                 __syncthreads();
             }
 
-            if (threadIdx.x == 0u) atomicAdd(validation_loss_sum, sums[0]);
+            if (threadIdx.x == 0u) atomicAdd(evaluation_loss_sum, sums[0]);
         }
 
         __global__ void compute_training_loss_and_compact_kernel(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* __restrict__ ray_counter, const std::uint8_t* __restrict__ pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const __half* __restrict__ network_output, std::uint32_t* __restrict__ compacted_sample_counter, const std::uint32_t* __restrict__ ray_indices_in, const float* __restrict__ rays_in, std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, float* __restrict__ coords_out, __half* __restrict__ dloss_doutput, float* __restrict__ loss_output) {
@@ -1319,16 +1319,16 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_loss_values, static_cast<std::size_t>(config::NETWORK_BATCH_SIZE) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc loss values failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_validation_buffers(std::uint32_t*& out_validation_numsteps, std::uint32_t*& out_validation_sample_counter, std::uint32_t*& out_validation_overflow_counter, double*& out_validation_loss_sum) {
-        out_validation_numsteps         = nullptr;
-        out_validation_sample_counter   = nullptr;
-        out_validation_overflow_counter = nullptr;
-        out_validation_loss_sum         = nullptr;
+    void allocate_evaluation_buffers(std::uint32_t*& out_evaluation_numsteps, std::uint32_t*& out_evaluation_sample_counter, std::uint32_t*& out_evaluation_overflow_counter, double*& out_evaluation_loss_sum) {
+        out_evaluation_numsteps         = nullptr;
+        out_evaluation_sample_counter   = nullptr;
+        out_evaluation_overflow_counter = nullptr;
+        out_evaluation_loss_sum         = nullptr;
 
-        if (const cudaError_t status = cudaMalloc(&out_validation_numsteps, static_cast<std::size_t>(VALIDATION_TILE_RAYS) * 2u * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc validation numsteps failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_validation_sample_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc validation sample counter failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_validation_overflow_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc validation overflow counter failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_validation_loss_sum, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc validation loss sum failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_evaluation_numsteps, static_cast<std::size_t>(VALIDATION_TILE_RAYS) * 2u * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation numsteps failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_evaluation_sample_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation sample counter failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_evaluation_overflow_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation overflow counter failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_evaluation_loss_sum, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
     void allocate_trainable_parameter_buffers(const std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients) {
@@ -1509,53 +1509,53 @@ namespace ngp::cuda {
         out_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
-    void run_validation(const std::uint8_t* const validation_pixels, const float* const validation_camera, const std::uint32_t validation_frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const validation_numsteps, std::uint32_t* const validation_sample_counter, std::uint32_t* const validation_overflow_counter, double* const validation_loss_sum, double& out_loss_sum) {
+    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, double& out_loss_sum) {
         out_loss_sum = 0.0;
-        if (validation_pixels == nullptr || validation_camera == nullptr || validation_frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || validation_numsteps == nullptr || validation_sample_counter == nullptr || validation_overflow_counter == nullptr || validation_loss_sum == nullptr) throw std::runtime_error{"invalid validation input."};
+        if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
 
         const std::uint64_t total_pixels_64 = static_cast<std::uint64_t>(width) * height;
-        if (total_pixels_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"validation image has too many pixels."};
+        if (total_pixels_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"evaluation image has too many pixels."};
         const auto total_pixels = static_cast<std::uint32_t>(total_pixels_64);
 
-        if (const cudaError_t status = cudaMemset(validation_loss_sum, 0, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset validation loss sum failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(evaluation_loss_sum, 0, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation loss sum failed: "} + cudaGetErrorString(status)};
 
-        for (std::uint32_t validation_image_index = 0u; validation_image_index < validation_frame_count; ++validation_image_index) {
+        for (std::uint32_t evaluation_image_index = 0u; evaluation_image_index < evaluation_frame_count; ++evaluation_image_index) {
             for (std::uint32_t pixel_offset = 0u; pixel_offset < total_pixels; pixel_offset += VALIDATION_TILE_RAYS) {
                 const std::uint32_t tile_pixels = ::cuda::std::min(VALIDATION_TILE_RAYS, total_pixels - pixel_offset);
 
-                if (const cudaError_t status = cudaMemset(validation_numsteps, 0, static_cast<std::size_t>(VALIDATION_TILE_RAYS) * 2u * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset validation numsteps failed: "} + cudaGetErrorString(status)};
-                if (const cudaError_t status = cudaMemset(validation_sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset validation sample counter failed: "} + cudaGetErrorString(status)};
-                if (const cudaError_t status = cudaMemset(validation_overflow_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset validation overflow counter failed: "} + cudaGetErrorString(status)};
+                if (const cudaError_t status = cudaMemset(evaluation_numsteps, 0, static_cast<std::size_t>(VALIDATION_TILE_RAYS) * 2u * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation numsteps failed: "} + cudaGetErrorString(status)};
+                if (const cudaError_t status = cudaMemset(evaluation_sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation sample counter failed: "} + cudaGetErrorString(status)};
+                if (const cudaError_t status = cudaMemset(evaluation_overflow_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation overflow counter failed: "} + cudaGetErrorString(status)};
 
-                generate_validation_samples_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, VALIDATION_MAX_SAMPLES, width, height, focal_length, validation_camera, validation_image_index, occupancy, validation_sample_counter, validation_overflow_counter, validation_numsteps, sample_coords);
-                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_validation_samples_kernel failed: "} + cudaGetErrorString(status)};
+                generate_evaluation_samples_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, VALIDATION_MAX_SAMPLES, width, height, focal_length, evaluation_camera, evaluation_image_index, occupancy, evaluation_sample_counter, evaluation_overflow_counter, evaluation_numsteps, sample_coords);
+                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_evaluation_samples_kernel failed: "} + cudaGetErrorString(status)};
 
                 std::uint32_t used_samples    = 0u;
                 std::uint32_t overflowed_rays = 0u;
-                if (const cudaError_t status = cudaMemcpy(&used_samples, validation_sample_counter, sizeof(std::uint32_t), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy validation sample counter failed: "} + cudaGetErrorString(status)};
-                if (const cudaError_t status = cudaMemcpy(&overflowed_rays, validation_overflow_counter, sizeof(std::uint32_t), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy validation overflow counter failed: "} + cudaGetErrorString(status)};
+                if (const cudaError_t status = cudaMemcpy(&used_samples, evaluation_sample_counter, sizeof(std::uint32_t), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy evaluation sample counter failed: "} + cudaGetErrorString(status)};
+                if (const cudaError_t status = cudaMemcpy(&overflowed_rays, evaluation_overflow_counter, sizeof(std::uint32_t), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy evaluation overflow counter failed: "} + cudaGetErrorString(status)};
 
-                if (overflowed_rays != 0u) throw std::runtime_error{std::format("Validation sample budget overflowed for {} rays.", overflowed_rays)};
-                if (used_samples > VALIDATION_MAX_SAMPLES) throw std::runtime_error{"validation used sample count exceeded validation sample budget."};
+                if (overflowed_rays != 0u) throw std::runtime_error{std::format("Evaluation sample budget overflowed for {} rays.", overflowed_rays)};
+                if (used_samples > VALIDATION_MAX_SAMPLES) throw std::runtime_error{"evaluation used sample count exceeded sample budget."};
 
                 if (used_samples > 0u) {
                     const std::uint32_t padded_used_samples = ((used_samples + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY;
-                    if (padded_used_samples > VALIDATION_MAX_SAMPLES) throw std::runtime_error{"validation padded sample count exceeded validation sample budget."};
+                    if (padded_used_samples > VALIDATION_MAX_SAMPLES) throw std::runtime_error{"evaluation padded sample count exceeded sample budget."};
 
                     const std::uint32_t coord_elements = padded_used_samples * SAMPLE_COORD_FLOATS;
-                    pad_validation_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(used_samples, padded_used_samples, sample_coords);
-                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_validation_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
+                    pad_evaluation_rollover_coords_kernel<<<(coord_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(used_samples, padded_used_samples, sample_coords);
+                    if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_evaluation_rollover_coords_kernel failed: "} + cudaGetErrorString(status)};
 
                     evaluate_network(padded_used_samples, sample_coords, grid_offsets, params, density_param_offset, rgb_param_offset, grid_param_offset, density_input, rgb_input, network_output);
                 }
 
-                accumulate_validation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, validation_image_index, width, height, validation_pixels, validation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), validation_loss_sum);
-                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"accumulate_validation_loss_kernel failed: "} + cudaGetErrorString(status)};
+                accumulate_evaluation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, evaluation_image_index, width, height, evaluation_pixels, evaluation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), evaluation_loss_sum);
+                if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"accumulate_evaluation_loss_kernel failed: "} + cudaGetErrorString(status)};
             }
         }
 
-        if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"validation synchronization failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMemcpy(&out_loss_sum, validation_loss_sum, sizeof(double), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy validation loss sum failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"evaluation synchronization failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemcpy(&out_loss_sum, evaluation_loss_sum, sizeof(double), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy evaluation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
     void forward_network(const float* const sample_coords, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const density_forward_hidden, std::uint16_t* const rgb_forward_hidden, std::uint16_t* const network_output) {

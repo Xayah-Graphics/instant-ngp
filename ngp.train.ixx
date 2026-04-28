@@ -59,6 +59,15 @@ namespace ngp::train {
         float elapsed_ms          = 0.0f;
     };
 
+    export struct TestStats final {
+        std::uint32_t step        = 0u;
+        std::uint32_t image_count = 0u;
+        std::uint64_t pixel_count = 0u;
+        float mse                 = 0.0f;
+        float psnr                = 0.0f;
+        float elapsed_ms          = 0.0f;
+    };
+
     export class InstantNGP final {
     public:
         explicit InstantNGP(const NerfDatasetLike auto& dataset) {
@@ -121,6 +130,37 @@ namespace ngp::train {
                     this->host.validation_focal_length = validation_focal_length;
                 }
 
+                const std::size_t test_frame_count = std::ranges::size(dataset.test);
+                if (test_frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many test frames."};
+                if (test_frame_count != 0uz) {
+                    const auto& first_test_frame = *std::ranges::begin(dataset.test);
+                    const auto test_width        = static_cast<std::uint32_t>(first_test_frame.width);
+                    const auto test_height       = static_cast<std::uint32_t>(first_test_frame.height);
+                    const auto test_focal_length = static_cast<float>(first_test_frame.focal_length);
+                    if (test_width == 0u || test_height == 0u || test_focal_length <= 0.0f) throw std::runtime_error{"invalid test frame metadata."};
+
+                    std::vector<std::uint8_t> test_pixels;
+                    std::vector<float> test_camera;
+                    test_pixels.reserve(test_frame_count * first_test_frame.rgba.size());
+                    test_camera.reserve(test_frame_count * 12uz);
+
+                    for (const auto& frame : dataset.test) {
+                        if (static_cast<std::uint32_t>(frame.width) != test_width) throw std::runtime_error{"test frame width mismatch."};
+                        if (static_cast<std::uint32_t>(frame.height) != test_height) throw std::runtime_error{"test frame height mismatch."};
+                        if (static_cast<float>(frame.focal_length) != test_focal_length) throw std::runtime_error{"test frame focal length mismatch."};
+                        if (frame.rgba.size() != static_cast<std::size_t>(test_width) * test_height * 4uz) throw std::runtime_error{"test frame RGBA size mismatch."};
+
+                        test_pixels.append_range(frame.rgba);
+                        for (std::size_t i = 0uz; i < 12uz; ++i) test_camera.push_back(static_cast<float>(frame.camera[i]));
+                    }
+
+                    cuda::upload_dataset(test_pixels.data(), test_pixels.size(), test_camera.data(), test_camera.size(), this->device.test_pixels, this->device.test_camera);
+                    this->host.test_frame_count  = static_cast<std::uint32_t>(test_frame_count);
+                    this->host.test_width        = test_width;
+                    this->host.test_height       = test_height;
+                    this->host.test_focal_length = test_focal_length;
+                }
+
                 this->host.density_param_offset = 0u;
                 this->host.density_param_count  = config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH + (config::DENSITY_HIDDEN_LAYERS - 1u) * config::MLP_WIDTH * config::MLP_WIDTH + config::DENSITY_OUTPUT_WIDTH * config::MLP_WIDTH;
                 this->host.rgb_param_offset     = this->host.density_param_offset + this->host.density_param_count;
@@ -151,15 +191,15 @@ namespace ngp::train {
                 cuda::allocate_network_buffers(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
                 cuda::allocate_density_grid_buffers(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count);
                 cuda::allocate_training_loss_buffers(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values);
-                if (this->host.validation_frame_count != 0u) cuda::allocate_validation_buffers(this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum);
+                if (this->host.validation_frame_count != 0u || this->host.test_frame_count != 0u) cuda::allocate_evaluation_buffers(this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum);
                 cuda::allocate_trainable_parameter_buffers(this->host.total_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients);
                 cuda::allocate_adam_state(this->host.total_param_count, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
                 cuda::initialize_mlp_parameters(this->host.density_param_offset, this->host.rgb_param_offset, this->device.params_full_precision, this->device.params, this->device.param_gradients);
                 cuda::initialize_grid_parameters(this->host.grid_param_count, this->host.mlp_param_count, this->device.params_full_precision + this->host.grid_param_offset, this->device.params + this->host.grid_param_offset, this->device.param_gradients + this->host.grid_param_offset);
             } catch (...) {
                 cuda::destroy_cublaslt(this->device.cublaslt_handle);
-                cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.validation_numsteps, this->device.validation_sample_counter, this->device.validation_overflow_counter, this->device.validation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden,
-                    this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+                cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
+                    this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
                 throw;
             }
         }
@@ -173,6 +213,7 @@ namespace ngp::train {
 
         std::expected<TrainStats, std::string> train(std::int32_t iters);
         std::expected<ValidationStats, std::string> validate() const;
+        std::expected<TestStats, std::string> test() const;
         std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
         std::expected<void, std::string> load_weights(const std::filesystem::path& path);
 
@@ -187,6 +228,10 @@ namespace ngp::train {
             std::uint32_t validation_width       = 0u;
             std::uint32_t validation_height      = 0u;
             float validation_focal_length        = 0.0f;
+            std::uint32_t test_frame_count       = 0u;
+            std::uint32_t test_width             = 0u;
+            std::uint32_t test_height            = 0u;
+            float test_focal_length              = 0.0f;
 
             // Stable after construction: network parameter layout.
             std::array<std::uint32_t, config::GRID_OFFSET_COUNT> grid_offsets = {};
@@ -217,6 +262,8 @@ namespace ngp::train {
             const float* camera                   = nullptr;
             const std::uint8_t* validation_pixels = nullptr;
             const float* validation_camera        = nullptr;
+            const std::uint8_t* test_pixels       = nullptr;
+            const float* test_camera              = nullptr;
 
             // Sampler.
             std::uint8_t* occupancy                    = nullptr;
@@ -237,10 +284,10 @@ namespace ngp::train {
             float* compacted_sample_coords             = nullptr;
             float* loss_values                         = nullptr;
             std::uint16_t* network_output_gradients    = nullptr;
-            std::uint32_t* validation_numsteps         = nullptr;
-            std::uint32_t* validation_sample_counter   = nullptr;
-            std::uint32_t* validation_overflow_counter = nullptr;
-            double* validation_loss_sum                = nullptr;
+            std::uint32_t* evaluation_numsteps         = nullptr;
+            std::uint32_t* evaluation_sample_counter   = nullptr;
+            std::uint32_t* evaluation_overflow_counter = nullptr;
+            double* evaluation_loss_sum                = nullptr;
 
             // Network.
             std::uint16_t* density_input           = nullptr;

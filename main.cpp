@@ -13,6 +13,8 @@ namespace {
     constexpr std::string_view ansi_validation_badge  = "\x1b[1;37;45m";
     constexpr std::string_view ansi_validation_metric = "\x1b[1;95m";
     constexpr std::string_view ansi_validation_best   = "\x1b[1;33m";
+    constexpr std::string_view ansi_test_badge        = "\x1b[1;37;44m";
+    constexpr std::string_view ansi_test_metric       = "\x1b[1;96m";
 
     struct CliOptions final {
         std::filesystem::path dataset_path      = "../data/nerf-synthetic/lego";
@@ -290,6 +292,12 @@ int main(const int argc, const char* const* const argv) {
 
                                 const auto summary_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
                                 std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
+                                const auto test = ngp->test();
+                                if (!test) return std::unexpected{test.error()};
+
+                                const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} pixels={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->pixel_count, test->elapsed_ms);
+
                                 if (cli.export_weights_path.has_value()) {
                                     const auto exported_weights = ngp->export_weights(*cli.export_weights_path);
                                     if (!exported_weights) return std::unexpected{exported_weights.error()};
