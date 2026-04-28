@@ -268,9 +268,22 @@ class InstantNGPInference:
         density_chunks = []
         for start in range(0, positions.shape[0], self.sample_batch):
             end = min(start + self.sample_batch, positions.shape[0])
-            rgb, density = self.forward_compiled(positions[start:end], directions[start:end])
-            rgb_chunks.append(rgb)
-            density_chunks.append(density)
+            chunk_size = end - start
+            position_chunk = positions[start:end]
+            direction_chunk = directions[start:end]
+            if chunk_size != self.sample_batch:
+                padded_positions = torch.empty((self.sample_batch, 3), device=self.device, dtype=torch.float32)
+                padded_directions = torch.empty((self.sample_batch, 3), device=self.device, dtype=torch.float32)
+                padded_positions[:chunk_size] = position_chunk
+                padded_directions[:chunk_size] = direction_chunk
+                padded_positions[chunk_size:] = position_chunk[-1]
+                padded_directions[chunk_size:] = direction_chunk[-1]
+                position_chunk = padded_positions
+                direction_chunk = padded_directions
+
+            rgb, density = self.forward_compiled(position_chunk, direction_chunk)
+            rgb_chunks.append(rgb[:chunk_size].clone())
+            density_chunks.append(density[:chunk_size].clone())
 
         return torch.cat(rgb_chunks, dim=0), torch.cat(density_chunks, dim=0)
 
