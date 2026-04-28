@@ -384,7 +384,7 @@ namespace ngp::cuda {
             float sum             = 0.0f;
             if (i < NERF_GRID_CELLS / 4u) {
                 const float4 values = reinterpret_cast<const float4*>(density_grid_values)[i];
-                sum                 = (fmaxf(values.x, 0.0f) + fmaxf(values.y, 0.0f) + fmaxf(values.z, 0.0f) + fmaxf(values.w, 0.0f)) / static_cast<float>(NERF_GRID_CELLS);
+                sum                 = fmaxf(values.x, 0.0f) + fmaxf(values.y, 0.0f) + fmaxf(values.z, 0.0f) + fmaxf(values.w, 0.0f);
             }
 
             sums[threadIdx.x] = sum;
