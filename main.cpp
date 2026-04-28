@@ -3,20 +3,18 @@ import ngp.dataset;
 import ngp.train;
 
 int main() {
-    std::unique_ptr<ngp::train::InstantNGP> ngp;
     constexpr std::int32_t total_steps = 30000;
     constexpr std::int32_t chunk_steps = 1000;
 
     const auto result = ngp::dataset::load_nerf_synthetic("../data/nerf-synthetic/lego")
-                            .and_then([&](const auto& dataset) -> std::expected<void, std::string> {
+                            .and_then([](const auto& dataset) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
                                 try {
-                                    ngp = std::make_unique<ngp::train::InstantNGP>(dataset);
-                                    return {};
+                                    return std::make_unique<ngp::train::InstantNGP>(dataset);
                                 } catch (const std::exception& error) {
                                     return std::unexpected{std::string{error.what()}};
                                 }
                             })
-                            .and_then([&] -> std::expected<void, std::string> {
+                            .and_then([&](auto&& ngp) -> std::expected<void, std::string> {
                                 float first_loss = 0.0f;
                                 float last_loss  = 0.0f;
                                 float total_ms   = 0.0f;
