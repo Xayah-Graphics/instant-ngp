@@ -297,7 +297,7 @@ namespace ngp::cuda {
             out_v                       = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
         }
 
-        __global__ void generate_training_samples(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_training_samples(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= rays_per_batch) return;
 
@@ -359,7 +359,7 @@ namespace ngp::cuda {
             if (numsteps == 0u) return;
 
             const std::uint32_t base = atomicAdd(sample_counter, numsteps);
-            if (base + numsteps > config::MAX_SAMPLES) return;
+            if (base + numsteps > sample_limit) return;
 
             const std::uint32_t ray_index = atomicAdd(ray_counter, 1u);
             ray_indices_out[ray_index]    = i;
@@ -1366,15 +1366,15 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_param_steps, 0, param_count * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset optimizer param steps failed: "} + cudaGetErrorString(status)};
     }
 
-    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
-        if (frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || (rays_per_batch != 0u && (camera == nullptr || occupancy == nullptr || sample_coords == nullptr || rays == nullptr || ray_indices == nullptr || numsteps == nullptr || ray_counter == nullptr || sample_counter == nullptr))) throw std::runtime_error{"invalid sampler input."};
+    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
+        if (sample_limit == 0u || sample_limit > config::MAX_SAMPLES || frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || (rays_per_batch != 0u && (camera == nullptr || occupancy == nullptr || sample_coords == nullptr || rays == nullptr || ray_indices == nullptr || numsteps == nullptr || ray_counter == nullptr || sample_counter == nullptr))) throw std::runtime_error{"invalid sampler input."};
         if (rays_per_batch == 0u) return;
 
         if (const cudaError_t status = cudaMemset(ray_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler ray counter failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler sample counter failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        generate_training_samples<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, current_step, frame_count, width, height, focal_length, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
+        generate_training_samples<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_length, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_training_samples failed: "} + cudaGetErrorString(status)};
     }
