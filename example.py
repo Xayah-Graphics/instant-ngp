@@ -12,8 +12,10 @@ try:
     import PIL.Image
     import safetensors
     import torch
+    import triton
+    import triton.language as tl
 except ModuleNotFoundError as error:
-    raise RuntimeError("example.py requires torch, safetensors, and Pillow.") from error
+    raise RuntimeError("example.py requires torch, triton, safetensors, and Pillow.") from error
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,6 +97,170 @@ class TestFrame:
     focal_length: float
     image_path: pathlib.Path
     relative_path: pathlib.Path
+
+
+@triton.jit
+def generate_samples_kernel(camera, occupancy, sample_positions, sample_directions, ray_numsteps, ray_base, sample_counter, overflow_counter, pixel_offset, tile_pixels, width, height, focal_length, sample_capacity, BLOCK_RAYS: tl.constexpr, NERF_STEPS: tl.constexpr, GRID_SIZE: tl.constexpr, DT: tl.constexpr) -> None:
+    lanes = tl.arange(0, BLOCK_RAYS)
+    ray = tl.program_id(0) * BLOCK_RAYS + lanes
+    valid = ray < tile_pixels
+    global_pixel = pixel_offset + ray
+    pixel_x = global_pixel % width
+    pixel_y = global_pixel // width
+    u = (pixel_x.to(tl.float32) + 0.5) / width
+    v = (pixel_y.to(tl.float32) + 0.5) / height
+    ray_x = (u - 0.5) * width / focal_length
+    ray_y = (v - 0.5) * height / focal_length
+
+    camera_x0 = tl.load(camera + 0)
+    camera_x1 = tl.load(camera + 1)
+    camera_x2 = tl.load(camera + 2)
+    camera_y0 = tl.load(camera + 3)
+    camera_y1 = tl.load(camera + 4)
+    camera_y2 = tl.load(camera + 5)
+    camera_z0 = tl.load(camera + 6)
+    camera_z1 = tl.load(camera + 7)
+    camera_z2 = tl.load(camera + 8)
+    origin_x = tl.load(camera + 9)
+    origin_y = tl.load(camera + 10)
+    origin_z = tl.load(camera + 11)
+
+    direction_x = camera_x0 * ray_x + camera_y0 * ray_y + camera_z0
+    direction_y = camera_x1 * ray_x + camera_y1 * ray_y + camera_z1
+    direction_z = camera_x2 * ray_x + camera_y2 * ray_y + camera_z2
+    direction_length = tl.sqrt(direction_x * direction_x + direction_y * direction_y + direction_z * direction_z)
+    direction_valid = direction_length > 0.0
+    inv_length = 1.0 / tl.maximum(direction_length, 1.0e-20)
+    direction_x = tl.where(direction_valid, direction_x * inv_length, camera_z0)
+    direction_y = tl.where(direction_valid, direction_y * inv_length, camera_z1)
+    direction_z = tl.where(direction_valid, direction_z * inv_length, camera_z2)
+
+    inv_x = 1.0 / direction_x
+    inv_y = 1.0 / direction_y
+    inv_z = 1.0 / direction_z
+    t0x = -origin_x * inv_x
+    t0y = -origin_y * inv_y
+    t0z = -origin_z * inv_z
+    t1x = (1.0 - origin_x) * inv_x
+    t1y = (1.0 - origin_y) * inv_y
+    t1z = (1.0 - origin_z) * inv_z
+    tx_min = tl.minimum(t0x, t1x)
+    ty_min = tl.minimum(t0y, t1y)
+    tz_min = tl.minimum(t0z, t1z)
+    tx_max = tl.maximum(t0x, t1x)
+    ty_max = tl.maximum(t0y, t1y)
+    tz_max = tl.maximum(t0z, t1z)
+    t_min = tl.maximum(tl.maximum(tl.maximum(tx_min, ty_min), tz_min), 0.0)
+    t_max = tl.minimum(tl.minimum(tx_max, ty_max), tz_max)
+    active = valid & direction_valid & (t_max >= t_min)
+    t = t_min + 0.5 * DT
+    numsteps = tl.full((BLOCK_RAYS,), 0, tl.int32)
+
+    for _ in range(NERF_STEPS):
+        pos_x = origin_x + direction_x * t
+        pos_y = origin_y + direction_y * t
+        pos_z = origin_z + direction_z * t
+        inside = active & (pos_x >= 0.0) & (pos_x <= 1.0) & (pos_y >= 0.0) & (pos_y <= 1.0) & (pos_z >= 0.0) & (pos_z <= 1.0)
+        voxel_x = (pos_x * GRID_SIZE).to(tl.int32)
+        voxel_y = (pos_y * GRID_SIZE).to(tl.int32)
+        voxel_z = (pos_z * GRID_SIZE).to(tl.int32)
+        voxel_inside = inside & (voxel_x >= 0) & (voxel_x < GRID_SIZE) & (voxel_y >= 0) & (voxel_y < GRID_SIZE) & (voxel_z >= 0) & (voxel_z < GRID_SIZE)
+        occupancy_index = (voxel_z * GRID_SIZE + voxel_y) * GRID_SIZE + voxel_x
+        occupied = voxel_inside & (tl.load(occupancy + occupancy_index, mask=voxel_inside, other=0) != 0)
+        numsteps += occupied.to(tl.int32)
+
+        p_x = (pos_x - 0.5) * GRID_SIZE
+        p_y = (pos_y - 0.5) * GRID_SIZE
+        p_z = (pos_z - 0.5) * GRID_SIZE
+        sign_x = tl.where(direction_x < 0.0, -1.0, 1.0)
+        sign_y = tl.where(direction_y < 0.0, -1.0, 1.0)
+        sign_z = tl.where(direction_z < 0.0, -1.0, 1.0)
+        tx = (tl.floor(p_x + 0.5 + 0.5 * sign_x) - p_x) * inv_x
+        ty = (tl.floor(p_y + 0.5 + 0.5 * sign_y) - p_y) * inv_y
+        tz = (tl.floor(p_z + 0.5 + 0.5 * sign_z) - p_z) * inv_z
+        t_target = t + tl.maximum(tl.minimum(tl.minimum(tx, ty), tz) / GRID_SIZE, 0.0)
+        t_skip = t + tl.ceil(tl.maximum((t_target - t) / DT, 0.5)) * DT
+        t = tl.where(occupied, t + DT, tl.where(inside, t_skip, t))
+        active = inside
+
+    total_samples = tl.sum(numsteps, axis=0)
+    block_base = tl.atomic_add(sample_counter, total_samples)
+    overflow = block_base + total_samples > sample_capacity
+    tl.atomic_add(overflow_counter, overflow.to(tl.int32))
+    prefix = tl.cumsum(numsteps, 0) - numsteps
+    bases = block_base + prefix
+    tl.store(ray_numsteps + ray, tl.where(overflow, 0, numsteps), mask=valid)
+    tl.store(ray_base + ray, bases, mask=valid & ~overflow)
+
+    t = t_min + 0.5 * DT
+    active = valid & direction_valid & (t_max >= t_min)
+    local_step = tl.full((BLOCK_RAYS,), 0, tl.int32)
+
+    for _ in range(NERF_STEPS):
+        pos_x = origin_x + direction_x * t
+        pos_y = origin_y + direction_y * t
+        pos_z = origin_z + direction_z * t
+        inside = active & (pos_x >= 0.0) & (pos_x <= 1.0) & (pos_y >= 0.0) & (pos_y <= 1.0) & (pos_z >= 0.0) & (pos_z <= 1.0)
+        voxel_x = (pos_x * GRID_SIZE).to(tl.int32)
+        voxel_y = (pos_y * GRID_SIZE).to(tl.int32)
+        voxel_z = (pos_z * GRID_SIZE).to(tl.int32)
+        voxel_inside = inside & (voxel_x >= 0) & (voxel_x < GRID_SIZE) & (voxel_y >= 0) & (voxel_y < GRID_SIZE) & (voxel_z >= 0) & (voxel_z < GRID_SIZE)
+        occupancy_index = (voxel_z * GRID_SIZE + voxel_y) * GRID_SIZE + voxel_x
+        occupied = voxel_inside & (tl.load(occupancy + occupancy_index, mask=voxel_inside, other=0) != 0)
+        sample_index = bases + local_step
+        write_mask = occupied & ~overflow & (sample_index < sample_capacity)
+        tl.store(sample_positions + sample_index * 3 + 0, pos_x, mask=write_mask)
+        tl.store(sample_positions + sample_index * 3 + 1, pos_y, mask=write_mask)
+        tl.store(sample_positions + sample_index * 3 + 2, pos_z, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 0, direction_x, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 1, direction_y, mask=write_mask)
+        tl.store(sample_directions + sample_index * 3 + 2, direction_z, mask=write_mask)
+        local_step += occupied.to(tl.int32)
+
+        p_x = (pos_x - 0.5) * GRID_SIZE
+        p_y = (pos_y - 0.5) * GRID_SIZE
+        p_z = (pos_z - 0.5) * GRID_SIZE
+        sign_x = tl.where(direction_x < 0.0, -1.0, 1.0)
+        sign_y = tl.where(direction_y < 0.0, -1.0, 1.0)
+        sign_z = tl.where(direction_z < 0.0, -1.0, 1.0)
+        tx = (tl.floor(p_x + 0.5 + 0.5 * sign_x) - p_x) * inv_x
+        ty = (tl.floor(p_y + 0.5 + 0.5 * sign_y) - p_y) * inv_y
+        tz = (tl.floor(p_z + 0.5 + 0.5 * sign_z) - p_z) * inv_z
+        t_target = t + tl.maximum(tl.minimum(tl.minimum(tx, ty), tz) / GRID_SIZE, 0.0)
+        t_skip = t + tl.ceil(tl.maximum((t_target - t) / DT, 0.5)) * DT
+        t = tl.where(occupied, t + DT, tl.where(inside, t_skip, t))
+        active = inside
+
+
+@triton.jit
+def composite_samples_kernel(ray_numsteps, ray_base, rgb, density, rendered, tile_pixels, BLOCK_RAYS: tl.constexpr, NERF_STEPS: tl.constexpr, DT: tl.constexpr, TRANSMITTANCE_EPSILON: tl.constexpr) -> None:
+    lanes = tl.arange(0, BLOCK_RAYS)
+    ray = tl.program_id(0) * BLOCK_RAYS + lanes
+    valid = ray < tile_pixels
+    numsteps = tl.load(ray_numsteps + ray, mask=valid, other=0)
+    base = tl.load(ray_base + ray, mask=valid, other=0)
+    transmittance = tl.full((BLOCK_RAYS,), 1.0, tl.float32)
+    rgb_x = tl.full((BLOCK_RAYS,), 0.0, tl.float32)
+    rgb_y = tl.full((BLOCK_RAYS,), 0.0, tl.float32)
+    rgb_z = tl.full((BLOCK_RAYS,), 0.0, tl.float32)
+
+    for j in range(NERF_STEPS):
+        sample_mask = valid & (j < numsteps) & (transmittance >= TRANSMITTANCE_EPSILON)
+        sample_index = base + j
+        sample_r = tl.load(rgb + sample_index * 3 + 0, mask=sample_mask, other=0.0)
+        sample_g = tl.load(rgb + sample_index * 3 + 1, mask=sample_mask, other=0.0)
+        sample_b = tl.load(rgb + sample_index * 3 + 2, mask=sample_mask, other=0.0)
+        sample_density = tl.load(density + sample_index, mask=sample_mask, other=0.0)
+        alpha = 1.0 - tl.exp(-sample_density * DT)
+        weight = alpha * transmittance
+        rgb_x += tl.where(sample_mask, weight * sample_r, 0.0)
+        rgb_y += tl.where(sample_mask, weight * sample_g, 0.0)
+        rgb_z += tl.where(sample_mask, weight * sample_b, 0.0)
+        transmittance = tl.where(sample_mask, transmittance * (1.0 - alpha), transmittance)
+
+    tl.store(rendered + ray * 3 + 0, tl.minimum(tl.maximum(rgb_x, 0.0), 1.0), mask=valid)
+    tl.store(rendered + ray * 3 + 1, tl.minimum(tl.maximum(rgb_y, 0.0), 1.0), mask=valid)
+    tl.store(rendered + ray * 3 + 2, tl.minimum(tl.maximum(rgb_z, 0.0), 1.0), mask=valid)
 
 
 class HashGridEncoder(torch.nn.Module):
@@ -234,12 +400,10 @@ class InstantNGPInference:
             raise RuntimeError("sample_batch must be positive.")
         self.architecture = ARCHITECTURE
         self.device = torch.device(device)
-        if self.device.type == "cuda" and not torch.cuda.is_available():
+        if self.device.type != "cuda":
+            raise RuntimeError("Triton renderer requires --device cuda.")
+        if not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is false.")
-        if self.device.type == "cpu" and dtype != "float32":
-            raise RuntimeError("CPU inference requires --dtype float32.")
-        if self.device.type not in {"cuda", "cpu"}:
-            raise RuntimeError("device must be either 'cuda' or 'cpu'.")
 
         self.dtype = torch.float16 if dtype == "float16" else torch.float32
         self.sample_batch = sample_batch
@@ -261,10 +425,6 @@ class InstantNGPInference:
 
         positions = positions.to(self.device, torch.float32)
         directions = directions.to(self.device, torch.float32)
-        if not torch.isfinite(positions).all() or not torch.isfinite(directions).all():
-            raise RuntimeError("positions and directions must be finite.")
-        if torch.any(positions < 0.0) or torch.any(positions > 1.0):
-            raise RuntimeError("positions must be inside the unit AABB.")
         if positions.shape[0] == 0:
             return torch.empty((0, 3), device=self.device, dtype=torch.float32), torch.empty((0,), device=self.device, dtype=torch.float32)
 
@@ -304,7 +464,7 @@ class InstantNGPInference:
             density_grid[start:end] = self.density_compiled(positions) * self.architecture.min_cone_stepsize
 
         threshold = torch.minimum(torch.clamp_min(density_grid, 0.0).mean(), torch.tensor(self.architecture.nerf_min_optical_thickness, device=self.device, dtype=torch.float32))
-        self.occupancy_grid = (density_grid > threshold).reshape(self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size).contiguous()
+        self.occupancy_grid = (density_grid > threshold).to(torch.uint8).reshape(self.architecture.nerf_grid_size, self.architecture.nerf_grid_size, self.architecture.nerf_grid_size).contiguous()
         return self.occupancy_grid
 
 
@@ -397,118 +557,81 @@ def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path) -> list[TestFram
 
 
 @torch.inference_mode()
-def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int) -> tuple[torch.Tensor, int]:
+def render_frame(model: InstantNGPInference, frame: TestFrame, ray_batch: int, sample_capacity: int) -> tuple[torch.Tensor, int]:
     if ray_batch <= 0:
         raise RuntimeError("ray_batch must be positive.")
+    if sample_capacity <= 0:
+        raise RuntimeError("sample_capacity must be positive.")
     if model.occupancy_grid is None:
         model.rebuild_occupancy_grid()
 
     camera = frame.camera.to(model.device)
-    camera_x = camera[0:3]
-    camera_y = camera[3:6]
-    camera_z = camera[6:9]
-    ray_origin = camera[9:12]
     pixel_count = frame.width * frame.height
     rendered = torch.zeros((pixel_count, 3), device=model.device, dtype=torch.float32)
-    total_sample_count = torch.zeros((), device=model.device, dtype=torch.int64)
+    sample_positions = torch.empty((sample_capacity, 3), device=model.device, dtype=torch.float32)
+    sample_directions = torch.empty((sample_capacity, 3), device=model.device, dtype=torch.float32)
+    ray_numsteps = torch.empty((ray_batch,), device=model.device, dtype=torch.int32)
+    ray_base = torch.empty((ray_batch,), device=model.device, dtype=torch.int32)
+    sample_counter = torch.empty((1,), device=model.device, dtype=torch.int32)
+    overflow_counter = torch.empty((1,), device=model.device, dtype=torch.int32)
+    tile_rgb = torch.empty((ray_batch, 3), device=model.device, dtype=torch.float32)
+    total_sample_count = 0
+    block_rays = 128
 
     for start in range(0, pixel_count, ray_batch):
         end = min(start + ray_batch, pixel_count)
-        ray_count = end - start
-        global_pixel = torch.arange(start, end, device=model.device, dtype=torch.int64)
-        pixel_x = torch.remainder(global_pixel, frame.width).to(torch.float32)
-        pixel_y = torch.div(global_pixel, frame.width, rounding_mode="floor").to(torch.float32)
-        u = (pixel_x + 0.5) / frame.width
-        v = (pixel_y + 0.5) / frame.height
-        ray_x = (u - 0.5) * frame.width / frame.focal_length
-        ray_y = (v - 0.5) * frame.height / frame.focal_length
-        ray_direction = camera_x.unsqueeze(0) * ray_x.unsqueeze(1) + camera_y.unsqueeze(0) * ray_y.unsqueeze(1) + camera_z.unsqueeze(0)
-        direction_length = torch.linalg.vector_norm(ray_direction, dim=1)
-        zero_direction = direction_length == 0.0
-        if torch.any(zero_direction):
-            ray_direction[zero_direction] = camera_z
-            direction_length = torch.linalg.vector_norm(ray_direction, dim=1)
-        if torch.any(direction_length == 0.0):
-            raise RuntimeError("camera produced zero-length ray directions.")
+        tile_pixels = end - start
+        sample_counter.zero_()
+        overflow_counter.zero_()
+        ray_numsteps.zero_()
+        ray_base.zero_()
+        generate_samples_kernel[(triton.cdiv(ray_batch, block_rays),)](
+            camera,
+            model.occupancy_grid,
+            sample_positions,
+            sample_directions,
+            ray_numsteps,
+            ray_base,
+            sample_counter,
+            overflow_counter,
+            start,
+            tile_pixels,
+            frame.width,
+            frame.height,
+            frame.focal_length,
+            sample_capacity,
+            BLOCK_RAYS=block_rays,
+            NERF_STEPS=model.architecture.nerf_steps,
+            GRID_SIZE=model.architecture.nerf_grid_size,
+            DT=model.architecture.min_cone_stepsize,
+        )
+        used_samples = int(sample_counter.item())
+        overflowed_blocks = int(overflow_counter.item())
+        if overflowed_blocks != 0 or used_samples > sample_capacity:
+            raise RuntimeError(f"render sample capacity exceeded: used={used_samples} capacity={sample_capacity} overflowed_blocks={overflowed_blocks}.")
 
-        ray_direction = ray_direction / direction_length.unsqueeze(1)
-        t = intersect_unit_aabb(ray_origin, ray_direction)
-        active = torch.isfinite(t)
-        t = torch.where(active, t + 0.5 * model.architecture.min_cone_stepsize, t)
-        sample_counts = torch.zeros((ray_count,), device=model.device, dtype=torch.int64)
-        sample_positions = []
-        sample_directions = []
-        sample_ray_indices = []
-        sample_step_indices = []
+        if used_samples != 0:
+            rgb, density = model.forward(sample_positions[:used_samples], sample_directions[:used_samples])
+        else:
+            rgb = torch.empty((0, 3), device=model.device, dtype=torch.float32)
+            density = torch.empty((0,), device=model.device, dtype=torch.float32)
 
-        for _ in range(model.architecture.nerf_steps):
-            if not torch.any(active):
-                break
+        composite_samples_kernel[(triton.cdiv(ray_batch, block_rays),)](
+            ray_numsteps,
+            ray_base,
+            rgb,
+            density,
+            tile_rgb,
+            tile_pixels,
+            BLOCK_RAYS=block_rays,
+            NERF_STEPS=model.architecture.nerf_steps,
+            DT=model.architecture.min_cone_stepsize,
+            TRANSMITTANCE_EPSILON=model.architecture.transmittance_epsilon,
+        )
+        rendered[start:end] = tile_rgb[:tile_pixels]
+        total_sample_count += used_samples
 
-            position = ray_origin.unsqueeze(0) + ray_direction * t.unsqueeze(1)
-            inside = active & torch.all((position >= 0.0) & (position <= 1.0), dim=1)
-            if not torch.any(inside):
-                break
-
-            voxel = torch.floor(position * model.architecture.nerf_grid_size).to(torch.int64)
-            voxel_inside = inside & torch.all((voxel >= 0) & (voxel < model.architecture.nerf_grid_size), dim=1)
-            occupied = torch.zeros_like(active)
-            occupied[voxel_inside] = model.occupancy_grid[voxel[voxel_inside, 2], voxel[voxel_inside, 1], voxel[voxel_inside, 0]]
-            sample_mask = inside & occupied
-
-            if torch.any(sample_mask):
-                ray_indices = torch.nonzero(sample_mask, as_tuple=False).flatten()
-                sample_positions.append(position[sample_mask])
-                sample_directions.append(ray_direction[sample_mask])
-                sample_ray_indices.append(ray_indices)
-                sample_step_indices.append(sample_counts[sample_mask])
-                sample_counts[sample_mask] += 1
-
-            active = inside
-            empty_mask = active & ~sample_mask
-            if torch.any(sample_mask):
-                t[sample_mask] += model.architecture.min_cone_stepsize
-            if torch.any(empty_mask):
-                t[empty_mask] = advance_to_next_density_voxel(model.architecture, t[empty_mask], position[empty_mask], ray_direction[empty_mask])
-
-        total_sample_count += sample_counts.sum()
-
-        if sample_positions:
-            positions = torch.cat(sample_positions, dim=0)
-            directions = torch.cat(sample_directions, dim=0)
-            ray_indices = torch.cat(sample_ray_indices, dim=0)
-            step_indices = torch.cat(sample_step_indices, dim=0)
-            rgb, density = model.forward(positions, directions)
-            alpha = 1.0 - torch.exp(-density * model.architecture.min_cone_stepsize)
-            max_samples_per_ray = int(sample_counts.max().item())
-            alpha_by_ray = torch.zeros((ray_count, max_samples_per_ray), device=model.device, dtype=torch.float32)
-            rgb_by_ray = torch.zeros((ray_count, max_samples_per_ray, 3), device=model.device, dtype=torch.float32)
-            alpha_by_ray[ray_indices, step_indices] = alpha
-            rgb_by_ray[ray_indices, step_indices] = rgb
-            survival = torch.cat((torch.ones((ray_count, 1), device=model.device, dtype=torch.float32), torch.cumprod(1.0 - alpha_by_ray[:, :-1], dim=1)), dim=1)
-            weights = alpha_by_ray * survival * (survival >= model.architecture.transmittance_epsilon)
-            rendered[start:end] = torch.clamp((weights.unsqueeze(2) * rgb_by_ray).sum(dim=1), 0.0, 1.0)
-
-    return rendered.reshape(frame.height, frame.width, 3), int(total_sample_count.item())
-
-
-def intersect_unit_aabb(origin: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
-    inv_direction = 1.0 / direction
-    t0 = -origin.unsqueeze(0) * inv_direction
-    t1 = (1.0 - origin).unsqueeze(0) * inv_direction
-    tmin = torch.maximum(torch.minimum(t0, t1).amax(dim=1), torch.zeros((direction.shape[0],), device=direction.device, dtype=torch.float32))
-    tmax = torch.maximum(t0, t1).amin(dim=1)
-    return torch.where(tmax >= tmin, tmin, torch.full_like(tmin, float("nan")))
-
-
-def advance_to_next_density_voxel(architecture: InstantNGPArchitecture, t: torch.Tensor, position: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
-    scale = float(architecture.nerf_grid_size)
-    p = (position - 0.5) * scale
-    inv_direction = 1.0 / direction
-    sign = torch.where(direction < 0.0, -torch.ones_like(direction), torch.ones_like(direction))
-    target = (torch.floor(p + 0.5 + 0.5 * sign) - p) * inv_direction
-    t_target = t + torch.clamp_min(torch.amin(target, dim=1) / scale, 0.0)
-    return t + torch.ceil(torch.clamp_min((t_target - t) / architecture.min_cone_stepsize, 0.5)) * architecture.min_cone_stepsize
+    return rendered.reshape(frame.height, frame.width, 3), total_sample_count
 
 
 def main() -> int:
@@ -516,10 +639,11 @@ def main() -> int:
     parser.add_argument("--weights", required=True, type=pathlib.Path)
     parser.add_argument("--dataset", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
-    parser.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
+    parser.add_argument("--device", default="cuda", choices=("cuda",))
     parser.add_argument("--dtype", default="float16", choices=("float16", "float32"))
     parser.add_argument("--ray-batch", default=4096, type=int)
     parser.add_argument("--sample-batch", default=262144, type=int)
+    parser.add_argument("--sample-capacity", default=None, type=int)
     args = parser.parse_args()
 
     if not args.dataset.is_dir():
@@ -532,6 +656,10 @@ def main() -> int:
         raise RuntimeError("ray-batch must be positive.")
     if args.sample_batch <= 0:
         raise RuntimeError("sample-batch must be positive.")
+    if args.sample_capacity is None:
+        args.sample_capacity = args.ray_batch * ARCHITECTURE.nerf_steps
+    if args.sample_capacity <= 0:
+        raise RuntimeError("sample-capacity must be positive.")
     args.output.mkdir(parents=True, exist_ok=True)
 
     script_start = time.perf_counter()
@@ -551,7 +679,7 @@ def main() -> int:
     occupied_cells = int(occupancy_grid.sum().item())
     occupancy_ratio = occupied_cells / model.architecture.nerf_grid_cells
 
-    print(f"torch={torch.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True marcher=occupancy")
+    print(f"torch={torch.__version__} triton={triton.__version__} cuda={torch.version.cuda} device={model.device} dtype={args.dtype} compiled=True renderer=triton marcher=occupancy")
     print(f"test_frames={len(test_frames)} output={args.output} occupancy={occupied_cells}/{model.architecture.nerf_grid_cells} ratio={occupancy_ratio:.6f} rebuild={occupancy_ms:.3f}ms")
 
     rows = []
@@ -566,7 +694,7 @@ def main() -> int:
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         render_start = time.perf_counter()
-        image, sample_count = render_frame(model, frame, args.ray_batch)
+        image, sample_count = render_frame(model, frame, args.ray_batch, args.sample_capacity)
         if model.device.type == "cuda":
             torch.cuda.synchronize(model.device)
         render_ms = (time.perf_counter() - render_start) * 1000.0
@@ -646,10 +774,12 @@ def main() -> int:
             "device_name": torch.cuda.get_device_name(model.device) if model.device.type == "cuda" else "cpu",
             "dtype": args.dtype,
             "compiled": True,
+            "renderer": "triton",
         },
         "config": {
             "ray_batch": args.ray_batch,
             "sample_batch": args.sample_batch,
+            "sample_capacity": args.sample_capacity,
             "marcher": "occupancy",
             "split": "test",
             "resolution": "original",
