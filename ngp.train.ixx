@@ -104,7 +104,8 @@ namespace ngp::train {
                 this->host.grid_offsets[config::GRID_N_LEVELS] = grid_offset;
                 this->host.grid_param_count                    = grid_offset * config::GRID_FEATURES_PER_LEVEL;
                 this->host.total_param_count                   = this->host.mlp_param_count + this->host.grid_param_count;
-                cuda::initialize_density_grid_rng_once(this->host.density_grid_rng_state, this->host.density_grid_rng_inc);
+                cuda::Pcg32 training_rng{config::TRAIN_SEED};
+                this->host.density_grid_rng = cuda::Pcg32{training_rng.next_uint()};
 
                 cuda::allocate_sampler_once(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy);
                 cuda::allocate_network_once(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
@@ -141,7 +142,7 @@ namespace ngp::train {
                 for (std::int32_t i = 0; i < iters; ++i) {
                     loss_rays_per_batch          = this->host.rays_per_batch;
                     float density_grid_update_ms = 0.0f;
-                    cuda::update_density_grid_once(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, this->host.density_grid_rng_state, this->host.density_grid_rng_inc, density_grid_update_ms);
+                    cuda::update_density_grid_once(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.grid_param_offset, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, this->host.density_grid_rng, density_grid_update_ms);
                     this->host.density_grid_update_ms += density_grid_update_ms;
                     cuda::sample_training_batch(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_length, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                     cuda::network_inference_once(this->host.inference_sample_count, this->device.sample_coords, this->host.grid_offsets.data(), this->device.params, this->host.density_param_offset, this->host.rgb_param_offset, this->host.grid_param_offset, this->device.density_input, this->device.rgb_input, this->device.network_output);
@@ -209,8 +210,7 @@ namespace ngp::train {
             std::uint32_t measured_sample_count                   = 0u;
             std::uint32_t density_grid_ema_step                   = 0u;
             std::uint32_t density_grid_occupied_cells             = 0u;
-            std::uint64_t density_grid_rng_state                  = 0u;
-            std::uint64_t density_grid_rng_inc                    = 0u;
+            cuda::Pcg32 density_grid_rng                          = {};
             float density_grid_update_ms                          = 0.0f;
         } host;
 

@@ -67,7 +67,6 @@ namespace ngp::cuda {
         static_assert(config::RGB_INPUT_WIDTH == MLP_INPUT_WIDTH);
 
         // Training behavior.
-        inline constexpr std::uint64_t TRAIN_SEED               = 1337u;
         inline constexpr bool SNAP_TO_PIXEL_CENTERS             = true;
         inline constexpr float TRANSMITTANCE_EPSILON            = 1e-4f;
         inline constexpr float OPTIMIZER_LEARNING_RATE          = 1e-2f;
@@ -81,11 +80,6 @@ namespace ngp::cuda {
         inline constexpr float DENSITY_REGULARIZATION_THRESHOLD = -10.0f;
         inline constexpr float DENSITY_REGULARIZATION_MAX_DEPTH = 0.1f;
         inline constexpr float DENSITY_REGULARIZATION_STRENGTH  = 1e-4f;
-
-        // Random number generation.
-        inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
-        inline constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
-        inline constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
 
         struct CublasLtMatmulResources final {
             cublasLtMatmulDesc_t operation_desc   = nullptr;
@@ -104,62 +98,6 @@ namespace ngp::cuda {
                 if (this->b_desc != nullptr) cublasLtMatrixLayoutDestroy(this->b_desc);
                 if (this->a_desc != nullptr) cublasLtMatrixLayoutDestroy(this->a_desc);
                 if (this->operation_desc != nullptr) cublasLtMatmulDescDestroy(this->operation_desc);
-            }
-        };
-
-        struct Pcg32 final {
-            std::uint64_t state = PCG32_DEFAULT_STATE;
-            std::uint64_t inc   = PCG32_DEFAULT_STREAM;
-
-            Pcg32() = default;
-
-            __host__ __device__ explicit Pcg32(const std::uint64_t initstate, const std::uint64_t initseq = 1u) {
-                this->seed(initstate, initseq);
-            }
-
-            __host__ __device__ void seed(const std::uint64_t initstate, const std::uint64_t initseq) {
-                this->state = 0u;
-                this->inc   = (initseq << 1u) | 1u;
-                this->next_uint();
-                this->state += initstate;
-                this->next_uint();
-            }
-
-            __host__ __device__ std::uint32_t next_uint() {
-                const std::uint64_t oldstate = this->state;
-                this->state                  = oldstate * PCG32_MULT + this->inc;
-                const auto xorshifted        = static_cast<std::uint32_t>(((oldstate >> 18u) ^ oldstate) >> 27u);
-                const auto rot               = static_cast<std::uint32_t>(oldstate >> 59u);
-                return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
-            }
-
-            __host__ __device__ float next_float() {
-                union {
-                    std::uint32_t bits;
-                    float value;
-                } result    = {};
-                result.bits = (this->next_uint() >> 9u) | 0x3f800000u;
-                return result.value - 1.0f;
-            }
-
-            __host__ __device__ void advance(std::uint64_t delta) {
-                std::uint64_t cur_mult = PCG32_MULT;
-                std::uint64_t cur_plus = this->inc;
-                std::uint64_t acc_mult = 1u;
-                std::uint64_t acc_plus = 0u;
-
-                while (delta > 0u) {
-                    if ((delta & 1u) != 0u) {
-                        acc_mult *= cur_mult;
-                        acc_plus = acc_plus * cur_mult + cur_plus;
-                    }
-
-                    cur_plus = (cur_mult + 1u) * cur_plus;
-                    cur_mult *= cur_mult;
-                    delta >>= 1u;
-                }
-
-                this->state = acc_mult * this->state + acc_plus;
             }
         };
 
@@ -480,7 +418,7 @@ namespace ngp::cuda {
             const std::uint32_t image = static_cast<std::uint32_t>((static_cast<std::uint64_t>(i) * frame_count) / rays_per_batch) % frame_count;
             const float* frame_camera = camera + static_cast<std::uint64_t>(image) * 12u;
 
-            Pcg32 rng{TRAIN_SEED};
+            Pcg32 rng{config::TRAIN_SEED};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(i) * MAX_RANDOM_SAMPLES_PER_RAY);
 
@@ -612,7 +550,7 @@ namespace ngp::cuda {
             }
 
             const std::uint32_t ray_index = ray_indices_in[i];
-            Pcg32 rng{TRAIN_SEED};
+            Pcg32 rng{config::TRAIN_SEED};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(ray_index) * MAX_RANDOM_SAMPLES_PER_RAY);
 
@@ -834,7 +772,7 @@ namespace ngp::cuda {
         __global__ void initialize_grid_params_kernel(const std::uint32_t param_count, const std::uint64_t rng_offset, float* __restrict__ params_full_precision, __half* __restrict__ params, __half* __restrict__ param_gradients) {
             const std::uint32_t i         = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n_threads = blockDim.x * gridDim.x;
-            Pcg32 rng{TRAIN_SEED};
+            Pcg32 rng{config::TRAIN_SEED};
             rng.advance(rng_offset + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
             for (std::uint32_t j = 0u; j < RANDOM_VALUES_PER_THREAD; ++j) {
@@ -1168,13 +1106,6 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_density_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid occupied count failed: "} + cudaGetErrorString(status)};
     }
 
-    void initialize_density_grid_rng_once(std::uint64_t& out_state, std::uint64_t& out_inc) {
-        Pcg32 training_rng{TRAIN_SEED};
-        Pcg32 density_grid_rng{training_rng.next_uint()};
-        out_state = density_grid_rng.state;
-        out_inc   = density_grid_rng.inc;
-    }
-
     void allocate_network_once(std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden, std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace) {
         out_density_input            = nullptr;
         out_rgb_input                = nullptr;
@@ -1242,7 +1173,7 @@ namespace ngp::cuda {
 
         const std::uint32_t mlp_param_count = ::cuda::std::max(density_param_offset + DENSITY_NETWORK_PARAMS, rgb_param_offset + RGB_NETWORK_PARAMS);
         std::vector host_params(mlp_param_count, 0.0f);
-        Pcg32 rng{TRAIN_SEED};
+        Pcg32 rng{config::TRAIN_SEED};
 
         auto initialize_matrix = [&](const std::uint32_t offset, const std::uint32_t rows, const std::uint32_t cols) {
             const float scale = std::sqrt(6.0f / static_cast<float>(rows + cols));
@@ -1307,7 +1238,7 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid_once(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, std::uint64_t& density_grid_rng_state, std::uint64_t& density_grid_rng_inc, float& out_elapsed_ms) {
+    void update_density_grid_once(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
         out_elapsed_ms                  = 0.0f;
         std::uint32_t density_grid_skip = current_step / DENSITY_GRID_SKIP_INTERVAL;
         if (density_grid_skip < 1u) density_grid_skip = 1u;
@@ -1330,10 +1261,6 @@ namespace ngp::cuda {
 
         if (const cudaError_t status = cudaMemset(density_grid_scratch, 0, static_cast<std::size_t>(NERF_GRID_CELLS) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid scratch failed: "} + cudaGetErrorString(status)};
 
-        Pcg32 density_grid_rng;
-        density_grid_rng.state = density_grid_rng_state;
-        density_grid_rng.inc   = density_grid_rng_inc;
-
         if (uniform_sample_count > 0u) {
             generate_density_grid_samples_kernel<<<(uniform_sample_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(uniform_sample_count, density_grid_rng, density_grid_ema_step, -0.01f, density_grid_values, sample_coords, density_grid_indices);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate uniform density grid samples failed: "} + cudaGetErrorString(status)};
@@ -1345,8 +1272,6 @@ namespace ngp::cuda {
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate nonuniform density grid samples failed: "} + cudaGetErrorString(status)};
         }
         density_grid_rng.advance(1ull << 32u);
-        density_grid_rng_state = density_grid_rng.state;
-        density_grid_rng_inc   = density_grid_rng.inc;
 
         constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
         constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};

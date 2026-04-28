@@ -4,6 +4,12 @@
 #include <cstdint>
 #include <type_traits>
 
+#if defined(__CUDACC__)
+#define NGP_CUDA_HOST_DEVICE __host__ __device__
+#else
+#define NGP_CUDA_HOST_DEVICE
+#endif
+
 namespace ngp::cuda::config {
     // Grid encoding.
     inline constexpr std::uint32_t GRID_N_LEVELS           = 8u;
@@ -31,6 +37,9 @@ namespace ngp::cuda::config {
     inline constexpr std::uint32_t MAX_SAMPLES_PER_BATCH_MULTIPLIER = 16u;
     inline constexpr std::uint32_t MAX_SAMPLES                      = NETWORK_BATCH_SIZE * MAX_SAMPLES_PER_BATCH_MULTIPLIER;
 
+    // Training behavior.
+    inline constexpr std::uint64_t TRAIN_SEED = 1337u;
+
     static_assert(GRID_OUTPUT_WIDTH % GRID_FEATURES_PER_LEVEL == 0u);
     static_assert(GRID_OUTPUT_WIDTH == RGB_INPUT_WIDTH);
     static_assert(GRID_PER_LEVEL_SCALE == 2.0f);
@@ -39,6 +48,68 @@ namespace ngp::cuda::config {
 } // namespace ngp::cuda::config
 
 namespace ngp::cuda {
+    inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
+    inline constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
+    inline constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
+
+    struct Pcg32 final {
+        std::uint64_t state = PCG32_DEFAULT_STATE;
+        std::uint64_t inc   = PCG32_DEFAULT_STREAM;
+
+        Pcg32() = default;
+
+        NGP_CUDA_HOST_DEVICE explicit Pcg32(const std::uint64_t initstate, const std::uint64_t initseq = 1u) {
+            this->seed(initstate, initseq);
+        }
+
+        NGP_CUDA_HOST_DEVICE void seed(const std::uint64_t initstate, const std::uint64_t initseq) {
+            this->state = 0u;
+            this->inc   = (initseq << 1u) | 1u;
+            this->next_uint();
+            this->state += initstate;
+            this->next_uint();
+        }
+
+        NGP_CUDA_HOST_DEVICE std::uint32_t next_uint() {
+            const std::uint64_t oldstate = this->state;
+            this->state                  = oldstate * PCG32_MULT + this->inc;
+            const auto xorshifted        = static_cast<std::uint32_t>(((oldstate >> 18u) ^ oldstate) >> 27u);
+            const auto rot               = static_cast<std::uint32_t>(oldstate >> 59u);
+            return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
+        }
+
+        NGP_CUDA_HOST_DEVICE float next_float() {
+            union {
+                std::uint32_t bits;
+                float value;
+            } result    = {};
+            result.bits = (this->next_uint() >> 9u) | 0x3f800000u;
+            return result.value - 1.0f;
+        }
+
+        NGP_CUDA_HOST_DEVICE void advance(std::uint64_t delta) {
+            std::uint64_t cur_mult = PCG32_MULT;
+            std::uint64_t cur_plus = this->inc;
+            std::uint64_t acc_mult = 1u;
+            std::uint64_t acc_plus = 0u;
+
+            while (delta > 0u) {
+                if ((delta & 1u) != 0u) {
+                    acc_mult *= cur_mult;
+                    acc_plus = acc_plus * cur_mult + cur_plus;
+                }
+
+                cur_plus = (cur_mult + 1u) * cur_plus;
+                cur_mult *= cur_mult;
+                delta >>= 1u;
+            }
+
+            this->state = acc_mult * this->state + acc_plus;
+        }
+    };
+
+#undef NGP_CUDA_HOST_DEVICE
+
     // Device memory.
     void free_device_data(void** pointers, std::size_t count) noexcept;
     void destroy_cublaslt_once(void*& handle) noexcept;
@@ -60,8 +131,7 @@ namespace ngp::cuda {
     void allocate_sampler_once(float*& out_sample_coords, float*& out_rays, std::uint32_t*& out_ray_indices, std::uint32_t*& out_numsteps, std::uint32_t*& out_ray_counter, std::uint32_t*& out_sample_counter, std::uint8_t*& out_occupancy);
     void sample_training_batch(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_length, std::uint32_t current_step, std::uint32_t rays_per_batch, std::uint32_t sample_limit, const std::uint8_t* occupancy, float* sample_coords, float* rays, std::uint32_t* ray_indices, std::uint32_t* numsteps, std::uint32_t* ray_counter, std::uint32_t* sample_counter);
     void allocate_density_grid_once(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_density_grid_occupied_count);
-    void initialize_density_grid_rng_once(std::uint64_t& out_state, std::uint64_t& out_inc);
-    void update_density_grid_once(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_length, std::uint32_t current_step, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t grid_param_offset, float* sample_coords, std::uint16_t* density_input, std::uint16_t* density_grid_output, float* density_grid_values, float* density_grid_scratch, std::uint32_t* density_grid_indices, float* density_grid_mean, std::uint32_t* density_grid_occupied_count, std::uint8_t* occupancy, std::uint32_t& density_grid_ema_step, std::uint64_t& density_grid_rng_state, std::uint64_t& density_grid_rng_inc, float& out_elapsed_ms);
+    void update_density_grid_once(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_length, std::uint32_t current_step, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t grid_param_offset, float* sample_coords, std::uint16_t* density_input, std::uint16_t* density_grid_output, float* density_grid_values, float* density_grid_scratch, std::uint32_t* density_grid_indices, float* density_grid_mean, std::uint32_t* density_grid_occupied_count, std::uint8_t* occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms);
 
     // Loss and compaction.
     void allocate_training_loss_once(std::uint32_t*& out_compacted_sample_counter, float*& out_compacted_sample_coords, float*& out_loss_values);
