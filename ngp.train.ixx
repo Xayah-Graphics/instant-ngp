@@ -25,7 +25,10 @@ namespace ngp::train {
         requires CameraLike<std::remove_cvref_t<decltype(frame.camera)>>;
         { frame.width } -> std::convertible_to<std::uint32_t>;
         { frame.height } -> std::convertible_to<std::uint32_t>;
-        { frame.focal_length } -> std::convertible_to<float>;
+        { frame.focal_x } -> std::convertible_to<float>;
+        { frame.focal_y } -> std::convertible_to<float>;
+        { frame.principal_x } -> std::convertible_to<float>;
+        { frame.principal_y } -> std::convertible_to<float>;
     };
 
     template <typename T>
@@ -88,7 +91,10 @@ namespace ngp::train {
                 std::ranges::for_each(dataset.train, [&](const auto& frame) {
                     if (static_cast<std::uint32_t>(frame.width) != static_cast<std::uint32_t>(first_frame.width)) throw std::runtime_error{"training frame width mismatch."};
                     if (static_cast<std::uint32_t>(frame.height) != static_cast<std::uint32_t>(first_frame.height)) throw std::runtime_error{"training frame height mismatch."};
-                    if (static_cast<float>(frame.focal_length) != static_cast<float>(first_frame.focal_length)) throw std::runtime_error{"training frame focal length mismatch."};
+                    if (static_cast<float>(frame.focal_x) != static_cast<float>(first_frame.focal_x)) throw std::runtime_error{"training frame focal_x mismatch."};
+                    if (static_cast<float>(frame.focal_y) != static_cast<float>(first_frame.focal_y)) throw std::runtime_error{"training frame focal_y mismatch."};
+                    if (static_cast<float>(frame.principal_x) != static_cast<float>(first_frame.principal_x)) throw std::runtime_error{"training frame principal_x mismatch."};
+                    if (static_cast<float>(frame.principal_y) != static_cast<float>(first_frame.principal_y)) throw std::runtime_error{"training frame principal_y mismatch."};
 
                     host_pixels.append_range(frame.rgba);
                     host_camera.append_range(std::views::iota(0uz, 12uz) | std::views::transform([&](const std::size_t i) { return static_cast<float>(frame.camera[i]); }));
@@ -96,10 +102,14 @@ namespace ngp::train {
 
                 cuda::upload_dataset(host_pixels.data(), host_pixels.size(), host_camera.data(), host_camera.size(), this->device.pixels, this->device.camera);
 
-                this->host.frame_count  = static_cast<std::uint32_t>(frame_count);
-                this->host.width        = static_cast<std::uint32_t>(first_frame.width);
-                this->host.height       = static_cast<std::uint32_t>(first_frame.height);
-                this->host.focal_length = static_cast<float>(first_frame.focal_length);
+                this->host.frame_count = static_cast<std::uint32_t>(frame_count);
+                this->host.width       = static_cast<std::uint32_t>(first_frame.width);
+                this->host.height      = static_cast<std::uint32_t>(first_frame.height);
+                this->host.focal_x     = static_cast<float>(first_frame.focal_x);
+                this->host.focal_y     = static_cast<float>(first_frame.focal_y);
+                this->host.principal_x = static_cast<float>(first_frame.principal_x);
+                this->host.principal_y = static_cast<float>(first_frame.principal_y);
+                if (this->host.width == 0u || this->host.height == 0u || this->host.focal_x <= 0.0f || this->host.focal_y <= 0.0f || !std::isfinite(this->host.principal_x) || !std::isfinite(this->host.principal_y)) throw std::runtime_error{"invalid training frame metadata."};
 
                 const std::size_t validation_frame_count = std::ranges::size(dataset.validation);
                 if (validation_frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many validation frames."};
@@ -107,8 +117,11 @@ namespace ngp::train {
                     const auto& first_validation_frame = *std::ranges::begin(dataset.validation);
                     const auto validation_width        = static_cast<std::uint32_t>(first_validation_frame.width);
                     const auto validation_height       = static_cast<std::uint32_t>(first_validation_frame.height);
-                    const auto validation_focal_length = static_cast<float>(first_validation_frame.focal_length);
-                    if (validation_width == 0u || validation_height == 0u || validation_focal_length <= 0.0f) throw std::runtime_error{"invalid validation frame metadata."};
+                    const auto validation_focal_x      = static_cast<float>(first_validation_frame.focal_x);
+                    const auto validation_focal_y      = static_cast<float>(first_validation_frame.focal_y);
+                    const auto validation_principal_x  = static_cast<float>(first_validation_frame.principal_x);
+                    const auto validation_principal_y  = static_cast<float>(first_validation_frame.principal_y);
+                    if (validation_width == 0u || validation_height == 0u || validation_focal_x <= 0.0f || validation_focal_y <= 0.0f || !std::isfinite(validation_principal_x) || !std::isfinite(validation_principal_y)) throw std::runtime_error{"invalid validation frame metadata."};
 
                     std::vector<std::uint8_t> validation_pixels;
                     std::vector<float> validation_camera;
@@ -118,7 +131,10 @@ namespace ngp::train {
                     for (const auto& frame : dataset.validation) {
                         if (static_cast<std::uint32_t>(frame.width) != validation_width) throw std::runtime_error{"validation frame width mismatch."};
                         if (static_cast<std::uint32_t>(frame.height) != validation_height) throw std::runtime_error{"validation frame height mismatch."};
-                        if (static_cast<float>(frame.focal_length) != validation_focal_length) throw std::runtime_error{"validation frame focal length mismatch."};
+                        if (static_cast<float>(frame.focal_x) != validation_focal_x) throw std::runtime_error{"validation frame focal_x mismatch."};
+                        if (static_cast<float>(frame.focal_y) != validation_focal_y) throw std::runtime_error{"validation frame focal_y mismatch."};
+                        if (static_cast<float>(frame.principal_x) != validation_principal_x) throw std::runtime_error{"validation frame principal_x mismatch."};
+                        if (static_cast<float>(frame.principal_y) != validation_principal_y) throw std::runtime_error{"validation frame principal_y mismatch."};
                         if (frame.rgba.size() != static_cast<std::size_t>(validation_width) * validation_height * 4uz) throw std::runtime_error{"validation frame RGBA size mismatch."};
 
                         validation_pixels.append_range(frame.rgba);
@@ -126,10 +142,13 @@ namespace ngp::train {
                     }
 
                     cuda::upload_dataset(validation_pixels.data(), validation_pixels.size(), validation_camera.data(), validation_camera.size(), this->device.validation_pixels, this->device.validation_camera);
-                    this->host.validation_frame_count  = static_cast<std::uint32_t>(validation_frame_count);
-                    this->host.validation_width        = validation_width;
-                    this->host.validation_height       = validation_height;
-                    this->host.validation_focal_length = validation_focal_length;
+                    this->host.validation_frame_count = static_cast<std::uint32_t>(validation_frame_count);
+                    this->host.validation_width       = validation_width;
+                    this->host.validation_height      = validation_height;
+                    this->host.validation_focal_x     = validation_focal_x;
+                    this->host.validation_focal_y     = validation_focal_y;
+                    this->host.validation_principal_x = validation_principal_x;
+                    this->host.validation_principal_y = validation_principal_y;
                 }
 
                 const std::size_t test_frame_count = std::ranges::size(dataset.test);
@@ -138,8 +157,11 @@ namespace ngp::train {
                     const auto& first_test_frame = *std::ranges::begin(dataset.test);
                     const auto test_width        = static_cast<std::uint32_t>(first_test_frame.width);
                     const auto test_height       = static_cast<std::uint32_t>(first_test_frame.height);
-                    const auto test_focal_length = static_cast<float>(first_test_frame.focal_length);
-                    if (test_width == 0u || test_height == 0u || test_focal_length <= 0.0f) throw std::runtime_error{"invalid test frame metadata."};
+                    const auto test_focal_x      = static_cast<float>(first_test_frame.focal_x);
+                    const auto test_focal_y      = static_cast<float>(first_test_frame.focal_y);
+                    const auto test_principal_x  = static_cast<float>(first_test_frame.principal_x);
+                    const auto test_principal_y  = static_cast<float>(first_test_frame.principal_y);
+                    if (test_width == 0u || test_height == 0u || test_focal_x <= 0.0f || test_focal_y <= 0.0f || !std::isfinite(test_principal_x) || !std::isfinite(test_principal_y)) throw std::runtime_error{"invalid test frame metadata."};
 
                     std::vector<std::uint8_t> test_pixels;
                     std::vector<float> test_camera;
@@ -149,7 +171,10 @@ namespace ngp::train {
                     for (const auto& frame : dataset.test) {
                         if (static_cast<std::uint32_t>(frame.width) != test_width) throw std::runtime_error{"test frame width mismatch."};
                         if (static_cast<std::uint32_t>(frame.height) != test_height) throw std::runtime_error{"test frame height mismatch."};
-                        if (static_cast<float>(frame.focal_length) != test_focal_length) throw std::runtime_error{"test frame focal length mismatch."};
+                        if (static_cast<float>(frame.focal_x) != test_focal_x) throw std::runtime_error{"test frame focal_x mismatch."};
+                        if (static_cast<float>(frame.focal_y) != test_focal_y) throw std::runtime_error{"test frame focal_y mismatch."};
+                        if (static_cast<float>(frame.principal_x) != test_principal_x) throw std::runtime_error{"test frame principal_x mismatch."};
+                        if (static_cast<float>(frame.principal_y) != test_principal_y) throw std::runtime_error{"test frame principal_y mismatch."};
                         if (frame.rgba.size() != static_cast<std::size_t>(test_width) * test_height * 4uz) throw std::runtime_error{"test frame RGBA size mismatch."};
 
                         test_pixels.append_range(frame.rgba);
@@ -157,10 +182,13 @@ namespace ngp::train {
                     }
 
                     cuda::upload_dataset(test_pixels.data(), test_pixels.size(), test_camera.data(), test_camera.size(), this->device.test_pixels, this->device.test_camera);
-                    this->host.test_frame_count  = static_cast<std::uint32_t>(test_frame_count);
-                    this->host.test_width        = test_width;
-                    this->host.test_height       = test_height;
-                    this->host.test_focal_length = test_focal_length;
+                    this->host.test_frame_count = static_cast<std::uint32_t>(test_frame_count);
+                    this->host.test_width       = test_width;
+                    this->host.test_height      = test_height;
+                    this->host.test_focal_x     = test_focal_x;
+                    this->host.test_focal_y     = test_focal_y;
+                    this->host.test_principal_x = test_principal_x;
+                    this->host.test_principal_y = test_principal_y;
                 }
 
                 this->host.density_param_offset = 0u;
@@ -226,15 +254,24 @@ namespace ngp::train {
             std::uint32_t frame_count            = 0u;
             std::uint32_t width                  = 0u;
             std::uint32_t height                 = 0u;
-            float focal_length                   = 0.0f;
+            float focal_x                        = 0.0f;
+            float focal_y                        = 0.0f;
+            float principal_x                    = 0.0f;
+            float principal_y                    = 0.0f;
             std::uint32_t validation_frame_count = 0u;
             std::uint32_t validation_width       = 0u;
             std::uint32_t validation_height      = 0u;
-            float validation_focal_length        = 0.0f;
+            float validation_focal_x             = 0.0f;
+            float validation_focal_y             = 0.0f;
+            float validation_principal_x         = 0.0f;
+            float validation_principal_y         = 0.0f;
             std::uint32_t test_frame_count       = 0u;
             std::uint32_t test_width             = 0u;
             std::uint32_t test_height            = 0u;
-            float test_focal_length              = 0.0f;
+            float test_focal_x                   = 0.0f;
+            float test_focal_y                   = 0.0f;
+            float test_principal_x               = 0.0f;
+            float test_principal_y               = 0.0f;
 
             // Stable after construction: network parameter layout.
             std::array<std::uint32_t, config::GRID_OFFSET_COUNT> grid_offsets = {};

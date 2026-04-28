@@ -252,7 +252,7 @@ namespace ngp::cuda {
             out_v                       = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
         }
 
-        __global__ void mark_untrained_density_grid_kernel(float* __restrict__ density_grid_values, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera) {
+        __global__ void mark_untrained_density_grid_kernel(float* __restrict__ density_grid_values, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= NERF_GRID_CELLS) return;
 
@@ -301,12 +301,12 @@ namespace ngp::cuda {
                     const float local_z = relative.x * camera_z.x + relative.y * camera_z.y + relative.z * camera_z.z;
                     if (local_z / distance < 1e-4f) continue;
 
-                    const float u = local_x * focal_length / (local_z * static_cast<float>(width)) + 0.5f;
-                    const float v = local_y * focal_length / (local_z * static_cast<float>(height)) + 0.5f;
-                    if (u <= 0.0f || v <= 0.0f || u >= 1.0f || v >= 1.0f) continue;
+                    const float pixel_x = local_x * focal_x / local_z + principal_x;
+                    const float pixel_y = local_y * focal_y / local_z + principal_y;
+                    if (pixel_x <= 0.0f || pixel_y <= 0.0f || pixel_x >= static_cast<float>(width) || pixel_y >= static_cast<float>(height)) continue;
 
-                    const float ray_x    = (u - 0.5f) * static_cast<float>(width) / focal_length;
-                    const float ray_y    = (v - 0.5f) * static_cast<float>(height) / focal_length;
+                    const float ray_x    = (pixel_x - principal_x) / focal_x;
+                    const float ray_y    = (pixel_y - principal_y) / focal_y;
                     const float3 ray_dir = {
                         camera_x.x * ray_x + camera_y.x * ray_y + camera_z.x,
                         camera_x.y * ray_x + camera_y.y * ray_y + camera_z.y,
@@ -417,7 +417,7 @@ namespace ngp::cuda {
             if (occupied != 0u) atomicAdd(density_grid_occupied_count, occupied);
         }
 
-        __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= rays_per_batch) return;
 
@@ -436,8 +436,8 @@ namespace ngp::cuda {
                 u                           = (static_cast<float>(pixel_x) + 0.5f) / static_cast<float>(width);
                 v                           = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
             }
-            const float ray_x       = (u - 0.5f) * static_cast<float>(width) / focal_length;
-            const float ray_y       = (v - 0.5f) * static_cast<float>(height) / focal_length;
+            const float ray_x       = (u * static_cast<float>(width) - principal_x) / focal_x;
+            const float ray_y       = (v * static_cast<float>(height) - principal_y) / focal_y;
             const float3 camera_x   = {frame_camera[0], frame_camera[1], frame_camera[2]};
             const float3 camera_y   = {frame_camera[3], frame_camera[4], frame_camera[5]};
             const float3 camera_z   = {frame_camera[6], frame_camera[7], frame_camera[8]};
@@ -521,7 +521,7 @@ namespace ngp::cuda {
             }
         }
 
-        __global__ void generate_evaluation_samples_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t max_samples, const std::uint32_t width, const std::uint32_t height, const float focal_length, const float* __restrict__ evaluation_camera, const std::uint32_t evaluation_image_index, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_evaluation_samples_kernel(const std::uint32_t tile_pixels, const std::uint32_t pixel_offset, const std::uint32_t max_samples, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ evaluation_camera, const std::uint32_t evaluation_image_index, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ overflow_counter, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= tile_pixels) return;
 
@@ -531,12 +531,10 @@ namespace ngp::cuda {
             const std::uint32_t global_pixel = pixel_offset + i;
             const std::uint32_t pixel_x      = global_pixel % width;
             const std::uint32_t pixel_y      = global_pixel / width;
-            const float u                    = (static_cast<float>(pixel_x) + 0.5f) / static_cast<float>(width);
-            const float v                    = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
             const float* frame_camera        = evaluation_camera + static_cast<std::uint64_t>(evaluation_image_index) * 12u;
 
-            const float ray_x       = (u - 0.5f) * static_cast<float>(width) / focal_length;
-            const float ray_y       = (v - 0.5f) * static_cast<float>(height) / focal_length;
+            const float ray_x       = (static_cast<float>(pixel_x) + 0.5f - principal_x) / focal_x;
+            const float ray_y       = (static_cast<float>(pixel_y) + 0.5f - principal_y) / focal_y;
             const float3 camera_x   = {frame_camera[0], frame_camera[1], frame_camera[2]};
             const float3 camera_y   = {frame_camera[3], frame_camera[4], frame_camera[5]};
             const float3 camera_z   = {frame_camera[6], frame_camera[7], frame_camera[8]};
@@ -1456,14 +1454,14 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
+    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
         out_elapsed_ms                  = 0.0f;
         std::uint32_t density_grid_skip = current_step / DENSITY_GRID_SKIP_INTERVAL;
         if (density_grid_skip < 1u) density_grid_skip = 1u;
         if (density_grid_skip > DENSITY_GRID_MAX_SKIP) density_grid_skip = DENSITY_GRID_MAX_SKIP;
         if (current_step % density_grid_skip != 0u) return;
 
-        if (frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || camera == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr || density_grid_mean == nullptr || density_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid density grid update input."};
+        if (frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || camera == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr || density_grid_mean == nullptr || density_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid density grid update input."};
 
         const auto start                            = std::chrono::steady_clock::now();
         const std::uint32_t uniform_sample_count    = current_step < DENSITY_GRID_WARMUP_STEPS ? DENSITY_GRID_WARMUP_SAMPLES : DENSITY_GRID_STEADY_UNIFORM_SAMPLES;
@@ -1473,7 +1471,7 @@ namespace ngp::cuda {
 
         if (current_step == 0u) {
             density_grid_ema_step = 0u;
-            mark_untrained_density_grid_kernel<<<(NERF_GRID_CELLS + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_values, frame_count, width, height, focal_length, camera);
+            mark_untrained_density_grid_kernel<<<(NERF_GRID_CELLS + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_values, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"mark_untrained_density_grid_kernel failed: "} + cudaGetErrorString(status)};
         }
 
@@ -1529,10 +1527,11 @@ namespace ngp::cuda {
         out_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
-    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const test_comparison_pixels, std::uint8_t* const host_test_comparison_pixels, double& out_loss_sum) {
+    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint8_t* const occupancy, const std::uint32_t* const grid_offsets, const std::uint16_t* const params, const std::uint32_t density_param_offset, const std::uint32_t rgb_param_offset, const std::uint32_t grid_param_offset, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const test_comparison_pixels, std::uint8_t* const host_test_comparison_pixels,
+        double& out_loss_sum) {
         out_loss_sum                 = 0.0;
         const bool writes_comparison = test_comparison_pixels != nullptr || host_test_comparison_pixels != nullptr;
-        if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || evaluation_image_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
+        if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || evaluation_image_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || occupancy == nullptr || grid_offsets == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
         if (evaluation_image_begin >= evaluation_frame_count || evaluation_image_count > evaluation_frame_count - evaluation_image_begin) throw std::runtime_error{"evaluation image range is out of bounds."};
         if (writes_comparison && (test_comparison_pixels == nullptr || host_test_comparison_pixels == nullptr || evaluation_image_count != 1u)) throw std::runtime_error{"test comparison output requires exactly one evaluation image."};
 
@@ -1557,7 +1556,7 @@ namespace ngp::cuda {
                 if (const cudaError_t status = cudaMemset(evaluation_sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation sample counter failed: "} + cudaGetErrorString(status)};
                 if (const cudaError_t status = cudaMemset(evaluation_overflow_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset evaluation overflow counter failed: "} + cudaGetErrorString(status)};
 
-                generate_evaluation_samples_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, VALIDATION_MAX_SAMPLES, width, height, focal_length, evaluation_camera, evaluation_image_index, occupancy, evaluation_sample_counter, evaluation_overflow_counter, evaluation_numsteps, sample_coords);
+                generate_evaluation_samples_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, VALIDATION_MAX_SAMPLES, width, height, focal_x, focal_y, principal_x, principal_y, evaluation_camera, evaluation_image_index, occupancy, evaluation_sample_counter, evaluation_overflow_counter, evaluation_numsteps, sample_coords);
                 if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_evaluation_samples_kernel failed: "} + cudaGetErrorString(status)};
 
                 std::uint32_t used_samples    = 0u;
@@ -1853,15 +1852,15 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_param_steps, 0, param_count * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset optimizer param steps failed: "} + cudaGetErrorString(status)};
     }
 
-    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_length, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
-        if (sample_limit == 0u || sample_limit > config::MAX_SAMPLES || frame_count == 0u || width == 0u || height == 0u || focal_length <= 0.0f || (rays_per_batch != 0u && (camera == nullptr || occupancy == nullptr || sample_coords == nullptr || rays == nullptr || ray_indices == nullptr || numsteps == nullptr || ray_counter == nullptr || sample_counter == nullptr))) throw std::runtime_error{"invalid sampler input."};
+    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
+        if (sample_limit == 0u || sample_limit > config::MAX_SAMPLES || frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || (rays_per_batch != 0u && (camera == nullptr || occupancy == nullptr || sample_coords == nullptr || rays == nullptr || ray_indices == nullptr || numsteps == nullptr || ray_counter == nullptr || sample_counter == nullptr))) throw std::runtime_error{"invalid sampler input."};
         if (rays_per_batch == 0u) return;
 
         if (const cudaError_t status = cudaMemset(ray_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler ray counter failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler sample counter failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        generate_training_samples_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_length, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
+        generate_training_samples_kernel<<<blocks, THREADS_PER_BLOCK>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_training_samples_kernel failed: "} + cudaGetErrorString(status)};
     }
