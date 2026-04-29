@@ -39,6 +39,7 @@ namespace ngp::train {
         requires FrameRangeLike<std::remove_cvref_t<decltype(dataset.train)>>;
         requires FrameRangeLike<std::remove_cvref_t<decltype(dataset.validation)>>;
         requires FrameRangeLike<std::remove_cvref_t<decltype(dataset.test)>>;
+        { dataset.scene_scale } -> std::convertible_to<float>;
     };
 
     export struct TrainStats final {
@@ -109,7 +110,9 @@ namespace ngp::train {
                 this->host.focal_y     = static_cast<float>(first_frame.focal_y);
                 this->host.principal_x = static_cast<float>(first_frame.principal_x);
                 this->host.principal_y = static_cast<float>(first_frame.principal_y);
+                this->host.scene_scale = static_cast<float>(dataset.scene_scale);
                 if (this->host.width == 0u || this->host.height == 0u || this->host.focal_x <= 0.0f || this->host.focal_y <= 0.0f || !std::isfinite(this->host.principal_x) || !std::isfinite(this->host.principal_y)) throw std::runtime_error{"invalid training frame metadata."};
+                if (!std::isfinite(this->host.scene_scale) || this->host.scene_scale <= 0.0f) throw std::runtime_error{"invalid scene normalization metadata."};
 
                 const std::size_t validation_frame_count = std::ranges::size(dataset.validation);
                 if (validation_frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many validation frames."};
@@ -272,6 +275,7 @@ namespace ngp::train {
             float test_focal_y                   = 0.0f;
             float test_principal_x               = 0.0f;
             float test_principal_y               = 0.0f;
+            float scene_scale                    = 0.0f;
 
             // Stable after construction: network parameter layout.
             std::array<std::uint32_t, config::GRID_OFFSET_COUNT> grid_offsets = {};

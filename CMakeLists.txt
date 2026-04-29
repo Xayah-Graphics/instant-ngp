@@ -100,3 +100,7 @@ set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 add_executable(instant-ngp-app main.cpp)
 target_link_libraries(instant-ngp-app PRIVATE instant-ngp)
 set_property(TARGET instant-ngp-app PROPERTY CXX_MODULE_STD ON)
+
+add_executable(instant-ngp-benchmark benchmark.cpp)
+target_link_libraries(instant-ngp-benchmark PRIVATE instant-ngp)
+set_property(TARGET instant-ngp-benchmark PROPERTY CXX_MODULE_STD ON)

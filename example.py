@@ -36,8 +36,7 @@ class InstantNGPArchitecture:
     nerf_steps: int = 1024
     nerf_min_optical_thickness: float = 0.01
     transmittance_epsilon: float = 1e-4
-    scene_scale: float = 0.33
-    scene_offset: float = 0.5
+    scene_scale: float = 1.0
 
     @property
     def grid_output_width(self) -> int:
@@ -527,7 +526,7 @@ class InstantNGPInference:
         self.dtype = torch.float16 if dtype == "float16" else torch.float32
         self.sample_batch = sample_batch
         torch.set_float32_matmul_precision("high")
-        self.network = load_weights(weights_path, self.architecture, self.device, self.dtype)
+        self.network, self.scene_scale = load_weights(weights_path, self.architecture, self.device, self.dtype)
         self.network.eval()
         self.forward_compiled = torch.compile(self.network, mode="max-autotune", fullgraph=True)
         self.density_compiled = torch.compile(self.network.forward_density, mode="max-autotune", fullgraph=True)
@@ -642,11 +641,18 @@ class InstantNGPInference:
         return self.occupancy_grid
 
 
-def load_weights(weights_path: pathlib.Path, architecture: InstantNGPArchitecture, device: torch.device, dtype: torch.dtype) -> InstantNGPNetwork:
+def load_weights(weights_path: pathlib.Path, architecture: InstantNGPArchitecture, device: torch.device, dtype: torch.dtype) -> tuple[InstantNGPNetwork, float]:
     with safetensors.safe_open(str(weights_path), framework="pt", device="cpu") as handle:
         metadata = handle.metadata()
-        if metadata != EXPECTED_METADATA:
+        scene_keys = {"scene_scale"}
+        architecture_metadata = {key: value for key, value in metadata.items() if key not in scene_keys}
+        if architecture_metadata != EXPECTED_METADATA:
             raise RuntimeError("safetensors metadata does not match instant-ngp-new.weights.v1.")
+        if "scene_scale" not in metadata:
+            raise RuntimeError("safetensors metadata is missing scene_scale.")
+        scene_scale = float(metadata["scene_scale"])
+        if not math.isfinite(scene_scale) or scene_scale <= 0.0:
+            raise RuntimeError("safetensors metadata scene_scale is invalid.")
         tensor_names = set(handle.keys())
         if tensor_names != set(EXPECTED_TENSORS):
             raise RuntimeError(f"safetensors tensors mismatch: {sorted(tensor_names)}")
@@ -671,10 +677,10 @@ def load_weights(weights_path: pathlib.Path, architecture: InstantNGPArchitectur
         network.rgb_mlp[2].weight.copy_(tensors["rgb_mlp.hidden.weight"])
         network.rgb_mlp[4].weight.copy_(tensors["rgb_mlp.output.weight"])
 
-    return network.to(device=device, dtype=dtype)
+    return network.to(device=device, dtype=dtype), scene_scale
 
 
-def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path) -> list[TestFrame]:
+def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path, scene_scale: float) -> list[TestFrame]:
     split_json_path = dataset_path / "transforms_test.json"
     with split_json_path.open("r", encoding="utf-8") as input_file:
         transforms = json.load(input_file)
@@ -708,9 +714,9 @@ def load_nerf_synthetic_test_frames(dataset_path: pathlib.Path) -> list[TestFram
             camera[1][i] = -camera[1][i]
             camera[2][i] = -camera[2][i]
 
-        camera[3][0] = camera[3][0] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
-        camera[3][1] = camera[3][1] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
-        camera[3][2] = camera[3][2] * ARCHITECTURE.scene_scale + ARCHITECTURE.scene_offset
+        camera[3][0] = camera[3][0] * scene_scale + 0.5
+        camera[3][1] = camera[3][1] * scene_scale + 0.5
+        camera[3][2] = camera[3][2] * scene_scale + 0.5
 
         camera_row0 = [camera[0][0], camera[1][0], camera[2][0], camera[3][0]]
         camera_row1 = [camera[0][1], camera[1][1], camera[2][1], camera[3][1]]
@@ -874,14 +880,14 @@ def main() -> int:
 
     script_start = time.perf_counter()
     torch.set_float32_matmul_precision("high")
-    test_frames = load_nerf_synthetic_test_frames(args.dataset)
-    if args.max_frames is not None:
-        test_frames = test_frames[:args.max_frames]
     model_load_start = time.perf_counter()
     model = InstantNGPInference(args.weights, args.device, args.dtype, args.sample_batch)
     if model.device.type == "cuda":
         torch.cuda.synchronize(model.device)
     model_load_ms = (time.perf_counter() - model_load_start) * 1000.0
+    test_frames = load_nerf_synthetic_test_frames(args.dataset, model.scene_scale)
+    if args.max_frames is not None:
+        test_frames = test_frames[:args.max_frames]
 
     if args.marcher == "occupancy":
         occupancy_grid = model.rebuild_occupancy_grid(args.occupancy_mode, args.occupancy_threshold_scale, args.occupancy_min_ratio, args.occupancy_dilation)

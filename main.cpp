@@ -22,6 +22,7 @@ namespace {
         std::int32_t chunk_steps                = 1000;
         std::uint32_t validation_interval_steps = 5000u;
         std::uint32_t early_stop_patience       = 5u;
+        float scene_scale                       = ngp::dataset::DEFAULT_SCENE_SCALE;
         float early_stop_min_delta_mse          = 1e-6f;
         std::optional<std::filesystem::path> load_weights_path;
         std::optional<std::filesystem::path> export_weights_path;
@@ -92,6 +93,16 @@ namespace {
                 const auto parsed = parse_positive_int32(option_name, *value);
                 if (!parsed) return std::unexpected{parsed.error()};
                 cli.steps = *parsed;
+                continue;
+            }
+
+            if (option_name == "--scene-scale") {
+                const auto value = parse_cli_option_value(arguments, i, option_name, inline_value);
+                if (!value) return std::unexpected{value.error()};
+                const auto parsed = parse_nonnegative_float(option_name, *value);
+                if (!parsed) return std::unexpected{parsed.error()};
+                if (*parsed <= 0.0f) return std::unexpected{"--scene-scale must be a finite positive number."};
+                cli.scene_scale = *parsed;
                 continue;
             }
 
@@ -170,6 +181,8 @@ int main(const int argc, const char* const* const argv) {
 {}Options:{}
   {}--dataset <path>{}                  NeRF synthetic or DD-NeRF dataset root
                                     {}default:{} ../data/nerf-synthetic/lego
+  --scene-scale <value>                 camera normalization scene scale
+                                    default: 1
   {}--steps <count>{}                   total training steps
                                     {}default:{} 200000
   {}--chunk-steps <count>{}             training steps per progress log
@@ -230,7 +243,7 @@ int main(const int argc, const char* const* const argv) {
     const std::string_view dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
 
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} format={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, cli.dataset_path.string(), dataset_format, cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
+    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} format={} scene_scale={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, cli.dataset_path.string(), dataset_format, cli.scene_scale, cli.steps, cli.chunk_steps, cli.validation_interval_steps, cli.early_stop_patience, cli.early_stop_min_delta_mse, cli.load_weights_path.has_value() ? cli.load_weights_path->string() : "none", cli.export_weights_path.has_value() ? cli.export_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     std::println("{}[{:%F %T}]{} {}{:<7}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
@@ -238,7 +251,7 @@ int main(const int argc, const char* const* const argv) {
     std::optional<std::string> pipeline_error;
     std::unique_ptr<ngp::train::InstantNGP> ngp;
     if (has_nerf_synthetic_dataset) {
-        const auto dataset = ngp::dataset::load_nerf_synthetic(cli.dataset_path);
+        const auto dataset = ngp::dataset::load_nerf_synthetic(cli.dataset_path, cli.scene_scale);
         if (!dataset) {
             pipeline_error = dataset.error();
         } else {
@@ -249,7 +262,7 @@ int main(const int argc, const char* const* const argv) {
             }
         }
     } else {
-        const auto dataset = ngp::dataset::load_dd_nerf_dataset(cli.dataset_path);
+        const auto dataset = ngp::dataset::load_dd_nerf_dataset(cli.dataset_path, cli.scene_scale);
         if (!dataset) {
             pipeline_error = dataset.error();
         } else {

@@ -2,6 +2,8 @@ export module ngp.dataset;
 import std;
 
 namespace ngp::dataset {
+    export inline constexpr float DEFAULT_SCENE_SCALE = 1.0f;
+
     export struct NeRFSynthetic final {
         struct Frame {
             std::vector<std::uint8_t> rgba = {};
@@ -16,6 +18,7 @@ namespace ngp::dataset {
         std::vector<Frame> train      = {};
         std::vector<Frame> validation = {};
         std::vector<Frame> test       = {};
+        float scene_scale             = 0.0f;
     };
 
     export struct DdNerfDataset final {
@@ -32,8 +35,9 @@ namespace ngp::dataset {
         std::vector<Frame> train      = {};
         std::vector<Frame> validation = {};
         std::vector<Frame> test       = {};
+        float scene_scale             = 0.0f;
     };
 
-    export std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path);
-    export std::expected<DdNerfDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path);
+    export std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE);
+    export std::expected<DdNerfDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE);
 } // namespace ngp::dataset

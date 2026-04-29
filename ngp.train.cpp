@@ -197,6 +197,7 @@ namespace ngp::train {
             metadata["mlp_param_count"]           = std::format("{}", this->host.mlp_param_count);
             metadata["grid_param_count"]          = std::format("{}", this->host.grid_param_count);
             metadata["total_param_count"]         = std::format("{}", this->host.total_param_count);
+            metadata["scene_scale"]               = std::format("{:.9g}", this->host.scene_scale);
 
             nlohmann::json header  = nlohmann::json::object();
             header["__metadata__"] = metadata;
@@ -284,6 +285,7 @@ namespace ngp::train {
             expected_metadata["mlp_param_count"]           = std::format("{}", this->host.mlp_param_count);
             expected_metadata["grid_param_count"]          = std::format("{}", this->host.grid_param_count);
             expected_metadata["total_param_count"]         = std::format("{}", this->host.total_param_count);
+            expected_metadata["scene_scale"]               = std::format("{:.9g}", this->host.scene_scale);
 
             const std::uintmax_t file_size = std::filesystem::file_size(path);
             if (file_size < sizeof(std::uint64_t)) throw std::runtime_error{"weights file is too small for a safetensors header."};

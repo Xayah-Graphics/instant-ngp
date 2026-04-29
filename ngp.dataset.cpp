@@ -7,10 +7,9 @@ import std;
 
 namespace ngp::dataset {
     namespace {
-        inline constexpr float NERF_SYNTHETIC_SCENE_SCALE  = 0.33f;
-        inline constexpr float NERF_SYNTHETIC_SCENE_OFFSET = 0.5f;
+        inline constexpr float DEFAULT_SCENE_OFFSET = 0.5f;
 
-        std::vector<NeRFSynthetic::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name) {
+        std::vector<NeRFSynthetic::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name, const float scene_scale) {
             const std::filesystem::path json_path  = dataset_path / file_name;
             const std::filesystem::path split_root = json_path.parent_path();
             const nlohmann::json json              = nlohmann::json::parse(std::ifstream{json_path, std::ios::binary}, nullptr, true, true);
@@ -56,9 +55,9 @@ namespace ngp::dataset {
                 std::ranges::for_each(camera[1], [](float& value) { value = -value; });
                 std::ranges::for_each(camera[2], [](float& value) { value = -value; });
 
-                camera[3][0] = camera[3][0] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
-                camera[3][1] = camera[3][1] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
-                camera[3][2] = camera[3][2] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
+                camera[3][0] = camera[3][0] * scene_scale + DEFAULT_SCENE_OFFSET;
+                camera[3][1] = camera[3][1] * scene_scale + DEFAULT_SCENE_OFFSET;
+                camera[3][2] = camera[3][2] * scene_scale + DEFAULT_SCENE_OFFSET;
 
                 const std::array camera_row0{camera[0][0], camera[1][0], camera[2][0], camera[3][0]};
                 const std::array camera_row1{camera[0][1], camera[1][1], camera[2][1], camera[3][1]};
@@ -81,20 +80,23 @@ namespace ngp::dataset {
             return frames;
         }
     } // namespace
-    std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path) {
+    std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale) {
         try {
+            if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             return NeRFSynthetic{
-                .train      = load_nerf_synthetic_split(path, "transforms_train.json"),
-                .validation = load_nerf_synthetic_split(path, "transforms_val.json"),
-                .test       = load_nerf_synthetic_split(path, "transforms_test.json"),
+                .train       = load_nerf_synthetic_split(path, "transforms_train.json", scene_scale),
+                .validation  = load_nerf_synthetic_split(path, "transforms_val.json", scene_scale),
+                .test        = load_nerf_synthetic_split(path, "transforms_test.json", scene_scale),
+                .scene_scale = scene_scale,
             };
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
         }
     }
 
-    std::expected<DdNerfDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path) {
+    std::expected<DdNerfDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale) {
         try {
+            if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             const std::filesystem::path json_path = path / "cameras.json";
             if (!std::filesystem::is_regular_file(json_path)) throw std::runtime_error{std::format("DD-NeRF dataset '{}' is missing cameras.json.", path.string())};
             if (!std::filesystem::is_directory(path / "images")) throw std::runtime_error{std::format("DD-NeRF dataset '{}' is missing an images directory.", path.string())};
@@ -148,9 +150,9 @@ namespace ngp::dataset {
                 std::ranges::for_each(camera[1], [](float& value) { value = -value; });
                 std::ranges::for_each(camera[2], [](float& value) { value = -value; });
 
-                camera[3][0] = camera[3][0] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
-                camera[3][1] = camera[3][1] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
-                camera[3][2] = camera[3][2] * NERF_SYNTHETIC_SCENE_SCALE + NERF_SYNTHETIC_SCENE_OFFSET;
+                camera[3][0] = camera[3][0] * scene_scale + DEFAULT_SCENE_OFFSET;
+                camera[3][1] = camera[3][1] * scene_scale + DEFAULT_SCENE_OFFSET;
+                camera[3][2] = camera[3][2] * scene_scale + DEFAULT_SCENE_OFFSET;
 
                 const std::array camera_row0{camera[0][0], camera[1][0], camera[2][0], camera[3][0]};
                 const std::array camera_row1{camera[0][1], camera[1][1], camera[2][1], camera[3][1]};
@@ -179,6 +181,7 @@ namespace ngp::dataset {
             if (dataset.train.empty()) throw std::runtime_error{"DD-NeRF split produced no training frames."};
             if (dataset.validation.empty()) throw std::runtime_error{"DD-NeRF split produced no validation frames."};
             if (dataset.test.empty()) throw std::runtime_error{"DD-NeRF split produced no test frames."};
+            dataset.scene_scale = scene_scale;
             return dataset;
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
