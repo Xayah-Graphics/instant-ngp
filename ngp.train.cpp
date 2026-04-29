@@ -6,9 +6,172 @@ module;
 #include "stb/stb_image_write.h"
 module ngp.train;
 import std;
+import ngp.dataset;
 
 namespace ngp::train {
-    namespace config = cuda::config;
+    InstantNGP::InstantNGP(const dataset::NGPDataset& dataset) {
+        try {
+            std::vector<std::uint8_t> host_pixels;
+            std::vector<float> host_camera;
+
+            const std::size_t frame_count = std::ranges::size(dataset.train);
+            if (frame_count == 0) throw std::runtime_error{"pixels is empty."};
+            if (frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many training frames."};
+
+            const auto& first_frame       = *std::ranges::begin(dataset.train);
+            std::size_t train_pixel_count = 0uz;
+            for (const dataset::NGPDataset::Frame& frame : dataset.train) train_pixel_count += frame.rgba.size();
+            host_pixels.reserve(train_pixel_count);
+            host_camera.reserve(frame_count * 12uz);
+
+            for (const dataset::NGPDataset::Frame& frame : dataset.train) {
+                if (static_cast<std::uint32_t>(frame.width) != static_cast<std::uint32_t>(first_frame.width)) throw std::runtime_error{"training frame width mismatch."};
+                if (static_cast<std::uint32_t>(frame.height) != static_cast<std::uint32_t>(first_frame.height)) throw std::runtime_error{"training frame height mismatch."};
+                if (static_cast<float>(frame.focal_x) != static_cast<float>(first_frame.focal_x)) throw std::runtime_error{"training frame focal_x mismatch."};
+                if (static_cast<float>(frame.focal_y) != static_cast<float>(first_frame.focal_y)) throw std::runtime_error{"training frame focal_y mismatch."};
+                if (static_cast<float>(frame.principal_x) != static_cast<float>(first_frame.principal_x)) throw std::runtime_error{"training frame principal_x mismatch."};
+                if (static_cast<float>(frame.principal_y) != static_cast<float>(first_frame.principal_y)) throw std::runtime_error{"training frame principal_y mismatch."};
+
+                host_pixels.append_range(frame.rgba);
+                for (std::size_t i = 0uz; i < 12uz; ++i) host_camera.push_back(static_cast<float>(frame.camera[i]));
+            }
+
+            cuda::upload_dataset(host_pixels.data(), host_pixels.size(), host_camera.data(), host_camera.size(), this->device.pixels, this->device.camera);
+
+            this->host.frame_count = static_cast<std::uint32_t>(frame_count);
+            this->host.width       = static_cast<std::uint32_t>(first_frame.width);
+            this->host.height      = static_cast<std::uint32_t>(first_frame.height);
+            this->host.focal_x     = static_cast<float>(first_frame.focal_x);
+            this->host.focal_y     = static_cast<float>(first_frame.focal_y);
+            this->host.principal_x = static_cast<float>(first_frame.principal_x);
+            this->host.principal_y = static_cast<float>(first_frame.principal_y);
+            this->host.scene_scale = static_cast<float>(dataset.scene_scale);
+            if (this->host.width == 0u || this->host.height == 0u || this->host.focal_x <= 0.0f || this->host.focal_y <= 0.0f || !std::isfinite(this->host.principal_x) || !std::isfinite(this->host.principal_y)) throw std::runtime_error{"invalid training frame metadata."};
+            if (!std::isfinite(this->host.scene_scale) || this->host.scene_scale <= 0.0f) throw std::runtime_error{"invalid scene normalization metadata."};
+
+            const std::size_t validation_frame_count = std::ranges::size(dataset.validation);
+            if (validation_frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many validation frames."};
+            if (validation_frame_count != 0uz) {
+                const auto& first_validation_frame = *std::ranges::begin(dataset.validation);
+                const auto validation_width        = static_cast<std::uint32_t>(first_validation_frame.width);
+                const auto validation_height       = static_cast<std::uint32_t>(first_validation_frame.height);
+                const auto validation_focal_x      = static_cast<float>(first_validation_frame.focal_x);
+                const auto validation_focal_y      = static_cast<float>(first_validation_frame.focal_y);
+                const auto validation_principal_x  = static_cast<float>(first_validation_frame.principal_x);
+                const auto validation_principal_y  = static_cast<float>(first_validation_frame.principal_y);
+                if (validation_width == 0u || validation_height == 0u || validation_focal_x <= 0.0f || validation_focal_y <= 0.0f || !std::isfinite(validation_principal_x) || !std::isfinite(validation_principal_y)) throw std::runtime_error{"invalid validation frame metadata."};
+
+                std::vector<std::uint8_t> validation_pixels;
+                std::vector<float> validation_camera;
+                validation_pixels.reserve(validation_frame_count * first_validation_frame.rgba.size());
+                validation_camera.reserve(validation_frame_count * 12uz);
+
+                for (const dataset::NGPDataset::Frame& frame : dataset.validation) {
+                    if (static_cast<std::uint32_t>(frame.width) != validation_width) throw std::runtime_error{"validation frame width mismatch."};
+                    if (static_cast<std::uint32_t>(frame.height) != validation_height) throw std::runtime_error{"validation frame height mismatch."};
+                    if (static_cast<float>(frame.focal_x) != validation_focal_x) throw std::runtime_error{"validation frame focal_x mismatch."};
+                    if (static_cast<float>(frame.focal_y) != validation_focal_y) throw std::runtime_error{"validation frame focal_y mismatch."};
+                    if (static_cast<float>(frame.principal_x) != validation_principal_x) throw std::runtime_error{"validation frame principal_x mismatch."};
+                    if (static_cast<float>(frame.principal_y) != validation_principal_y) throw std::runtime_error{"validation frame principal_y mismatch."};
+                    if (frame.rgba.size() != static_cast<std::size_t>(validation_width) * validation_height * 4uz) throw std::runtime_error{"validation frame RGBA size mismatch."};
+
+                    validation_pixels.append_range(frame.rgba);
+                    for (std::size_t i = 0uz; i < 12uz; ++i) validation_camera.push_back(static_cast<float>(frame.camera[i]));
+                }
+
+                cuda::upload_dataset(validation_pixels.data(), validation_pixels.size(), validation_camera.data(), validation_camera.size(), this->device.validation_pixels, this->device.validation_camera);
+                this->host.validation_frame_count = static_cast<std::uint32_t>(validation_frame_count);
+                this->host.validation_width       = validation_width;
+                this->host.validation_height      = validation_height;
+                this->host.validation_focal_x     = validation_focal_x;
+                this->host.validation_focal_y     = validation_focal_y;
+                this->host.validation_principal_x = validation_principal_x;
+                this->host.validation_principal_y = validation_principal_y;
+            }
+
+            const std::size_t test_frame_count = std::ranges::size(dataset.test);
+            if (test_frame_count > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"too many test frames."};
+            if (test_frame_count != 0uz) {
+                const auto& first_test_frame = *std::ranges::begin(dataset.test);
+                const auto test_width        = static_cast<std::uint32_t>(first_test_frame.width);
+                const auto test_height       = static_cast<std::uint32_t>(first_test_frame.height);
+                const auto test_focal_x      = static_cast<float>(first_test_frame.focal_x);
+                const auto test_focal_y      = static_cast<float>(first_test_frame.focal_y);
+                const auto test_principal_x  = static_cast<float>(first_test_frame.principal_x);
+                const auto test_principal_y  = static_cast<float>(first_test_frame.principal_y);
+                if (test_width == 0u || test_height == 0u || test_focal_x <= 0.0f || test_focal_y <= 0.0f || !std::isfinite(test_principal_x) || !std::isfinite(test_principal_y)) throw std::runtime_error{"invalid test frame metadata."};
+
+                std::vector<std::uint8_t> test_pixels;
+                std::vector<float> test_camera;
+                test_pixels.reserve(test_frame_count * first_test_frame.rgba.size());
+                test_camera.reserve(test_frame_count * 12uz);
+
+                for (const dataset::NGPDataset::Frame& frame : dataset.test) {
+                    if (static_cast<std::uint32_t>(frame.width) != test_width) throw std::runtime_error{"test frame width mismatch."};
+                    if (static_cast<std::uint32_t>(frame.height) != test_height) throw std::runtime_error{"test frame height mismatch."};
+                    if (static_cast<float>(frame.focal_x) != test_focal_x) throw std::runtime_error{"test frame focal_x mismatch."};
+                    if (static_cast<float>(frame.focal_y) != test_focal_y) throw std::runtime_error{"test frame focal_y mismatch."};
+                    if (static_cast<float>(frame.principal_x) != test_principal_x) throw std::runtime_error{"test frame principal_x mismatch."};
+                    if (static_cast<float>(frame.principal_y) != test_principal_y) throw std::runtime_error{"test frame principal_y mismatch."};
+                    if (frame.rgba.size() != static_cast<std::size_t>(test_width) * test_height * 4uz) throw std::runtime_error{"test frame RGBA size mismatch."};
+
+                    test_pixels.append_range(frame.rgba);
+                    for (std::size_t i = 0uz; i < 12uz; ++i) test_camera.push_back(static_cast<float>(frame.camera[i]));
+                }
+
+                cuda::upload_dataset(test_pixels.data(), test_pixels.size(), test_camera.data(), test_camera.size(), this->device.test_pixels, this->device.test_camera);
+                this->host.test_frame_count = static_cast<std::uint32_t>(test_frame_count);
+                this->host.test_width       = test_width;
+                this->host.test_height      = test_height;
+                this->host.test_focal_x     = test_focal_x;
+                this->host.test_focal_y     = test_focal_y;
+                this->host.test_principal_x = test_principal_x;
+                this->host.test_principal_y = test_principal_y;
+            }
+
+            this->host.density_param_offset = 0u;
+            this->host.density_param_count  = cuda::config::MLP_WIDTH * cuda::config::GRID_OUTPUT_WIDTH + (cuda::config::DENSITY_HIDDEN_LAYERS - 1u) * cuda::config::MLP_WIDTH * cuda::config::MLP_WIDTH + cuda::config::DENSITY_OUTPUT_WIDTH * cuda::config::MLP_WIDTH;
+            this->host.rgb_param_offset     = this->host.density_param_offset + this->host.density_param_count;
+            this->host.rgb_param_count      = cuda::config::MLP_WIDTH * cuda::config::RGB_INPUT_WIDTH + (cuda::config::RGB_HIDDEN_LAYERS - 1u) * cuda::config::MLP_WIDTH * cuda::config::MLP_WIDTH + cuda::config::NETWORK_OUTPUT_WIDTH * cuda::config::MLP_WIDTH;
+            this->host.mlp_param_count      = this->host.rgb_param_offset + this->host.rgb_param_count;
+            this->host.grid_param_offset    = this->host.mlp_param_count;
+
+            std::uint32_t grid_offset = 0u;
+            for (std::uint32_t level = 0u; level < cuda::config::GRID_N_LEVELS; ++level) {
+                const float scale                         = std::exp2(static_cast<float>(level) * cuda::config::GRID_LOG2_PER_LEVEL_SCALE) * static_cast<float>(cuda::config::GRID_BASE_RESOLUTION) - 1.0f;
+                const std::uint32_t resolution            = static_cast<std::uint32_t>(std::ceil(scale)) + 1u;
+                constexpr std::uint32_t MAX_PARAMS        = std::numeric_limits<std::uint32_t>::max() / 2u;
+                const std::uint64_t dense_params_in_level = static_cast<std::uint64_t>(resolution) * resolution * resolution;
+                std::uint32_t params_in_level             = dense_params_in_level > MAX_PARAMS ? MAX_PARAMS : static_cast<std::uint32_t>(dense_params_in_level);
+
+                params_in_level                = ((params_in_level + 7u) / 8u) * 8u;
+                params_in_level                = std::min(params_in_level, 1u << cuda::config::GRID_LOG2_HASHMAP_SIZE);
+                this->host.grid_offsets[level] = grid_offset;
+                grid_offset += params_in_level;
+            }
+            this->host.grid_offsets[cuda::config::GRID_N_LEVELS] = grid_offset;
+            this->host.grid_param_count                               = grid_offset * cuda::config::GRID_FEATURES_PER_LEVEL;
+            this->host.total_param_count                              = this->host.mlp_param_count + this->host.grid_param_count;
+            cuda::Pcg32 training_rng{cuda::config::TRAIN_SEED};
+            this->host.density_grid_rng = cuda::Pcg32{training_rng.next_uint()};
+
+            cuda::allocate_sampler_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy);
+            cuda::allocate_network_buffers(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
+            cuda::allocate_density_grid_buffers(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count);
+            cuda::allocate_training_loss_buffers(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values);
+            if (this->host.validation_frame_count != 0u || this->host.test_frame_count != 0u) cuda::allocate_evaluation_buffers(this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum);
+            if (this->host.test_frame_count != 0u) cuda::allocate_test_comparison_buffer(this->host.test_width, this->host.test_height, this->device.test_comparison_pixels);
+            cuda::allocate_trainable_parameter_buffers(this->host.total_param_count, this->device.params_full_precision, this->device.params, this->device.param_gradients);
+            cuda::allocate_adam_state(this->host.total_param_count, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+            cuda::initialize_mlp_parameters(this->host.density_param_offset, this->host.rgb_param_offset, this->device.params_full_precision, this->device.params, this->device.param_gradients);
+            cuda::initialize_grid_parameters(this->host.grid_param_count, this->host.mlp_param_count, this->device.params_full_precision + this->host.grid_param_offset, this->device.params + this->host.grid_param_offset, this->device.param_gradients + this->host.grid_param_offset);
+        } catch (...) {
+            cuda::destroy_cublaslt(this->device.cublaslt_handle);
+            cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients,
+                this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+            throw;
+        }
+    }
 
     InstantNGP::~InstantNGP() noexcept {
         cuda::destroy_cublaslt(this->device.cublaslt_handle);
@@ -40,8 +203,8 @@ namespace ngp::train {
                     throw std::runtime_error{std::format("Training stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
                 }
 
-                this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, config::MAX_SAMPLES) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY;
-                this->host.rays_per_batch         = std::min(std::max(((static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * config::NETWORK_BATCH_SIZE) / this->host.measured_sample_count, static_cast<std::uint64_t>(config::NETWORK_BATCH_SIZE))) + config::NETWORK_BATCH_GRANULARITY - 1u) / config::NETWORK_BATCH_GRANULARITY) * config::NETWORK_BATCH_GRANULARITY, config::NETWORK_BATCH_GRANULARITY), config::NETWORK_BATCH_SIZE);
+                this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, cuda::config::MAX_SAMPLES) + cuda::config::NETWORK_BATCH_GRANULARITY - 1u) / cuda::config::NETWORK_BATCH_GRANULARITY) * cuda::config::NETWORK_BATCH_GRANULARITY;
+                this->host.rays_per_batch         = std::min(std::max(((static_cast<std::uint32_t>(std::min((static_cast<std::uint64_t>(this->host.rays_per_batch) * cuda::config::NETWORK_BATCH_SIZE) / this->host.measured_sample_count, static_cast<std::uint64_t>(cuda::config::NETWORK_BATCH_SIZE))) + cuda::config::NETWORK_BATCH_GRANULARITY - 1u) / cuda::config::NETWORK_BATCH_GRANULARITY) * cuda::config::NETWORK_BATCH_GRANULARITY, cuda::config::NETWORK_BATCH_GRANULARITY), cuda::config::NETWORK_BATCH_SIZE);
 
                 ++this->host.current_step;
             }
@@ -55,7 +218,7 @@ namespace ngp::train {
                 .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
                 .measured_sample_count                   = this->host.measured_sample_count,
                 .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
-                .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::NETWORK_BATCH_SIZE),
+                .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(cuda::config::NETWORK_BATCH_SIZE),
                 .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
                 .density_grid_update_ms                  = this->host.density_grid_update_ms,
                 .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / (128.0f * 128.0f * 128.0f),
@@ -154,43 +317,43 @@ namespace ngp::train {
             };
 
             const std::uint32_t density_input_offset  = this->host.density_param_offset;
-            const std::uint32_t density_output_offset = this->host.density_param_offset + config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH;
+            const std::uint32_t density_output_offset = this->host.density_param_offset + cuda::config::MLP_WIDTH * cuda::config::GRID_OUTPUT_WIDTH;
             const std::uint32_t rgb_input_offset      = this->host.rgb_param_offset;
-            const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + config::MLP_WIDTH * config::RGB_INPUT_WIDTH;
-            const std::uint32_t rgb_output_offset     = rgb_hidden_offset + config::MLP_WIDTH * config::MLP_WIDTH;
+            const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + cuda::config::MLP_WIDTH * cuda::config::RGB_INPUT_WIDTH;
+            const std::uint32_t rgb_output_offset     = rgb_hidden_offset + cuda::config::MLP_WIDTH * cuda::config::MLP_WIDTH;
             const std::array tensors                  = std::to_array<SafetensorsTensor>({
-                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
-                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
+                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::GRID_OUTPUT_WIDTH},
+                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = cuda::config::DENSITY_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::RGB_INPUT_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = cuda::config::NETWORK_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[cuda::config::GRID_N_LEVELS], .cols = cuda::config::GRID_FEATURES_PER_LEVEL},
             });
 
             std::vector<float> host_params(this->host.total_param_count);
             cuda::download_trainable_parameters(this->host.total_param_count, this->device.params_full_precision, host_params.data());
 
             std::string grid_offsets_text;
-            for (std::uint32_t i = 0u; i < config::GRID_OFFSET_COUNT; ++i) {
+            for (std::uint32_t i = 0u; i < cuda::config::GRID_OFFSET_COUNT; ++i) {
                 if (!grid_offsets_text.empty()) grid_offsets_text += ",";
                 grid_offsets_text += std::format("{}", this->host.grid_offsets[i]);
             }
 
             nlohmann::json metadata               = nlohmann::json::object();
             metadata["format"]                    = "instant-ngp-new.weights.v1";
-            metadata["grid_n_levels"]             = std::format("{}", config::GRID_N_LEVELS);
-            metadata["grid_features_per_level"]   = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
-            metadata["grid_base_resolution"]      = std::format("{}", config::GRID_BASE_RESOLUTION);
-            metadata["grid_log2_hashmap_size"]    = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
-            metadata["grid_per_level_scale"]      = std::format("{}", config::GRID_PER_LEVEL_SCALE);
-            metadata["grid_log2_per_level_scale"] = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
-            metadata["mlp_width"]                 = std::format("{}", config::MLP_WIDTH);
-            metadata["density_hidden_layers"]     = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
-            metadata["rgb_hidden_layers"]         = std::format("{}", config::RGB_HIDDEN_LAYERS);
-            metadata["density_output_width"]      = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
-            metadata["direction_output_width"]    = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
-            metadata["rgb_input_width"]           = std::format("{}", config::RGB_INPUT_WIDTH);
-            metadata["network_output_width"]      = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
+            metadata["grid_n_levels"]             = std::format("{}", cuda::config::GRID_N_LEVELS);
+            metadata["grid_features_per_level"]   = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
+            metadata["grid_base_resolution"]      = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
+            metadata["grid_log2_hashmap_size"]    = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
+            metadata["grid_per_level_scale"]      = std::format("{}", cuda::config::GRID_PER_LEVEL_SCALE);
+            metadata["grid_log2_per_level_scale"] = std::format("{}", cuda::config::GRID_LOG2_PER_LEVEL_SCALE);
+            metadata["mlp_width"]                 = std::format("{}", cuda::config::MLP_WIDTH);
+            metadata["density_hidden_layers"]     = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
+            metadata["rgb_hidden_layers"]         = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
+            metadata["density_output_width"]      = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
+            metadata["direction_output_width"]    = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
+            metadata["rgb_input_width"]           = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
+            metadata["network_output_width"]      = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
             metadata["grid_offsets"]              = grid_offsets_text;
             metadata["density_param_count"]       = std::format("{}", this->host.density_param_count);
             metadata["rgb_param_count"]           = std::format("{}", this->host.rgb_param_count);
@@ -245,40 +408,40 @@ namespace ngp::train {
             };
 
             const std::uint32_t density_input_offset  = this->host.density_param_offset;
-            const std::uint32_t density_output_offset = this->host.density_param_offset + config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH;
+            const std::uint32_t density_output_offset = this->host.density_param_offset + cuda::config::MLP_WIDTH * cuda::config::GRID_OUTPUT_WIDTH;
             const std::uint32_t rgb_input_offset      = this->host.rgb_param_offset;
-            const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + config::MLP_WIDTH * config::RGB_INPUT_WIDTH;
-            const std::uint32_t rgb_output_offset     = rgb_hidden_offset + config::MLP_WIDTH * config::MLP_WIDTH;
+            const std::uint32_t rgb_hidden_offset     = this->host.rgb_param_offset + cuda::config::MLP_WIDTH * cuda::config::RGB_INPUT_WIDTH;
+            const std::uint32_t rgb_output_offset     = rgb_hidden_offset + cuda::config::MLP_WIDTH * cuda::config::MLP_WIDTH;
             const std::array tensors                  = std::to_array<SafetensorsTensor>({
-                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = config::MLP_WIDTH, .cols = config::GRID_OUTPUT_WIDTH},
-                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = config::DENSITY_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = config::MLP_WIDTH, .cols = config::RGB_INPUT_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = config::MLP_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = config::NETWORK_OUTPUT_WIDTH, .cols = config::MLP_WIDTH},
-                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[config::GRID_N_LEVELS], .cols = config::GRID_FEATURES_PER_LEVEL},
+                SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = density_input_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::GRID_OUTPUT_WIDTH},
+                SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = density_output_offset, .rows = cuda::config::DENSITY_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = rgb_input_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::RGB_INPUT_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.hidden.weight", .param_offset = rgb_hidden_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "rgb_mlp.output.weight", .param_offset = rgb_output_offset, .rows = cuda::config::NETWORK_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
+                SafetensorsTensor{.name = "hash_grid.params", .param_offset = this->host.grid_param_offset, .rows = this->host.grid_offsets[cuda::config::GRID_N_LEVELS], .cols = cuda::config::GRID_FEATURES_PER_LEVEL},
             });
 
             std::string grid_offsets_text;
-            for (std::uint32_t i = 0u; i < config::GRID_OFFSET_COUNT; ++i) {
+            for (std::uint32_t i = 0u; i < cuda::config::GRID_OFFSET_COUNT; ++i) {
                 if (!grid_offsets_text.empty()) grid_offsets_text += ",";
                 grid_offsets_text += std::format("{}", this->host.grid_offsets[i]);
             }
 
             nlohmann::json expected_metadata               = nlohmann::json::object();
             expected_metadata["format"]                    = "instant-ngp-new.weights.v1";
-            expected_metadata["grid_n_levels"]             = std::format("{}", config::GRID_N_LEVELS);
-            expected_metadata["grid_features_per_level"]   = std::format("{}", config::GRID_FEATURES_PER_LEVEL);
-            expected_metadata["grid_base_resolution"]      = std::format("{}", config::GRID_BASE_RESOLUTION);
-            expected_metadata["grid_log2_hashmap_size"]    = std::format("{}", config::GRID_LOG2_HASHMAP_SIZE);
-            expected_metadata["grid_per_level_scale"]      = std::format("{}", config::GRID_PER_LEVEL_SCALE);
-            expected_metadata["grid_log2_per_level_scale"] = std::format("{}", config::GRID_LOG2_PER_LEVEL_SCALE);
-            expected_metadata["mlp_width"]                 = std::format("{}", config::MLP_WIDTH);
-            expected_metadata["density_hidden_layers"]     = std::format("{}", config::DENSITY_HIDDEN_LAYERS);
-            expected_metadata["rgb_hidden_layers"]         = std::format("{}", config::RGB_HIDDEN_LAYERS);
-            expected_metadata["density_output_width"]      = std::format("{}", config::DENSITY_OUTPUT_WIDTH);
-            expected_metadata["direction_output_width"]    = std::format("{}", config::DIRECTION_OUTPUT_WIDTH);
-            expected_metadata["rgb_input_width"]           = std::format("{}", config::RGB_INPUT_WIDTH);
-            expected_metadata["network_output_width"]      = std::format("{}", config::NETWORK_OUTPUT_WIDTH);
+            expected_metadata["grid_n_levels"]             = std::format("{}", cuda::config::GRID_N_LEVELS);
+            expected_metadata["grid_features_per_level"]   = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
+            expected_metadata["grid_base_resolution"]      = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
+            expected_metadata["grid_log2_hashmap_size"]    = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
+            expected_metadata["grid_per_level_scale"]      = std::format("{}", cuda::config::GRID_PER_LEVEL_SCALE);
+            expected_metadata["grid_log2_per_level_scale"] = std::format("{}", cuda::config::GRID_LOG2_PER_LEVEL_SCALE);
+            expected_metadata["mlp_width"]                 = std::format("{}", cuda::config::MLP_WIDTH);
+            expected_metadata["density_hidden_layers"]     = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
+            expected_metadata["rgb_hidden_layers"]         = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
+            expected_metadata["density_output_width"]      = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
+            expected_metadata["direction_output_width"]    = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
+            expected_metadata["rgb_input_width"]           = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
+            expected_metadata["network_output_width"]      = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
             expected_metadata["grid_offsets"]              = grid_offsets_text;
             expected_metadata["density_param_count"]       = std::format("{}", this->host.density_param_count);
             expected_metadata["rgb_param_count"]           = std::format("{}", this->host.rgb_param_count);

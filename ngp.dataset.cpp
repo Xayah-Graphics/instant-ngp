@@ -9,7 +9,7 @@ namespace ngp::dataset {
     namespace {
         inline constexpr float DEFAULT_SCENE_OFFSET = 0.5f;
 
-        std::vector<NeRFSynthetic::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name, const float scene_scale) {
+        std::vector<NGPDataset::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name, const float scene_scale) {
             const std::filesystem::path json_path  = dataset_path / file_name;
             const std::filesystem::path split_root = json_path.parent_path();
             const nlohmann::json json              = nlohmann::json::parse(std::ifstream{json_path, std::ios::binary}, nullptr, true, true);
@@ -18,7 +18,7 @@ namespace ngp::dataset {
             const nlohmann::json& frames_json = json.at("frames");
             const std::size_t frame_count     = frames_json.size();
 
-            std::vector<NeRFSynthetic::Frame> frames(frame_count);
+            std::vector<NGPDataset::Frame> frames(frame_count);
             const std::vector<std::size_t> indices = std::views::iota(0uz, frame_count) | std::ranges::to<std::vector<std::size_t>>();
 
             std::for_each(std::execution::par, indices.begin(), indices.end(), [&](const std::size_t frame_index) {
@@ -65,7 +65,7 @@ namespace ngp::dataset {
                 const std::array ngp_camera{camera_row1[0], camera_row2[0], camera_row0[0], camera_row1[1], camera_row2[1], camera_row0[1], camera_row1[2], camera_row2[2], camera_row0[2], camera_row1[3], camera_row2[3], camera_row0[3]};
                 const float focal_length = 0.5f * static_cast<float>(width_u) / std::tan(camera_angle_x * 0.5f);
 
-                frames[frame_index] = NeRFSynthetic::Frame{
+                frames[frame_index] = NGPDataset::Frame{
                     .rgba        = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size},
                     .camera      = ngp_camera,
                     .width       = width_u,
@@ -80,10 +80,10 @@ namespace ngp::dataset {
             return frames;
         }
     } // namespace
-    std::expected<NeRFSynthetic, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale) {
+    std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
-            return NeRFSynthetic{
+            return NGPDataset{
                 .train       = load_nerf_synthetic_split(path, "transforms_train.json", scene_scale),
                 .validation  = load_nerf_synthetic_split(path, "transforms_val.json", scene_scale),
                 .test        = load_nerf_synthetic_split(path, "transforms_test.json", scene_scale),
@@ -94,7 +94,7 @@ namespace ngp::dataset {
         }
     }
 
-    std::expected<DdNerfDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale) {
+    std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             const std::filesystem::path json_path = path / "cameras.json";
@@ -114,7 +114,7 @@ namespace ngp::dataset {
             if (!std::isfinite(focal_x) || !std::isfinite(focal_y) || focal_x <= 0.0f || focal_y <= 0.0f) throw std::runtime_error{"DD-NeRF cameras.json declares invalid focal lengths."};
             if (!std::isfinite(principal_x) || !std::isfinite(principal_y) || principal_x < 0.0f || principal_y < 0.0f || principal_x >= static_cast<float>(width) || principal_y >= static_cast<float>(height)) throw std::runtime_error{"DD-NeRF cameras.json declares an invalid principal point."};
 
-            DdNerfDataset dataset = {};
+            NGPDataset dataset = {};
             dataset.train.reserve(frames_json.size());
             dataset.validation.reserve(frames_json.size() / 10uz + 1uz);
             dataset.test.reserve(frames_json.size() / 10uz + 1uz);
@@ -160,7 +160,7 @@ namespace ngp::dataset {
                 const std::array ngp_camera{camera_row1[0], camera_row2[0], camera_row0[0], camera_row1[1], camera_row2[1], camera_row0[1], camera_row1[2], camera_row2[2], camera_row0[2], camera_row1[3], camera_row2[3], camera_row0[3]};
                 const std::size_t rgba_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4uz;
 
-                DdNerfDataset::Frame frame{
+                NGPDataset::Frame frame{
                     .rgba        = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size},
                     .camera      = ngp_camera,
                     .width       = width,
