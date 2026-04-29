@@ -2,7 +2,7 @@ export module ngp.dataset;
 import std;
 
 namespace ngp::dataset {
-    export inline constexpr float DEFAULT_SCENE_SCALE = 1.0f;
+    export inline constexpr float DEFAULT_SCENE_SCALE = 0.33f;
 
     export struct NGPDataset final {
         struct Frame {
