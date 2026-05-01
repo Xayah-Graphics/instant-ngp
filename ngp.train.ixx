@@ -40,9 +40,7 @@ namespace ngp::train {
     export class InstantNGP final {
     public:
         explicit InstantNGP(const dataset::NGPDataset& dataset);
-
         ~InstantNGP() noexcept;
-
         InstantNGP(const InstantNGP&)                = delete;
         InstantNGP& operator=(const InstantNGP&)     = delete;
         InstantNGP(InstantNGP&&) noexcept            = delete;

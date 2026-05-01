@@ -13,9 +13,6 @@ namespace ngp::cuda::config {
     inline constexpr std::uint32_t GRID_OUTPUT_WIDTH       = GRID_N_LEVELS * GRID_FEATURES_PER_LEVEL;
     inline constexpr std::uint32_t GRID_BASE_RESOLUTION    = 16u;
     inline constexpr std::uint32_t GRID_LOG2_HASHMAP_SIZE  = 19u;
-    inline constexpr std::uint32_t GRID_OFFSET_COUNT       = GRID_N_LEVELS + 1u;
-    inline constexpr float GRID_PER_LEVEL_SCALE            = 2.0f;
-    inline constexpr float GRID_LOG2_PER_LEVEL_SCALE       = 1.0f;
 
     // Fully fused MLP shape.
     inline constexpr std::uint32_t MLP_WIDTH              = 64u;
@@ -27,87 +24,75 @@ namespace ngp::cuda::config {
     inline constexpr std::uint32_t NETWORK_OUTPUT_WIDTH   = 16u;
 
     struct NetworkParameterLayout final {
-        std::array<std::uint32_t, GRID_OFFSET_COUNT> grid_offsets = {};
-        std::uint32_t density_param_offset                        = 0u;
-        std::uint32_t density_input_weight_offset                 = 0u;
-        std::uint32_t density_output_weight_offset                = 0u;
-        std::uint32_t density_param_count                         = 0u;
-        std::uint32_t rgb_param_offset                            = 0u;
-        std::uint32_t rgb_input_weight_offset                     = 0u;
-        std::uint32_t rgb_hidden_weight_offset                    = 0u;
-        std::uint32_t rgb_output_weight_offset                    = 0u;
-        std::uint32_t rgb_param_count                             = 0u;
-        std::uint32_t mlp_param_count                             = 0u;
-        std::uint32_t grid_param_offset                           = 0u;
-        std::uint32_t grid_param_count                            = 0u;
-        std::uint32_t total_param_count                           = 0u;
+        std::array<std::uint32_t, GRID_N_LEVELS + 1u> grid_offsets = {};
+        std::uint32_t density_param_offset                         = 0u;
+        std::uint32_t density_input_weight_offset                  = 0u;
+        std::uint32_t density_output_weight_offset                 = 0u;
+        std::uint32_t density_param_count                          = 0u;
+        std::uint32_t rgb_param_offset                             = 0u;
+        std::uint32_t rgb_input_weight_offset                      = 0u;
+        std::uint32_t rgb_hidden_weight_offset                     = 0u;
+        std::uint32_t rgb_output_weight_offset                     = 0u;
+        std::uint32_t rgb_param_count                              = 0u;
+        std::uint32_t mlp_param_count                              = 0u;
+        std::uint32_t grid_param_offset                            = 0u;
+        std::uint32_t grid_param_count                             = 0u;
+        std::uint32_t total_param_count                            = 0u;
     };
 
-    constexpr std::array<std::uint32_t, GRID_OFFSET_COUNT> make_grid_offsets() {
-        std::array<std::uint32_t, GRID_OFFSET_COUNT> offsets = {};
-        std::uint32_t cursor                                 = 0u;
-        constexpr std::uint32_t hashmap_size                 = 1u << GRID_LOG2_HASHMAP_SIZE;
-        constexpr std::uint64_t max_params                   = std::numeric_limits<std::uint32_t>::max() / 2ull;
+    constexpr NetworkParameterLayout make_network_parameter_layout() {
+        NetworkParameterLayout layout              = {};
+        std::uint32_t grid_cursor                  = 0u;
+        constexpr std::uint32_t grid_hashmap_size  = 1u << GRID_LOG2_HASHMAP_SIZE;
+        constexpr std::uint64_t grid_max_positions = std::numeric_limits<std::uint32_t>::max() / 2ull;
 
         for (std::uint32_t level = 0u; level < GRID_N_LEVELS; ++level) {
             const std::uint32_t resolution = GRID_BASE_RESOLUTION << level;
             const std::uint64_t dense      = static_cast<std::uint64_t>(resolution) * resolution * resolution;
-            std::uint64_t params           = dense > max_params ? max_params : dense;
-            params                         = ((params + 7u) / 8u) * 8u;
-            if (params > hashmap_size) params = hashmap_size;
-            offsets[level] = cursor;
-            cursor += static_cast<std::uint32_t>(params);
+            std::uint64_t positions        = dense > grid_max_positions ? grid_max_positions : dense;
+            positions                      = ((positions + 7u) / 8u) * 8u;
+            if (positions > grid_hashmap_size) positions = grid_hashmap_size;
+            layout.grid_offsets[level] = grid_cursor;
+            grid_cursor += static_cast<std::uint32_t>(positions);
         }
 
-        offsets[GRID_N_LEVELS] = cursor;
-        return offsets;
-    }
+        layout.grid_offsets[GRID_N_LEVELS] = grid_cursor;
 
-    constexpr NetworkParameterLayout make_network_parameter_layout() {
-        NetworkParameterLayout layout = {};
-        layout.grid_offsets           = make_grid_offsets();
+        std::uint32_t param_cursor         = 0u;
+        layout.density_param_offset        = param_cursor;
+        layout.density_input_weight_offset = param_cursor;
+        param_cursor += MLP_WIDTH * GRID_OUTPUT_WIDTH;
+        layout.density_output_weight_offset = param_cursor;
+        param_cursor += DENSITY_OUTPUT_WIDTH * MLP_WIDTH;
+        layout.density_param_count = param_cursor - layout.density_param_offset;
 
-        std::uint32_t cursor               = 0u;
-        layout.density_param_offset        = cursor;
-        layout.density_input_weight_offset = cursor;
-        cursor += MLP_WIDTH * GRID_OUTPUT_WIDTH;
-        layout.density_output_weight_offset = cursor;
-        cursor += DENSITY_OUTPUT_WIDTH * MLP_WIDTH;
-        layout.density_param_count = cursor - layout.density_param_offset;
+        layout.rgb_param_offset        = param_cursor;
+        layout.rgb_input_weight_offset = param_cursor;
+        param_cursor += MLP_WIDTH * RGB_INPUT_WIDTH;
+        layout.rgb_hidden_weight_offset = param_cursor;
+        param_cursor += MLP_WIDTH * MLP_WIDTH;
+        layout.rgb_output_weight_offset = param_cursor;
+        param_cursor += NETWORK_OUTPUT_WIDTH * MLP_WIDTH;
+        layout.rgb_param_count = param_cursor - layout.rgb_param_offset;
 
-        layout.rgb_param_offset        = cursor;
-        layout.rgb_input_weight_offset = cursor;
-        cursor += MLP_WIDTH * RGB_INPUT_WIDTH;
-        layout.rgb_hidden_weight_offset = cursor;
-        cursor += MLP_WIDTH * MLP_WIDTH;
-        layout.rgb_output_weight_offset = cursor;
-        cursor += NETWORK_OUTPUT_WIDTH * MLP_WIDTH;
-        layout.rgb_param_count = cursor - layout.rgb_param_offset;
-
-        layout.mlp_param_count   = cursor;
-        layout.grid_param_offset = cursor;
+        layout.mlp_param_count   = param_cursor;
+        layout.grid_param_offset = param_cursor;
         layout.grid_param_count  = layout.grid_offsets[GRID_N_LEVELS] * GRID_FEATURES_PER_LEVEL;
-        cursor += layout.grid_param_count;
-        layout.total_param_count = cursor;
+        param_cursor += layout.grid_param_count;
+        layout.total_param_count = param_cursor;
         return layout;
     }
 
     inline constexpr NetworkParameterLayout NETWORK_PARAMETER_LAYOUT = make_network_parameter_layout();
 
     // Training batch shape.
-    inline constexpr std::uint32_t NETWORK_BATCH_SIZE               = 1u << 18u;
-    inline constexpr std::uint32_t NETWORK_BATCH_GRANULARITY        = 16u * 8u;
-    inline constexpr std::uint32_t INITIAL_RAYS_PER_BATCH           = 1u << 12u;
-    inline constexpr std::uint32_t MAX_SAMPLES_PER_BATCH_MULTIPLIER = 16u;
-    inline constexpr std::uint32_t MAX_SAMPLES                      = NETWORK_BATCH_SIZE * MAX_SAMPLES_PER_BATCH_MULTIPLIER;
-
-    // Training behavior.
-    inline constexpr std::uint64_t TRAIN_SEED = 1337u;
+    inline constexpr std::uint32_t NETWORK_BATCH_SIZE        = 1u << 18u;
+    inline constexpr std::uint32_t NETWORK_BATCH_GRANULARITY = 16u * 8u;
+    inline constexpr std::uint32_t INITIAL_RAYS_PER_BATCH    = 1u << 12u;
+    inline constexpr std::uint32_t MAX_SAMPLES               = NETWORK_BATCH_SIZE * 16u;
 
     static_assert(GRID_OUTPUT_WIDTH % GRID_FEATURES_PER_LEVEL == 0u);
     static_assert(GRID_OUTPUT_WIDTH == RGB_INPUT_WIDTH);
-    static_assert(GRID_PER_LEVEL_SCALE == 2.0f);
-    static_assert(GRID_LOG2_PER_LEVEL_SCALE == 1.0f);
     static_assert(DENSITY_HIDDEN_LAYERS == 1u, "The handwritten density MLP path currently supports exactly one hidden layer.");
     static_assert(RGB_HIDDEN_LAYERS == 2u, "The handwritten RGB MLP path currently supports exactly two hidden layers.");
     static_assert(NETWORK_PARAMETER_LAYOUT.grid_offsets[0u] == 0u);

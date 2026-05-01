@@ -255,33 +255,26 @@ namespace ngp::train {
             cuda::download_trainable_parameters(this->device.params_full_precision, host_params.data());
 
             std::string grid_offsets_text;
-            for (std::uint32_t i = 0u; i < cuda::config::GRID_OFFSET_COUNT; ++i) {
+            for (std::uint32_t i = 0u; i < cuda::config::GRID_N_LEVELS + 1u; ++i) {
                 if (!grid_offsets_text.empty()) grid_offsets_text += ",";
                 grid_offsets_text += std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.grid_offsets[i]);
             }
 
-            nlohmann::json metadata               = nlohmann::json::object();
-            metadata["format"]                    = "instant-ngp-new.weights.v1";
-            metadata["grid_n_levels"]             = std::format("{}", cuda::config::GRID_N_LEVELS);
-            metadata["grid_features_per_level"]   = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
-            metadata["grid_base_resolution"]      = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
-            metadata["grid_log2_hashmap_size"]    = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
-            metadata["grid_per_level_scale"]      = std::format("{}", cuda::config::GRID_PER_LEVEL_SCALE);
-            metadata["grid_log2_per_level_scale"] = std::format("{}", cuda::config::GRID_LOG2_PER_LEVEL_SCALE);
-            metadata["mlp_width"]                 = std::format("{}", cuda::config::MLP_WIDTH);
-            metadata["density_hidden_layers"]     = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
-            metadata["rgb_hidden_layers"]         = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
-            metadata["density_output_width"]      = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
-            metadata["direction_output_width"]    = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
-            metadata["rgb_input_width"]           = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
-            metadata["network_output_width"]      = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
-            metadata["grid_offsets"]              = grid_offsets_text;
-            metadata["density_param_count"]       = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.density_param_count);
-            metadata["rgb_param_count"]           = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.rgb_param_count);
-            metadata["mlp_param_count"]           = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.mlp_param_count);
-            metadata["grid_param_count"]          = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.grid_param_count);
-            metadata["total_param_count"]         = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.total_param_count);
-            metadata["scene_scale"]               = std::format("{:.9g}", this->host.scene_scale);
+            nlohmann::json metadata             = nlohmann::json::object();
+            metadata["format"]                  = "instant-ngp-new.weights.v2";
+            metadata["grid_n_levels"]           = std::format("{}", cuda::config::GRID_N_LEVELS);
+            metadata["grid_features_per_level"] = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
+            metadata["grid_base_resolution"]    = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
+            metadata["grid_log2_hashmap_size"]  = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
+            metadata["mlp_width"]               = std::format("{}", cuda::config::MLP_WIDTH);
+            metadata["density_hidden_layers"]   = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
+            metadata["rgb_hidden_layers"]       = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
+            metadata["density_output_width"]    = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
+            metadata["direction_output_width"]  = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
+            metadata["rgb_input_width"]         = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
+            metadata["network_output_width"]    = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
+            metadata["grid_offsets"]            = grid_offsets_text;
+            metadata["scene_scale"]             = std::format("{:.9g}", this->host.scene_scale);
 
             nlohmann::json header  = nlohmann::json::object();
             header["__metadata__"] = metadata;
@@ -338,33 +331,26 @@ namespace ngp::train {
             });
 
             std::string grid_offsets_text;
-            for (std::uint32_t i = 0u; i < cuda::config::GRID_OFFSET_COUNT; ++i) {
+            for (std::uint32_t i = 0u; i < cuda::config::GRID_N_LEVELS + 1u; ++i) {
                 if (!grid_offsets_text.empty()) grid_offsets_text += ",";
                 grid_offsets_text += std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.grid_offsets[i]);
             }
 
-            nlohmann::json expected_metadata               = nlohmann::json::object();
-            expected_metadata["format"]                    = "instant-ngp-new.weights.v1";
-            expected_metadata["grid_n_levels"]             = std::format("{}", cuda::config::GRID_N_LEVELS);
-            expected_metadata["grid_features_per_level"]   = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
-            expected_metadata["grid_base_resolution"]      = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
-            expected_metadata["grid_log2_hashmap_size"]    = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
-            expected_metadata["grid_per_level_scale"]      = std::format("{}", cuda::config::GRID_PER_LEVEL_SCALE);
-            expected_metadata["grid_log2_per_level_scale"] = std::format("{}", cuda::config::GRID_LOG2_PER_LEVEL_SCALE);
-            expected_metadata["mlp_width"]                 = std::format("{}", cuda::config::MLP_WIDTH);
-            expected_metadata["density_hidden_layers"]     = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
-            expected_metadata["rgb_hidden_layers"]         = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
-            expected_metadata["density_output_width"]      = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
-            expected_metadata["direction_output_width"]    = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
-            expected_metadata["rgb_input_width"]           = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
-            expected_metadata["network_output_width"]      = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
-            expected_metadata["grid_offsets"]              = grid_offsets_text;
-            expected_metadata["density_param_count"]       = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.density_param_count);
-            expected_metadata["rgb_param_count"]           = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.rgb_param_count);
-            expected_metadata["mlp_param_count"]           = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.mlp_param_count);
-            expected_metadata["grid_param_count"]          = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.grid_param_count);
-            expected_metadata["total_param_count"]         = std::format("{}", cuda::config::NETWORK_PARAMETER_LAYOUT.total_param_count);
-            expected_metadata["scene_scale"]               = std::format("{:.9g}", this->host.scene_scale);
+            nlohmann::json expected_metadata             = nlohmann::json::object();
+            expected_metadata["format"]                  = "instant-ngp-new.weights.v2";
+            expected_metadata["grid_n_levels"]           = std::format("{}", cuda::config::GRID_N_LEVELS);
+            expected_metadata["grid_features_per_level"] = std::format("{}", cuda::config::GRID_FEATURES_PER_LEVEL);
+            expected_metadata["grid_base_resolution"]    = std::format("{}", cuda::config::GRID_BASE_RESOLUTION);
+            expected_metadata["grid_log2_hashmap_size"]  = std::format("{}", cuda::config::GRID_LOG2_HASHMAP_SIZE);
+            expected_metadata["mlp_width"]               = std::format("{}", cuda::config::MLP_WIDTH);
+            expected_metadata["density_hidden_layers"]   = std::format("{}", cuda::config::DENSITY_HIDDEN_LAYERS);
+            expected_metadata["rgb_hidden_layers"]       = std::format("{}", cuda::config::RGB_HIDDEN_LAYERS);
+            expected_metadata["density_output_width"]    = std::format("{}", cuda::config::DENSITY_OUTPUT_WIDTH);
+            expected_metadata["direction_output_width"]  = std::format("{}", cuda::config::DIRECTION_OUTPUT_WIDTH);
+            expected_metadata["rgb_input_width"]         = std::format("{}", cuda::config::RGB_INPUT_WIDTH);
+            expected_metadata["network_output_width"]    = std::format("{}", cuda::config::NETWORK_OUTPUT_WIDTH);
+            expected_metadata["grid_offsets"]            = grid_offsets_text;
+            expected_metadata["scene_scale"]             = std::format("{:.9g}", this->host.scene_scale);
 
             const std::uintmax_t file_size = std::filesystem::file_size(path);
             if (file_size < sizeof(std::uint64_t)) throw std::runtime_error{"weights file is too small for a safetensors header."};

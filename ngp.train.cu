@@ -27,66 +27,64 @@ namespace ngp::cuda {
 
     namespace {
         // Launch configuration.
-        inline constexpr std::uint32_t THREADS_PER_BLOCK = 128u;
+        constexpr std::uint32_t THREADS_PER_BLOCK = 128u;
 
         // Sampler.
-        inline constexpr std::uint32_t NERF_GRID_SIZE                         = 128u;
-        inline constexpr std::uint32_t NERF_GRID_CELLS                        = NERF_GRID_SIZE * NERF_GRID_SIZE * NERF_GRID_SIZE;
-        inline constexpr std::uint32_t NERF_STEPS                             = 1024u;
-        inline constexpr std::uint32_t MAX_RANDOM_SAMPLES_PER_RAY             = 16u;
-        inline constexpr std::uint32_t RANDOM_VALUES_PER_THREAD               = 4u;
-        inline constexpr std::uint32_t SAMPLE_COORD_FLOATS                    = 7u;
-        inline constexpr std::uint32_t RAY_FLOATS                             = 6u;
-        inline constexpr float MIN_CONE_STEPSIZE                              = 1.73205080757f / static_cast<float>(NERF_STEPS);
-        inline constexpr float NERF_MIN_OPTICAL_THICKNESS                     = 0.01f;
-        inline constexpr std::uint32_t DENSITY_GRID_WARMUP_STEPS              = 256u;
-        inline constexpr std::uint32_t DENSITY_GRID_SKIP_INTERVAL             = 16u;
-        inline constexpr std::uint32_t DENSITY_GRID_MAX_SKIP                  = 16u;
-        inline constexpr float DENSITY_GRID_DECAY                             = 0.95f;
-        inline constexpr std::uint32_t DENSITY_GRID_WARMUP_SAMPLES            = NERF_GRID_CELLS;
-        inline constexpr std::uint32_t DENSITY_GRID_STEADY_UNIFORM_SAMPLES    = NERF_GRID_CELLS / 4u;
-        inline constexpr std::uint32_t DENSITY_GRID_STEADY_NONUNIFORM_SAMPLES = NERF_GRID_CELLS / 4u;
-        inline constexpr std::uint32_t VALIDATION_TILE_RAYS                   = 4096u;
-        inline constexpr std::uint32_t VALIDATION_MAX_SAMPLES                 = VALIDATION_TILE_RAYS * NERF_STEPS;
+        constexpr std::uint32_t NERF_GRID_SIZE                         = 128u;
+        constexpr std::uint32_t NERF_GRID_CELLS                        = NERF_GRID_SIZE * NERF_GRID_SIZE * NERF_GRID_SIZE;
+        constexpr std::uint32_t NERF_STEPS                             = 1024u;
+        constexpr std::uint32_t MAX_RANDOM_SAMPLES_PER_RAY             = 16u;
+        constexpr std::uint32_t RANDOM_VALUES_PER_THREAD               = 4u;
+        constexpr std::uint32_t SAMPLE_COORD_FLOATS                    = 7u;
+        constexpr std::uint32_t RAY_FLOATS                             = 6u;
+        constexpr float MIN_CONE_STEPSIZE                              = 1.73205080757f / static_cast<float>(NERF_STEPS);
+        constexpr float NERF_MIN_OPTICAL_THICKNESS                     = 0.01f;
+        constexpr std::uint32_t DENSITY_GRID_WARMUP_STEPS              = 256u;
+        constexpr std::uint32_t DENSITY_GRID_SKIP_INTERVAL             = 16u;
+        constexpr std::uint32_t DENSITY_GRID_MAX_SKIP                  = 16u;
+        constexpr float DENSITY_GRID_DECAY                             = 0.95f;
+        constexpr std::uint32_t DENSITY_GRID_WARMUP_SAMPLES            = NERF_GRID_CELLS;
+        constexpr std::uint32_t DENSITY_GRID_STEADY_UNIFORM_SAMPLES    = NERF_GRID_CELLS / 4u;
+        constexpr std::uint32_t DENSITY_GRID_STEADY_NONUNIFORM_SAMPLES = NERF_GRID_CELLS / 4u;
+        constexpr std::uint32_t VALIDATION_TILE_RAYS                   = 4096u;
+        constexpr std::uint32_t VALIDATION_MAX_SAMPLES                 = VALIDATION_TILE_RAYS * NERF_STEPS;
         static_assert(VALIDATION_MAX_SAMPLES <= config::MAX_SAMPLES);
         static_assert(VALIDATION_MAX_SAMPLES % config::NETWORK_BATCH_GRANULARITY == 0u);
 
         // Grid encoding.
-        inline constexpr std::uint32_t GRID_FORWARD_THREADS   = 512u;
-        inline constexpr std::uint32_t GRID_BACKWARD_THREADS  = 256u;
-        inline constexpr std::uint32_t GRID_BACKWARD_FEATURES = 2u;
+        constexpr std::uint32_t GRID_FORWARD_THREADS   = 512u;
+        constexpr std::uint32_t GRID_BACKWARD_THREADS  = 256u;
+        constexpr std::uint32_t GRID_BACKWARD_FEATURES = 2u;
         static_assert(config::GRID_N_LEVELS == 8u);
 
         // Fully fused MLP.
-        inline constexpr std::uint32_t MLP_FORWARD_ITERS       = 8u;
-        inline constexpr std::uint32_t MLP_INPUT_WIDTH         = config::GRID_OUTPUT_WIDTH;
-        inline constexpr std::uint32_t MLP_OUTPUT_WIDTH        = config::NETWORK_OUTPUT_WIDTH;
-        inline constexpr std::uint32_t MLP_WIDTH_BLOCKS        = config::MLP_WIDTH / 16u;
-        inline constexpr std::uint32_t MLP_SKEW                = 8u;
-        inline constexpr std::uint32_t MLP_INPUT_SKEW          = 8u;
-        inline constexpr std::uint32_t MLP_FIRST_LAYER_PARAMS  = config::MLP_WIDTH * MLP_INPUT_WIDTH;
-        inline constexpr std::uint32_t MLP_HIDDEN_LAYER_PARAMS = config::MLP_WIDTH * config::MLP_WIDTH;
-        inline constexpr std::size_t CUBLASLT_WORKSPACE_BYTES  = static_cast<std::size_t>(64u) * 1024u * 1024u;
-        static_assert(config::RGB_INPUT_WIDTH == MLP_INPUT_WIDTH);
+        constexpr std::uint32_t MLP_FORWARD_ITERS      = 8u;
+        constexpr std::uint32_t MLP_WIDTH_BLOCKS       = config::MLP_WIDTH / 16u;
+        constexpr std::uint32_t MLP_SKEW               = 8u;
+        constexpr std::uint32_t MLP_INPUT_SKEW         = 8u;
+        constexpr std::size_t CUBLASLT_WORKSPACE_BYTES = static_cast<std::size_t>(64u) * 1024u * 1024u;
+        static_assert(config::GRID_OUTPUT_WIDTH == config::RGB_INPUT_WIDTH);
+        static_assert(config::DENSITY_OUTPUT_WIDTH == config::NETWORK_OUTPUT_WIDTH);
 
         // Training behavior.
-        inline constexpr bool SNAP_TO_PIXEL_CENTERS             = true;
-        inline constexpr float TRANSMITTANCE_EPSILON            = 1e-4f;
-        inline constexpr float OPTIMIZER_LEARNING_RATE          = 1e-2f;
-        inline constexpr float OPTIMIZER_BETA1                  = 0.9f;
-        inline constexpr float OPTIMIZER_BETA2                  = 0.99f;
-        inline constexpr float OPTIMIZER_EPSILON                = 1e-15f;
-        inline constexpr float OPTIMIZER_L2_REG                 = 1e-6f;
-        inline constexpr float OPTIMIZER_LOSS_SCALE             = 128.0f;
-        inline constexpr float DENSITY_GRADIENT_CLAMP_MIN       = -15.0f;
-        inline constexpr float DENSITY_GRADIENT_CLAMP_MAX       = 15.0f;
-        inline constexpr float DENSITY_REGULARIZATION_THRESHOLD = -10.0f;
-        inline constexpr float DENSITY_REGULARIZATION_MAX_DEPTH = 0.1f;
-        inline constexpr float DENSITY_REGULARIZATION_STRENGTH  = 1e-4f;
+        constexpr bool SNAP_TO_PIXEL_CENTERS             = true;
+        constexpr float TRANSMITTANCE_EPSILON            = 1e-4f;
+        constexpr float OPTIMIZER_LEARNING_RATE          = 1e-2f;
+        constexpr float OPTIMIZER_BETA1                  = 0.9f;
+        constexpr float OPTIMIZER_BETA2                  = 0.99f;
+        constexpr float OPTIMIZER_EPSILON                = 1e-15f;
+        constexpr float OPTIMIZER_L2_REG                 = 1e-6f;
+        constexpr float OPTIMIZER_LOSS_SCALE             = 128.0f;
+        constexpr float DENSITY_GRADIENT_CLAMP_MIN       = -15.0f;
+        constexpr float DENSITY_GRADIENT_CLAMP_MAX       = 15.0f;
+        constexpr float DENSITY_REGULARIZATION_THRESHOLD = -10.0f;
+        constexpr float DENSITY_REGULARIZATION_MAX_DEPTH = 0.1f;
+        constexpr float DENSITY_REGULARIZATION_STRENGTH  = 1e-4f;
+        constexpr std::uint64_t TRAIN_SEED               = 1337u;
 
-        inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
-        inline constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
-        inline constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
+        constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
+        constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
+        constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
 
         struct Pcg32 final {
             std::uint64_t state = PCG32_DEFAULT_STATE;
@@ -386,7 +384,7 @@ namespace ngp::cuda {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            Pcg32 rng{config::TRAIN_SEED};
+            Pcg32 rng{TRAIN_SEED};
             rng.advance(((static_cast<std::uint64_t>(density_grid_ema_step) * 2ull + static_cast<std::uint64_t>(rng_phase) + 1ull) << 32u) + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
             std::uint32_t idx = 0u;
@@ -482,7 +480,7 @@ namespace ngp::cuda {
             const std::uint32_t image = static_cast<std::uint32_t>((static_cast<std::uint64_t>(i) * frame_count) / rays_per_batch) % frame_count;
             const float* frame_camera = camera + static_cast<std::uint64_t>(image) * 12u;
 
-            Pcg32 rng{config::TRAIN_SEED};
+            Pcg32 rng{TRAIN_SEED};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(i) * MAX_RANDOM_SAMPLES_PER_RAY);
 
@@ -689,7 +687,7 @@ namespace ngp::cuda {
                 float3 rgb_ray                   = {};
 
                 const float* coord   = coords_in + static_cast<std::uint64_t>(base) * SAMPLE_COORD_FLOATS;
-                const __half* output = network_output + static_cast<std::uint64_t>(base) * MLP_OUTPUT_WIDTH;
+                const __half* output = network_output + static_cast<std::uint64_t>(base) * config::NETWORK_OUTPUT_WIDTH;
 
                 for (std::uint32_t j = 0u; j < numsteps; ++j) {
                     const float rgb_x   = sigmoid(__half2float(output[0u]));
@@ -705,7 +703,7 @@ namespace ngp::cuda {
                     if (transmittance < TRANSMITTANCE_EPSILON) break;
 
                     coord += SAMPLE_COORD_FLOATS;
-                    output += MLP_OUTPUT_WIDTH;
+                    output += config::NETWORK_OUTPUT_WIDTH;
                 }
 
                 const float4 texel       = read_premultiplied_linear_rgba(pixel_x, pixel_y, evaluation_image_index, width, height, evaluation_pixels);
@@ -754,7 +752,7 @@ namespace ngp::cuda {
             std::uint32_t base     = numsteps_in[i * 2u + 1u];
 
             const float* coord_in = coords_in + static_cast<std::uint64_t>(base) * SAMPLE_COORD_FLOATS;
-            const __half* output  = network_output + static_cast<std::uint64_t>(base) * MLP_OUTPUT_WIDTH;
+            const __half* output  = network_output + static_cast<std::uint64_t>(base) * config::NETWORK_OUTPUT_WIDTH;
 
             float transmittance              = 1.0f;
             float3 rgb_ray                   = {};
@@ -776,12 +774,12 @@ namespace ngp::cuda {
                 rgb_ray.z += weight * rgb_z;
                 transmittance *= 1.0f - alpha;
 
-                output += MLP_OUTPUT_WIDTH;
+                output += config::NETWORK_OUTPUT_WIDTH;
                 coord_in += SAMPLE_COORD_FLOATS;
             }
 
             const std::uint32_t ray_index = ray_indices_in[i];
-            Pcg32 rng{config::TRAIN_SEED};
+            Pcg32 rng{TRAIN_SEED};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(ray_index) * MAX_RANDOM_SAMPLES_PER_RAY);
 
@@ -803,7 +801,7 @@ namespace ngp::cuda {
                 rgb_ray.z += transmittance * background_color.z;
             }
 
-            output -= static_cast<std::uint64_t>(compacted_numsteps) * MLP_OUTPUT_WIDTH;
+            output -= static_cast<std::uint64_t>(compacted_numsteps) * config::NETWORK_OUTPUT_WIDTH;
             coord_in -= static_cast<std::uint64_t>(compacted_numsteps) * SAMPLE_COORD_FLOATS;
 
             std::uint32_t compacted_base        = atomicAdd(compacted_sample_counter, compacted_numsteps);
@@ -814,7 +812,7 @@ namespace ngp::cuda {
             if (compacted_numsteps == 0u) return;
 
             coords_out += static_cast<std::uint64_t>(compacted_base) * SAMPLE_COORD_FLOATS;
-            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * MLP_OUTPUT_WIDTH;
+            dloss_doutput += static_cast<std::uint64_t>(compacted_base) * config::NETWORK_OUTPUT_WIDTH;
 
             const float3 difference = {rgb_ray.x - rgb_target.x, rgb_ray.y - rgb_target.y, rgb_ray.z - rgb_target.z};
             const float3 gradient   = {2.0f * difference.x, 2.0f * difference.y, 2.0f * difference.z};
@@ -856,8 +854,8 @@ namespace ngp::cuda {
                 const float dloss_by_dmlp      = density_derivative * (dt * (gradient.x * (transmittance * rgb.x - suffix.x) + gradient.y * (transmittance * rgb.y - suffix.y) + gradient.z * (transmittance * rgb.z - suffix.z)));
                 dloss_doutput[3u]              = __float2half(scaled_loss * dloss_by_dmlp + (mlp_density > DENSITY_REGULARIZATION_THRESHOLD && depth < DENSITY_REGULARIZATION_MAX_DEPTH ? DENSITY_REGULARIZATION_STRENGTH : 0.0f));
 
-                dloss_doutput += MLP_OUTPUT_WIDTH;
-                output += MLP_OUTPUT_WIDTH;
+                dloss_doutput += config::NETWORK_OUTPUT_WIDTH;
+                output += config::NETWORK_OUTPUT_WIDTH;
             }
         }
 
@@ -871,8 +869,8 @@ namespace ngp::cuda {
         __global__ void pad_rollover_network_output_gradients_kernel(const std::uint32_t* __restrict__ input_count, __half* __restrict__ inout) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n = *input_count;
-            if (i < n * MLP_OUTPUT_WIDTH || i >= config::NETWORK_BATCH_SIZE * MLP_OUTPUT_WIDTH || n == 0u) return;
-            inout[i] = __float2half(__half2float(inout[i % (n * MLP_OUTPUT_WIDTH)]) * static_cast<float>(n) / static_cast<float>(config::NETWORK_BATCH_SIZE));
+            if (i < n * config::NETWORK_OUTPUT_WIDTH || i >= config::NETWORK_BATCH_SIZE * config::NETWORK_OUTPUT_WIDTH || n == 0u) return;
+            inout[i] = __float2half(__half2float(inout[i % (n * config::NETWORK_OUTPUT_WIDTH)]) * static_cast<float>(n) / static_cast<float>(config::NETWORK_BATCH_SIZE));
         }
 
         __global__ void encode_grid_forward_kernel(const std::uint32_t sample_count, const std::uint32_t grid_offset_0, const std::uint32_t grid_offset_1, const std::uint32_t grid_offset_2, const std::uint32_t grid_offset_3, const std::uint32_t grid_offset_4, const std::uint32_t grid_offset_5, const std::uint32_t grid_offset_6, const std::uint32_t grid_offset_7, const std::uint32_t grid_offset_8, const float* __restrict__ sample_coords, const __half* __restrict__ grid, __half* __restrict__ encoded_positions) {
@@ -884,8 +882,8 @@ namespace ngp::cuda {
             const std::uint32_t next_level_offset = level == 0u ? grid_offset_1 : level == 1u ? grid_offset_2 : level == 2u ? grid_offset_3 : level == 3u ? grid_offset_4 : level == 4u ? grid_offset_5 : level == 5u ? grid_offset_6 : level == 6u ? grid_offset_7 : grid_offset_8;
             grid += level_offset * config::GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = next_level_offset - level_offset;
-            const float scale                = exp2f(static_cast<float>(level) * config::GRID_LOG2_PER_LEVEL_SCALE) * static_cast<float>(config::GRID_BASE_RESOLUTION) - 1.0f;
-            const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
+            const std::uint32_t resolution   = config::GRID_BASE_RESOLUTION << level;
+            const float scale                = static_cast<float>(resolution) - 1.0f;
             const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
 
             float pos_x          = 0.0f;
@@ -933,8 +931,8 @@ namespace ngp::cuda {
             const std::uint32_t next_level_offset = level == 0u ? grid_offset_1 : level == 1u ? grid_offset_2 : level == 2u ? grid_offset_3 : level == 3u ? grid_offset_4 : level == 4u ? grid_offset_5 : level == 5u ? grid_offset_6 : level == 6u ? grid_offset_7 : grid_offset_8;
             grid_gradients += level_offset * config::GRID_FEATURES_PER_LEVEL;
             const std::uint32_t hashmap_size = next_level_offset - level_offset;
-            const float scale                = exp2f(static_cast<float>(level) * config::GRID_LOG2_PER_LEVEL_SCALE) * static_cast<float>(config::GRID_BASE_RESOLUTION) - 1.0f;
-            const std::uint32_t resolution   = static_cast<std::uint32_t>(ceilf(scale)) + 1u;
+            const std::uint32_t resolution   = config::GRID_BASE_RESOLUTION << level;
+            const float scale                = static_cast<float>(resolution) - 1.0f;
             const float* sample              = sample_coords + static_cast<std::uint64_t>(i) * SAMPLE_COORD_FLOATS;
 
             float pos_x          = 0.0f;
@@ -1004,7 +1002,7 @@ namespace ngp::cuda {
         __global__ void initialize_grid_params_kernel(float* __restrict__ params_full_precision, __half* __restrict__ params, __half* __restrict__ param_gradients) {
             const std::uint32_t i         = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n_threads = blockDim.x * gridDim.x;
-            Pcg32 rng{config::TRAIN_SEED};
+            Pcg32 rng{TRAIN_SEED};
             rng.advance(config::NETWORK_PARAMETER_LAYOUT.mlp_param_count + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
             for (std::uint32_t j = 0u; j < RANDOM_VALUES_PER_THREAD; ++j) {
@@ -1039,13 +1037,13 @@ namespace ngp::cuda {
             const std::uint32_t row         = (8u * li + wi * 8u * 32u) / config::MLP_WIDTH;
             const std::uint32_t weights_col = 16u * wi;
 
-            __half* __restrict__ weights_shmem        = act_shmem + 16u * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
+            __half* __restrict__ weights_shmem        = act_shmem + 16u * (config::GRID_OUTPUT_WIDTH + MLP_INPUT_SKEW);
             constexpr std::uint32_t n_elems_per_load  = MLP_WIDTH_BLOCKS * 32u * 8u;
             const std::uint32_t thread_elem_idx       = (li + wi * 32u) * 8u;
-            constexpr std::uint32_t n_weight_elements = config::MLP_WIDTH * MLP_INPUT_WIDTH;
+            constexpr std::uint32_t n_weight_elements = config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH;
 
             for (std::uint32_t idx = thread_elem_idx; idx < n_weight_elements; idx += n_elems_per_load) {
-                const std::uint32_t idx_skewed                       = idx + idx / MLP_INPUT_WIDTH * MLP_INPUT_SKEW;
+                const std::uint32_t idx_skewed                       = idx + idx / config::GRID_OUTPUT_WIDTH * MLP_INPUT_SKEW;
                 *reinterpret_cast<int4*>(&weights_shmem[idx_skewed]) = *reinterpret_cast<const int4*>(&weights_this_layer[idx]);
             }
 
@@ -1053,9 +1051,9 @@ namespace ngp::cuda {
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
                 nvcuda::wmma::fill_fragment(result_frag[l], 0.0f);
-                for (std::uint32_t i = 0u; i < MLP_INPUT_WIDTH / 16u; ++i) {
+                for (std::uint32_t i = 0u; i < config::GRID_OUTPUT_WIDTH / 16u; ++i) {
                     nvcuda::wmma::load_matrix_sync(act_frag, input_threadblock + 16u * i * batch_size + 16u * l, batch_size);
-                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (MLP_INPUT_WIDTH + MLP_INPUT_SKEW), MLP_INPUT_WIDTH + MLP_INPUT_SKEW);
+                    nvcuda::wmma::load_matrix_sync(weights_frag, weights_shmem + 16u * i + weights_col * (config::GRID_OUTPUT_WIDTH + MLP_INPUT_SKEW), config::GRID_OUTPUT_WIDTH + MLP_INPUT_SKEW);
                     nvcuda::wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
                 }
                 relu_fragment(result_frag[l]);
@@ -1138,14 +1136,16 @@ namespace ngp::cuda {
 
         __global__ void mlp_forward_64_relu_kernel(const std::uint32_t batch_size, const __half* __restrict__ input, const __half* __restrict__ weights, __half* __restrict__ hidden, __half* __restrict__ output, const bool output_row_major, const std::uint32_t hidden_layers) {
             extern __shared__ __half shmem[];
-            const std::uint32_t elem_idx = 16u * blockIdx.x * MLP_FORWARD_ITERS;
+            const std::uint32_t elem_idx                = 16u * blockIdx.x * MLP_FORWARD_ITERS;
+            constexpr std::uint32_t first_layer_params  = config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH;
+            constexpr std::uint32_t hidden_layer_params = config::MLP_WIDTH * config::MLP_WIDTH;
 
             mlp_input_layer_forward(shmem, input + elem_idx, weights, hidden == nullptr ? nullptr : hidden + elem_idx * config::MLP_WIDTH, batch_size);
-            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + MLP_FIRST_LAYER_PARAMS, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx * config::MLP_WIDTH);
+            if (hidden_layers == 2u) mlp_hidden_layer_forward(shmem, weights + first_layer_params, hidden == nullptr ? nullptr : hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx * config::MLP_WIDTH);
 
-            const __half* last_weights = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
+            const __half* last_weights = weights + first_layer_params + (hidden_layers - 1u) * hidden_layer_params;
             if (output_row_major)
-                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * MLP_OUTPUT_WIDTH, MLP_OUTPUT_WIDTH, nvcuda::wmma::mem_row_major);
+                mlp_last_layer_forward(shmem, last_weights, output + elem_idx * config::NETWORK_OUTPUT_WIDTH, config::NETWORK_OUTPUT_WIDTH, nvcuda::wmma::mem_row_major);
             else
                 mlp_last_layer_forward(shmem, last_weights, output + elem_idx, batch_size, nvcuda::wmma::mem_col_major);
         }
@@ -1198,9 +1198,11 @@ namespace ngp::cuda {
             nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::row_major> weights_frag;
             nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, __half> result_frag[MLP_FORWARD_ITERS];
 
-            const std::uint32_t weights_col = 16u * wi;
-            const __half* last_weights      = weights + MLP_FIRST_LAYER_PARAMS + (hidden_layers - 1u) * MLP_HIDDEN_LAYER_PARAMS;
-            const __half* forward_last      = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * config::MLP_WIDTH * batch_size;
+            const std::uint32_t weights_col             = 16u * wi;
+            constexpr std::uint32_t first_layer_params  = config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH;
+            constexpr std::uint32_t hidden_layer_params = config::MLP_WIDTH * config::MLP_WIDTH;
+            const __half* last_weights                  = weights + first_layer_params + (hidden_layers - 1u) * hidden_layer_params;
+            const __half* forward_last                  = forward_hidden + static_cast<std::uint64_t>(hidden_layers - 1u) * config::MLP_WIDTH * batch_size;
             nvcuda::wmma::load_matrix_sync(weights_frag, last_weights + weights_col, config::MLP_WIDTH);
 
             for (std::uint32_t l = 0u; l < MLP_FORWARD_ITERS; ++l) {
@@ -1230,13 +1232,13 @@ namespace ngp::cuda {
 
             for (std::uint32_t i = 0u; i < MLP_FORWARD_ITERS; ++i) *reinterpret_cast<int4*>(&backward_hidden[lane_offset + (row + elem_idx_base + i * 16u) * config::MLP_WIDTH]) = *reinterpret_cast<int4*>(&act_shmem[lane_offset + (row + 16u * i) * (config::MLP_WIDTH + MLP_SKEW)]);
 
-            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + MLP_FIRST_LAYER_PARAMS, forward_hidden + elem_idx_base * config::MLP_WIDTH, backward_hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx_base * config::MLP_WIDTH);
+            if (hidden_layers == 2u) mlp_hidden_layer_backward(act_shmem, weights + first_layer_params, forward_hidden + elem_idx_base * config::MLP_WIDTH, backward_hidden + static_cast<std::uint64_t>(config::MLP_WIDTH) * batch_size + elem_idx_base * config::MLP_WIDTH);
         }
 
         __global__ void extract_density_kernel(const std::uint32_t batch_size, const __half* __restrict__ density_output, __half* __restrict__ network_output) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            network_output[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u] = density_output[i];
+            network_output[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 3u] = density_output[i];
         }
 
         __global__ void extract_rgb_gradients_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ rgb_output_gradients) {
@@ -1244,16 +1246,16 @@ namespace ngp::cuda {
             if (i >= batch_size) return;
 
             const __half zero = 0.0f;
-            for (std::uint32_t j = 0u; j < MLP_OUTPUT_WIDTH; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + j] = zero;
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 0u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 1u];
-            rgb_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 2u];
+            for (std::uint32_t j = 0u; j < config::NETWORK_OUTPUT_WIDTH; ++j) rgb_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + j] = zero;
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 0u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 0u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 1u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 1u];
+            rgb_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 2u] = network_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 2u];
         }
 
         __global__ void add_density_gradient_kernel(const std::uint32_t batch_size, const __half* __restrict__ network_output_gradients, __half* __restrict__ density_output_gradients) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= batch_size) return;
-            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * MLP_OUTPUT_WIDTH + 3u];
+            density_output_gradients[i] = density_output_gradients[i] + network_output_gradients[static_cast<std::uint64_t>(i) * config::NETWORK_OUTPUT_WIDTH + 3u];
         }
 
         __global__ void adam_step_kernel(float* __restrict__ params_full_precision, __half* __restrict__ params, const __half* __restrict__ gradients, float* __restrict__ first_moments, float* __restrict__ second_moments, std::uint32_t* __restrict__ param_steps) {
@@ -1362,13 +1364,13 @@ namespace ngp::cuda {
         if (const cublasStatus_t status = cublasLtCreate(&handle); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtCreate failed: "} + cublasGetStatusString(status)};
         out_cublaslt_handle = reinterpret_cast<void*>(handle);
 
-        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density network input failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(MLP_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb network input failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * config::MAX_SAMPLES * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc network output failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc network output gradients failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(MLP_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb output gradients failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb input gradients failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(MLP_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density input gradients failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_density_input, static_cast<std::size_t>(config::GRID_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density network input failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input, static_cast<std::size_t>(config::RGB_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb network input failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_network_output, static_cast<std::size_t>(config::NETWORK_OUTPUT_WIDTH) * config::MAX_SAMPLES * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc network output failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_network_output_gradients, static_cast<std::size_t>(config::NETWORK_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc network output gradients failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_rgb_output_gradients, static_cast<std::size_t>(config::NETWORK_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb output gradients failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_rgb_input_gradients, static_cast<std::size_t>(config::RGB_INPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb input gradients failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_density_input_gradients, static_cast<std::size_t>(config::GRID_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density input gradients failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_density_forward_hidden, static_cast<std::size_t>(config::DENSITY_HIDDEN_LAYERS) * config::MLP_WIDTH * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density forward hidden failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_rgb_forward_hidden, static_cast<std::size_t>(config::RGB_HIDDEN_LAYERS) * config::MLP_WIDTH * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc rgb forward hidden failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_density_backward_hidden, static_cast<std::size_t>(config::DENSITY_HIDDEN_LAYERS) * config::MLP_WIDTH * config::NETWORK_BATCH_SIZE * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density backward hidden failed: "} + cudaGetErrorString(status)};
@@ -1422,16 +1424,16 @@ namespace ngp::cuda {
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"invalid mlp parameter initialization input."};
 
         std::vector host_params(config::NETWORK_PARAMETER_LAYOUT.mlp_param_count, 0.0f);
-        Pcg32 rng{config::TRAIN_SEED};
+        Pcg32 rng{TRAIN_SEED};
 
         {
-            const float scale = std::sqrt(6.0f / static_cast<float>(config::MLP_WIDTH + MLP_INPUT_WIDTH));
-            for (std::uint32_t i = 0u; i < config::MLP_WIDTH * MLP_INPUT_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.density_input_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
+            const float scale = std::sqrt(6.0f / static_cast<float>(config::MLP_WIDTH + config::GRID_OUTPUT_WIDTH));
+            for (std::uint32_t i = 0u; i < config::MLP_WIDTH * config::GRID_OUTPUT_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.density_input_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
         }
 
         {
-            const float scale = std::sqrt(6.0f / static_cast<float>(MLP_OUTPUT_WIDTH + config::MLP_WIDTH));
-            for (std::uint32_t i = 0u; i < MLP_OUTPUT_WIDTH * config::MLP_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
+            const float scale = std::sqrt(6.0f / static_cast<float>(config::DENSITY_OUTPUT_WIDTH + config::MLP_WIDTH));
+            for (std::uint32_t i = 0u; i < config::DENSITY_OUTPUT_WIDTH * config::MLP_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
         }
 
         {
@@ -1445,8 +1447,8 @@ namespace ngp::cuda {
         }
 
         {
-            const float scale = std::sqrt(6.0f / static_cast<float>(MLP_OUTPUT_WIDTH + config::MLP_WIDTH));
-            for (std::uint32_t i = 0u; i < MLP_OUTPUT_WIDTH * config::MLP_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.rgb_output_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
+            const float scale = std::sqrt(6.0f / static_cast<float>(config::NETWORK_OUTPUT_WIDTH + config::MLP_WIDTH));
+            for (std::uint32_t i = 0u; i < config::NETWORK_OUTPUT_WIDTH * config::MLP_WIDTH; ++i) host_params[config::NETWORK_PARAMETER_LAYOUT.rgb_output_weight_offset + i] = rng.next_float() * 2.0f * scale - scale;
         }
 
         if (const cudaError_t status = cudaMemcpy(params_full_precision, host_params.data(), host_params.size() * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy mlp full precision params failed: "} + cudaGetErrorString(status)};
@@ -1506,17 +1508,17 @@ namespace ngp::cuda {
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"encode_grid_forward_kernel inference failed: "} + cudaGetErrorString(status)};
 
             const std::uint32_t linear_blocks = (chunk + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-            encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, chunk_sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * chunk);
+            encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, chunk_sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::DENSITY_OUTPUT_WIDTH) * chunk);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"encode_spherical_harmonics_kernel failed: "} + cudaGetErrorString(status)};
 
             const dim3 blocks{chunk / (16u * MLP_FORWARD_ITERS), 1u, 1u};
             mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(density_input), reinterpret_cast<const __half*>(params + config::NETWORK_PARAMETER_LAYOUT.density_param_offset), nullptr, reinterpret_cast<__half*>(rgb_input), false, config::DENSITY_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"density mlp inference failed: "} + cudaGetErrorString(status)};
 
-            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH, true, config::RGB_HIDDEN_LAYERS);
+            mlp_forward_64_relu_kernel<<<blocks, threads, forward_shmem>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<const __half*>(params + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset), nullptr, reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * config::NETWORK_OUTPUT_WIDTH, true, config::RGB_HIDDEN_LAYERS);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"rgb mlp inference failed: "} + cudaGetErrorString(status)};
 
-            extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * MLP_OUTPUT_WIDTH);
+            extract_density_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(chunk, reinterpret_cast<const __half*>(rgb_input), reinterpret_cast<__half*>(network_output) + static_cast<std::uint64_t>(offset) * config::NETWORK_OUTPUT_WIDTH);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"extract_density_kernel inference failed: "} + cudaGetErrorString(status)};
         }
     }
@@ -1663,7 +1665,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"encode_grid_forward_kernel failed: "} + cudaGetErrorString(status)};
 
         constexpr std::uint32_t linear_blocks = (config::NETWORK_BATCH_SIZE + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
-        encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(config::NETWORK_BATCH_SIZE, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(MLP_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE);
+        encode_spherical_harmonics_kernel<<<linear_blocks, THREADS_PER_BLOCK>>>(config::NETWORK_BATCH_SIZE, sample_coords, reinterpret_cast<__half*>(rgb_input) + static_cast<std::uint64_t>(config::DENSITY_OUTPUT_WIDTH) * config::NETWORK_BATCH_SIZE);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"encode_spherical_harmonics_kernel failed: "} + cudaGetErrorString(status)};
 
         constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
@@ -1697,7 +1699,7 @@ namespace ngp::cuda {
         constexpr dim3 blocks{config::NETWORK_BATCH_SIZE / (16u * MLP_FORWARD_ITERS), 1u, 1u};
 
         if (const cudaError_t status = cudaFuncSetAttribute(mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, backward_shmem); status != cudaSuccess) throw std::runtime_error{std::string{"cudaFuncSetAttribute rgb mlp backward failed: "} + cudaGetErrorString(status)};
-        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(config::NETWORK_BATCH_SIZE, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), MLP_OUTPUT_WIDTH, config::RGB_HIDDEN_LAYERS);
+        mlp_backward_hidden_64_relu_kernel<nvcuda::wmma::row_major><<<blocks, threads, backward_shmem>>>(config::NETWORK_BATCH_SIZE, reinterpret_cast<const __half*>(rgb_output_gradients), reinterpret_cast<const __half*>(params + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset), reinterpret_cast<const __half*>(rgb_forward_hidden), reinterpret_cast<__half*>(rgb_backward_hidden), config::NETWORK_OUTPUT_WIDTH, config::RGB_HIDDEN_LAYERS);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"rgb mlp backward hidden failed: "} + cudaGetErrorString(status)};
 
         {
@@ -1712,9 +1714,9 @@ namespace ngp::cuda {
             int returned_algo_count                   = 0;
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate rgb last weight gradients failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, MLP_OUTPUT_WIDTH, batch, MLP_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb last gradients A failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::NETWORK_OUTPUT_WIDTH, batch, config::NETWORK_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb last gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb last gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb last gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::NETWORK_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb last gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb last gradients D failed: "} + cublasGetStatusString(status)};
@@ -1722,7 +1724,7 @@ namespace ngp::cuda {
             if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulPreferenceSetAttribute rgb last weight gradients failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulAlgoGetHeuristic rgb last weight gradients failed: "} + cublasGetStatusString(status)};
             if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{"cublasLt rgb last weight gradients returned no supported algorithm."};
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_output_gradients), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset + MLP_FIRST_LAYER_PARAMS + (config::RGB_HIDDEN_LAYERS - 1u) * MLP_HIDDEN_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_output_gradients), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden) + (config::RGB_HIDDEN_LAYERS - 1u) * hidden_layer_stride, lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_output_weight_offset), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_output_weight_offset), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
                 throw std::runtime_error{std::string{"cublasLtMatmul rgb last weight gradients failed: "} + cublasGetStatusString(status)};
             }
         }
@@ -1749,7 +1751,7 @@ namespace ngp::cuda {
             if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulPreferenceSetAttribute rgb hidden weight gradients failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulAlgoGetHeuristic rgb hidden weight gradients failed: "} + cublasGetStatusString(status)};
             if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{"cublasLt rgb hidden weight gradients returned no supported algorithm."};
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_backward_hidden), lt.a_desc, reinterpret_cast<const __half*>(rgb_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_hidden_weight_offset), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.rgb_hidden_weight_offset), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
                 throw std::runtime_error{std::string{"cublasLtMatmul rgb hidden weight gradients failed: "} + cublasGetStatusString(status)};
             }
         }
@@ -1767,8 +1769,8 @@ namespace ngp::cuda {
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate rgb first weight gradients failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb first gradients A failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb first gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, MLP_INPUT_WIDTH, MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb first gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::RGB_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb first gradients B failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, config::RGB_INPUT_WIDTH, config::RGB_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb first gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb first gradients D failed: "} + cublasGetStatusString(status)};
@@ -1793,9 +1795,9 @@ namespace ngp::cuda {
             int returned_algo_count                   = 0;
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate rgb input gradients failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, MLP_INPUT_WIDTH, config::MLP_WIDTH, MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb input gradients A failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::RGB_INPUT_WIDTH, config::MLP_WIDTH, config::RGB_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb input gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb input gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb input gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::RGB_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate rgb input gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute rgb input gradients D failed: "} + cublasGetStatusString(status)};
@@ -1827,9 +1829,9 @@ namespace ngp::cuda {
             int returned_algo_count                   = 0;
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate density last weight gradients failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, MLP_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density last gradients A failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::DENSITY_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density last gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density last gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, MLP_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density last gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::DENSITY_OUTPUT_WIDTH, config::MLP_WIDTH, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density last gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density last gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density last gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density last gradients D failed: "} + cublasGetStatusString(status)};
@@ -1837,7 +1839,7 @@ namespace ngp::cuda {
             if (const cublasStatus_t status = cublasLtMatmulPreferenceSetAttribute(lt.preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &max_workspace_bytes, sizeof(max_workspace_bytes)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulPreferenceSetAttribute density last weight gradients failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatmulAlgoGetHeuristic(cublaslt, lt.operation_desc, lt.a_desc, lt.b_desc, lt.d_desc, lt.d_desc, lt.preference, 1, &heuristic, &returned_algo_count); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulAlgoGetHeuristic density last weight gradients failed: "} + cublasGetStatusString(status)};
             if (returned_algo_count == 0 || heuristic.state != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{"cublasLt density last weight gradients returned no supported algorithm."};
-            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_input_gradients), lt.a_desc, reinterpret_cast<const __half*>(density_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.density_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.density_param_offset + MLP_FIRST_LAYER_PARAMS), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
+            if (const cublasStatus_t status = cublasLtMatmul(cublaslt, lt.operation_desc, &alpha, reinterpret_cast<const __half*>(rgb_input_gradients), lt.a_desc, reinterpret_cast<const __half*>(density_forward_hidden), lt.b_desc, &beta, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset), lt.d_desc, reinterpret_cast<__half*>(gradients + config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset), lt.d_desc, &heuristic.algo, cublaslt_workspace, CUBLASLT_WORKSPACE_BYTES, nullptr); status != CUBLAS_STATUS_SUCCESS) {
                 throw std::runtime_error{std::string{"cublasLtMatmul density last weight gradients failed: "} + cublasGetStatusString(status)};
             }
         }
@@ -1855,8 +1857,8 @@ namespace ngp::cuda {
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate density first weight gradients failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density first gradients A failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, MLP_INPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density first gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, MLP_INPUT_WIDTH, MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density first gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, batch, config::GRID_OUTPUT_WIDTH, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density first gradients B failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::MLP_WIDTH, config::GRID_OUTPUT_WIDTH, config::GRID_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density first gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density first gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density first gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density first gradients D failed: "} + cublasGetStatusString(status)};
@@ -1879,9 +1881,9 @@ namespace ngp::cuda {
             int returned_algo_count                   = 0;
 
             if (const cublasStatus_t status = cublasLtMatmulDescCreate(&lt.operation_desc, CUBLAS_COMPUTE_16F, CUDA_R_16F); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatmulDescCreate density input gradients failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, MLP_INPUT_WIDTH, config::MLP_WIDTH, MLP_INPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density input gradients A failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.a_desc, CUDA_R_16F, config::GRID_OUTPUT_WIDTH, config::MLP_WIDTH, config::GRID_OUTPUT_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density input gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.b_desc, CUDA_R_16F, config::MLP_WIDTH, batch, config::MLP_WIDTH); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density input gradients B failed: "} + cublasGetStatusString(status)};
-            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, MLP_INPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density input gradients D failed: "} + cublasGetStatusString(status)};
+            if (const cublasStatus_t status = cublasLtMatrixLayoutCreate(&lt.d_desc, CUDA_R_16F, config::GRID_OUTPUT_WIDTH, batch, batch); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutCreate density input gradients D failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.a_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &a_order, sizeof(a_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density input gradients A failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.b_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &b_order, sizeof(b_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density input gradients B failed: "} + cublasGetStatusString(status)};
             if (const cublasStatus_t status = cublasLtMatrixLayoutSetAttribute(lt.d_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &d_order, sizeof(d_order)); status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error{std::string{"cublasLtMatrixLayoutSetAttribute density input gradients D failed: "} + cublasGetStatusString(status)};
@@ -1944,7 +1946,7 @@ namespace ngp::cuda {
     void pad_compacted_training_batch(const std::uint32_t* const compacted_sample_counter, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients) {
         if (compacted_sample_counter == nullptr || compacted_sample_coords == nullptr || network_output_gradients == nullptr) throw std::runtime_error{"rollover buffers are null."};
 
-        constexpr std::uint32_t gradient_elements = config::NETWORK_BATCH_SIZE * MLP_OUTPUT_WIDTH;
+        constexpr std::uint32_t gradient_elements = config::NETWORK_BATCH_SIZE * config::NETWORK_OUTPUT_WIDTH;
         pad_rollover_network_output_gradients_kernel<<<(gradient_elements + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(compacted_sample_counter, reinterpret_cast<__half*>(network_output_gradients));
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"pad_rollover_network_output_gradients_kernel failed: "} + cudaGetErrorString(status)};
 
