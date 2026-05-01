@@ -80,17 +80,6 @@ namespace ngp::train {
             float test_principal_y               = 0.0f;
             float scene_scale                    = 0.0f;
 
-            // Stable after construction: network parameter layout.
-            std::array<std::uint32_t, cuda::config::GRID_OFFSET_COUNT> grid_offsets = {};
-            std::uint32_t density_param_offset                                           = 0u;
-            std::uint32_t density_param_count                                            = 0u;
-            std::uint32_t rgb_param_offset                                               = 0u;
-            std::uint32_t rgb_param_count                                                = 0u;
-            std::uint32_t mlp_param_count                                                = 0u;
-            std::uint32_t grid_param_offset                                              = 0u;
-            std::uint32_t grid_param_count                                               = 0u;
-            std::uint32_t total_param_count                                              = 0u;
-
             // Mutated by train(): step, adaptive batch shape, and latest counters.
             std::uint32_t current_step                            = 0u;
             std::uint32_t rays_per_batch                          = cuda::config::INITIAL_RAYS_PER_BATCH;

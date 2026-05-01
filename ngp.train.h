@@ -1,7 +1,9 @@
 #ifndef NGP_TRAIN_H
 #define NGP_TRAIN_H
 
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #if defined(__CUDACC__)
@@ -30,6 +32,74 @@ namespace ngp::cuda::config {
     inline constexpr std::uint32_t RGB_INPUT_WIDTH        = DENSITY_OUTPUT_WIDTH + DIRECTION_OUTPUT_WIDTH;
     inline constexpr std::uint32_t NETWORK_OUTPUT_WIDTH   = 16u;
 
+    struct NetworkParameterLayout final {
+        std::array<std::uint32_t, GRID_OFFSET_COUNT> grid_offsets = {};
+        std::uint32_t density_param_offset                        = 0u;
+        std::uint32_t density_input_weight_offset                 = 0u;
+        std::uint32_t density_output_weight_offset                = 0u;
+        std::uint32_t density_param_count                         = 0u;
+        std::uint32_t rgb_param_offset                            = 0u;
+        std::uint32_t rgb_input_weight_offset                     = 0u;
+        std::uint32_t rgb_hidden_weight_offset                    = 0u;
+        std::uint32_t rgb_output_weight_offset                    = 0u;
+        std::uint32_t rgb_param_count                             = 0u;
+        std::uint32_t mlp_param_count                             = 0u;
+        std::uint32_t grid_param_offset                           = 0u;
+        std::uint32_t grid_param_count                            = 0u;
+        std::uint32_t total_param_count                           = 0u;
+    };
+
+    constexpr std::array<std::uint32_t, GRID_OFFSET_COUNT> make_grid_offsets() {
+        std::array<std::uint32_t, GRID_OFFSET_COUNT> offsets = {};
+        std::uint32_t cursor                                 = 0u;
+        constexpr std::uint32_t hashmap_size                 = 1u << GRID_LOG2_HASHMAP_SIZE;
+        constexpr std::uint64_t max_params                   = std::numeric_limits<std::uint32_t>::max() / 2ull;
+
+        for (std::uint32_t level = 0u; level < GRID_N_LEVELS; ++level) {
+            const std::uint32_t resolution = GRID_BASE_RESOLUTION << level;
+            const std::uint64_t dense      = static_cast<std::uint64_t>(resolution) * resolution * resolution;
+            std::uint64_t params           = dense > max_params ? max_params : dense;
+            params                         = ((params + 7u) / 8u) * 8u;
+            if (params > hashmap_size) params = hashmap_size;
+            offsets[level] = cursor;
+            cursor += static_cast<std::uint32_t>(params);
+        }
+
+        offsets[GRID_N_LEVELS] = cursor;
+        return offsets;
+    }
+
+    constexpr NetworkParameterLayout make_network_parameter_layout() {
+        NetworkParameterLayout layout = {};
+        layout.grid_offsets           = make_grid_offsets();
+
+        std::uint32_t cursor               = 0u;
+        layout.density_param_offset        = cursor;
+        layout.density_input_weight_offset = cursor;
+        cursor += MLP_WIDTH * GRID_OUTPUT_WIDTH;
+        layout.density_output_weight_offset = cursor;
+        cursor += DENSITY_OUTPUT_WIDTH * MLP_WIDTH;
+        layout.density_param_count = cursor - layout.density_param_offset;
+
+        layout.rgb_param_offset        = cursor;
+        layout.rgb_input_weight_offset = cursor;
+        cursor += MLP_WIDTH * RGB_INPUT_WIDTH;
+        layout.rgb_hidden_weight_offset = cursor;
+        cursor += MLP_WIDTH * MLP_WIDTH;
+        layout.rgb_output_weight_offset = cursor;
+        cursor += NETWORK_OUTPUT_WIDTH * MLP_WIDTH;
+        layout.rgb_param_count = cursor - layout.rgb_param_offset;
+
+        layout.mlp_param_count   = cursor;
+        layout.grid_param_offset = cursor;
+        layout.grid_param_count  = layout.grid_offsets[GRID_N_LEVELS] * GRID_FEATURES_PER_LEVEL;
+        cursor += layout.grid_param_count;
+        layout.total_param_count = cursor;
+        return layout;
+    }
+
+    inline constexpr NetworkParameterLayout NETWORK_PARAMETER_LAYOUT = make_network_parameter_layout();
+
     // Training batch shape.
     inline constexpr std::uint32_t NETWORK_BATCH_SIZE               = 1u << 18u;
     inline constexpr std::uint32_t NETWORK_BATCH_GRANULARITY        = 16u * 8u;
@@ -43,8 +113,16 @@ namespace ngp::cuda::config {
     static_assert(GRID_OUTPUT_WIDTH % GRID_FEATURES_PER_LEVEL == 0u);
     static_assert(GRID_OUTPUT_WIDTH == RGB_INPUT_WIDTH);
     static_assert(GRID_PER_LEVEL_SCALE == 2.0f);
+    static_assert(GRID_LOG2_PER_LEVEL_SCALE == 1.0f);
     static_assert(DENSITY_HIDDEN_LAYERS == 1u, "The handwritten density MLP path currently supports exactly one hidden layer.");
     static_assert(RGB_HIDDEN_LAYERS == 2u, "The handwritten RGB MLP path currently supports exactly two hidden layers.");
+    static_assert(NETWORK_PARAMETER_LAYOUT.grid_offsets[0u] == 0u);
+    static_assert(NETWORK_PARAMETER_LAYOUT.density_param_offset == 0u);
+    static_assert(NETWORK_PARAMETER_LAYOUT.rgb_param_offset == NETWORK_PARAMETER_LAYOUT.density_param_offset + NETWORK_PARAMETER_LAYOUT.density_param_count);
+    static_assert(NETWORK_PARAMETER_LAYOUT.mlp_param_count == NETWORK_PARAMETER_LAYOUT.rgb_param_offset + NETWORK_PARAMETER_LAYOUT.rgb_param_count);
+    static_assert(NETWORK_PARAMETER_LAYOUT.grid_param_offset == NETWORK_PARAMETER_LAYOUT.mlp_param_count);
+    static_assert(NETWORK_PARAMETER_LAYOUT.grid_param_count == NETWORK_PARAMETER_LAYOUT.grid_offsets[GRID_N_LEVELS] * GRID_FEATURES_PER_LEVEL);
+    static_assert(NETWORK_PARAMETER_LAYOUT.total_param_count == NETWORK_PARAMETER_LAYOUT.grid_param_offset + NETWORK_PARAMETER_LAYOUT.grid_param_count);
 } // namespace ngp::cuda::config
 
 namespace ngp::cuda {
@@ -131,7 +209,7 @@ namespace ngp::cuda {
     void allocate_sampler_buffers(float*& out_sample_coords, float*& out_rays, std::uint32_t*& out_ray_indices, std::uint32_t*& out_numsteps, std::uint32_t*& out_ray_counter, std::uint32_t*& out_sample_counter, std::uint8_t*& out_occupancy);
     void sample_training_batch(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_x, float focal_y, float principal_x, float principal_y, std::uint32_t current_step, std::uint32_t rays_per_batch, std::uint32_t sample_limit, const std::uint8_t* occupancy, float* sample_coords, float* rays, std::uint32_t* ray_indices, std::uint32_t* numsteps, std::uint32_t* ray_counter, std::uint32_t* sample_counter);
     void allocate_density_grid_buffers(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_density_grid_occupied_count);
-    void update_density_grid(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_x, float focal_y, float principal_x, float principal_y, std::uint32_t current_step, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t grid_param_offset, float* sample_coords, std::uint16_t* density_input, std::uint16_t* density_grid_output, float* density_grid_values, float* density_grid_scratch, std::uint32_t* density_grid_indices, float* density_grid_mean, std::uint32_t* density_grid_occupied_count, std::uint8_t* occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms);
+    void update_density_grid(const float* camera, std::uint32_t frame_count, std::uint32_t width, std::uint32_t height, float focal_x, float focal_y, float principal_x, float principal_y, std::uint32_t current_step, const std::uint16_t* params, float* sample_coords, std::uint16_t* density_input, std::uint16_t* density_grid_output, float* density_grid_values, float* density_grid_scratch, std::uint32_t* density_grid_indices, float* density_grid_mean, std::uint32_t* density_grid_occupied_count, std::uint8_t* occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms);
 
     // Loss and compaction.
     void allocate_training_loss_buffers(std::uint32_t*& out_compacted_sample_counter, float*& out_compacted_sample_coords, float*& out_loss_values);
@@ -141,24 +219,24 @@ namespace ngp::cuda {
     // Evaluation.
     void allocate_evaluation_buffers(std::uint32_t*& out_evaluation_numsteps, std::uint32_t*& out_evaluation_sample_counter, std::uint32_t*& out_evaluation_overflow_counter, double*& out_evaluation_loss_sum);
     void allocate_test_comparison_buffer(std::uint32_t width, std::uint32_t height, std::uint8_t*& out_test_comparison_pixels);
-    void run_evaluation(const std::uint8_t* evaluation_pixels, const float* evaluation_camera, std::uint32_t evaluation_frame_count, std::uint32_t evaluation_image_begin, std::uint32_t evaluation_image_count, std::uint32_t width, std::uint32_t height, float focal_x, float focal_y, float principal_x, float principal_y, const std::uint8_t* occupancy, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, float* sample_coords, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output, std::uint32_t* evaluation_numsteps, std::uint32_t* evaluation_sample_counter, std::uint32_t* evaluation_overflow_counter, double* evaluation_loss_sum, std::uint8_t* test_comparison_pixels, std::uint8_t* host_test_comparison_pixels, double& out_loss_sum);
+    void run_evaluation(const std::uint8_t* evaluation_pixels, const float* evaluation_camera, std::uint32_t evaluation_frame_count, std::uint32_t evaluation_image_begin, std::uint32_t evaluation_image_count, std::uint32_t width, std::uint32_t height, float focal_x, float focal_y, float principal_x, float principal_y, const std::uint8_t* occupancy, const std::uint16_t* params, float* sample_coords, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output, std::uint32_t* evaluation_numsteps, std::uint32_t* evaluation_sample_counter, std::uint32_t* evaluation_overflow_counter, double* evaluation_loss_sum, std::uint8_t* test_comparison_pixels, std::uint8_t* host_test_comparison_pixels, double& out_loss_sum);
 
     // Network buffers and parameters.
     void allocate_network_buffers(std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden, std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace);
-    void allocate_trainable_parameter_buffers(std::uint32_t param_count, float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients);
-    void initialize_mlp_parameters(std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
-    void initialize_grid_parameters(std::uint32_t param_count, std::uint64_t rng_offset, float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
-    void download_trainable_parameters(std::uint32_t param_count, const float* params_full_precision, float* out_params_full_precision);
-    void upload_trainable_parameters(std::uint32_t param_count, const float* params_full_precision, float* out_params_full_precision, std::uint16_t* out_params, std::uint16_t* out_param_gradients, float* optimizer_first_moments, float* optimizer_second_moments, std::uint32_t* optimizer_param_steps);
+    void allocate_trainable_parameter_buffers(float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients);
+    void initialize_mlp_parameters(float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
+    void initialize_grid_parameters(float* params_full_precision, std::uint16_t* params, std::uint16_t* param_gradients);
+    void download_trainable_parameters(const float* params_full_precision, float* out_params_full_precision);
+    void upload_trainable_parameters(const float* params_full_precision, float* out_params_full_precision, std::uint16_t* out_params, std::uint16_t* out_param_gradients, float* optimizer_first_moments, float* optimizer_second_moments, std::uint32_t* optimizer_param_steps);
 
     // Network execution.
-    void evaluate_network(std::uint32_t sample_count, const float* sample_coords, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output);
-    void forward_network(const float* sample_coords, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* density_forward_hidden, std::uint16_t* rgb_forward_hidden, std::uint16_t* network_output);
-    void backward_network(const float* sample_coords, const std::uint32_t* grid_offsets, const std::uint16_t* params, std::uint16_t* gradients, std::uint32_t density_param_offset, std::uint32_t rgb_param_offset, std::uint32_t grid_param_offset, const std::uint16_t* density_input, const std::uint16_t* rgb_input, const std::uint16_t* density_forward_hidden, const std::uint16_t* rgb_forward_hidden, const std::uint16_t* network_output, const std::uint16_t* network_output_gradients, std::uint16_t* rgb_output_gradients, std::uint16_t* rgb_input_gradients, std::uint16_t* density_input_gradients, std::uint16_t* density_backward_hidden, std::uint16_t* rgb_backward_hidden, void* cublaslt_handle, std::uint8_t* cublaslt_workspace);
+    void evaluate_network(std::uint32_t sample_count, const float* sample_coords, const std::uint16_t* params, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output);
+    void forward_network(const float* sample_coords, const std::uint16_t* params, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* density_forward_hidden, std::uint16_t* rgb_forward_hidden, std::uint16_t* network_output);
+    void backward_network(const float* sample_coords, const std::uint16_t* params, std::uint16_t* gradients, const std::uint16_t* density_input, const std::uint16_t* rgb_input, const std::uint16_t* density_forward_hidden, const std::uint16_t* rgb_forward_hidden, const std::uint16_t* network_output, const std::uint16_t* network_output_gradients, std::uint16_t* rgb_output_gradients, std::uint16_t* rgb_input_gradients, std::uint16_t* density_input_gradients, std::uint16_t* density_backward_hidden, std::uint16_t* rgb_backward_hidden, void* cublaslt_handle, std::uint8_t* cublaslt_workspace);
 
     // Optimizer.
-    void allocate_adam_state(std::uint32_t param_count, float*& out_first_moments, float*& out_second_moments, std::uint32_t*& out_param_steps);
-    void step_optimizer(std::uint32_t param_count, std::uint32_t mlp_param_count, float* params_full_precision, std::uint16_t* params, const std::uint16_t* gradients, float* first_moments, float* second_moments, std::uint32_t* param_steps);
+    void allocate_adam_state(float*& out_first_moments, float*& out_second_moments, std::uint32_t*& out_param_steps);
+    void step_optimizer(float* params_full_precision, std::uint16_t* params, const std::uint16_t* gradients, float* first_moments, float* second_moments, std::uint32_t* param_steps);
 
     // Host readback.
     void read_counter(const std::uint32_t* counter, std::uint32_t& out_value);
