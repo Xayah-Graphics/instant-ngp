@@ -84,6 +84,66 @@ namespace ngp::cuda {
         inline constexpr float DENSITY_REGULARIZATION_MAX_DEPTH = 0.1f;
         inline constexpr float DENSITY_REGULARIZATION_STRENGTH  = 1e-4f;
 
+        inline constexpr std::uint64_t PCG32_DEFAULT_STATE  = 0x853c49e6748fea9bULL;
+        inline constexpr std::uint64_t PCG32_DEFAULT_STREAM = 0xda3e39cb94b95bdbULL;
+        inline constexpr std::uint64_t PCG32_MULT           = 0x5851f42d4c957f2dULL;
+
+        struct Pcg32 final {
+            std::uint64_t state = PCG32_DEFAULT_STATE;
+            std::uint64_t inc   = PCG32_DEFAULT_STREAM;
+
+            Pcg32() = default;
+
+            __host__ __device__ explicit Pcg32(const std::uint64_t initstate, const std::uint64_t initseq = 1u) {
+                this->seed(initstate, initseq);
+            }
+
+            __host__ __device__ void seed(const std::uint64_t initstate, const std::uint64_t initseq) {
+                this->state = 0u;
+                this->inc   = (initseq << 1u) | 1u;
+                this->next_uint();
+                this->state += initstate;
+                this->next_uint();
+            }
+
+            __host__ __device__ std::uint32_t next_uint() {
+                const std::uint64_t oldstate = this->state;
+                this->state                  = oldstate * PCG32_MULT + this->inc;
+                const auto xorshifted        = static_cast<std::uint32_t>(((oldstate >> 18u) ^ oldstate) >> 27u);
+                const auto rot               = static_cast<std::uint32_t>(oldstate >> 59u);
+                return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
+            }
+
+            __host__ __device__ float next_float() {
+                union {
+                    std::uint32_t bits;
+                    float value;
+                } result    = {};
+                result.bits = (this->next_uint() >> 9u) | 0x3f800000u;
+                return result.value - 1.0f;
+            }
+
+            __host__ __device__ void advance(std::uint64_t delta) {
+                std::uint64_t cur_mult = PCG32_MULT;
+                std::uint64_t cur_plus = this->inc;
+                std::uint64_t acc_mult = 1u;
+                std::uint64_t acc_plus = 0u;
+
+                while (delta > 0u) {
+                    if ((delta & 1u) != 0u) {
+                        acc_mult *= cur_mult;
+                        acc_plus = acc_plus * cur_mult + cur_plus;
+                    }
+
+                    cur_plus = (cur_mult + 1u) * cur_plus;
+                    cur_mult *= cur_mult;
+                    delta >>= 1u;
+                }
+
+                this->state = acc_mult * this->state + acc_plus;
+            }
+        };
+
         struct CublasLtMatmulResources final {
             cublasLtMatmulDesc_t operation_desc   = nullptr;
             cublasLtMatrixLayout_t a_desc         = nullptr;
@@ -322,11 +382,13 @@ namespace ngp::cuda {
             density_grid_values[i] = trained ? 0.0f : -1.0f;
         }
 
-        __global__ void generate_density_grid_samples_kernel(const std::uint32_t sample_count, Pcg32 rng, const std::uint32_t density_grid_ema_step, const float threshold, const float* __restrict__ density_grid_values, float* __restrict__ sample_coords, std::uint32_t* __restrict__ density_grid_indices) {
+        __global__ void generate_density_grid_samples_kernel(const std::uint32_t sample_count, const std::uint32_t density_grid_ema_step, const std::uint32_t rng_phase, const float threshold, const float* __restrict__ density_grid_values, float* __restrict__ sample_coords, std::uint32_t* __restrict__ density_grid_indices) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            rng.advance(static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
+            Pcg32 seed_rng{config::TRAIN_SEED};
+            Pcg32 rng{seed_rng.next_uint()};
+            rng.advance(((static_cast<std::uint64_t>(density_grid_ema_step) * 2ull + rng_phase) << 32u) + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
             std::uint32_t idx = 0u;
             for (std::uint32_t j = 0u; j < 10u; ++j) {
@@ -1460,7 +1522,7 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, Pcg32& density_grid_rng, float& out_elapsed_ms) {
+    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, float& out_elapsed_ms) {
         out_elapsed_ms                  = 0.0f;
         std::uint32_t density_grid_skip = current_step / DENSITY_GRID_SKIP_INTERVAL;
         if (density_grid_skip < 1u) density_grid_skip = 1u;
@@ -1484,16 +1546,14 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(density_grid_scratch, 0, static_cast<std::size_t>(NERF_GRID_CELLS) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid scratch failed: "} + cudaGetErrorString(status)};
 
         if (uniform_sample_count > 0u) {
-            generate_density_grid_samples_kernel<<<(uniform_sample_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(uniform_sample_count, density_grid_rng, density_grid_ema_step, -0.01f, density_grid_values, sample_coords, density_grid_indices);
+            generate_density_grid_samples_kernel<<<(uniform_sample_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(uniform_sample_count, density_grid_ema_step, 0u, -0.01f, density_grid_values, sample_coords, density_grid_indices);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate uniform density grid samples failed: "} + cudaGetErrorString(status)};
         }
-        density_grid_rng.advance(1ull << 32u);
 
         if (nonuniform_sample_count > 0u) {
-            generate_density_grid_samples_kernel<<<(nonuniform_sample_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(nonuniform_sample_count, density_grid_rng, density_grid_ema_step, NERF_MIN_OPTICAL_THICKNESS, density_grid_values, sample_coords + static_cast<std::uint64_t>(uniform_sample_count) * SAMPLE_COORD_FLOATS, density_grid_indices + uniform_sample_count);
+            generate_density_grid_samples_kernel<<<(nonuniform_sample_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(nonuniform_sample_count, density_grid_ema_step, 1u, NERF_MIN_OPTICAL_THICKNESS, density_grid_values, sample_coords + static_cast<std::uint64_t>(uniform_sample_count) * SAMPLE_COORD_FLOATS, density_grid_indices + uniform_sample_count);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate nonuniform density grid samples failed: "} + cudaGetErrorString(status)};
         }
-        density_grid_rng.advance(1ull << 32u);
 
         constexpr int forward_shmem = sizeof(__half) * (16u + 16u * MLP_FORWARD_ITERS) * (config::MLP_WIDTH + MLP_SKEW);
         constexpr dim3 threads{32u, MLP_WIDTH_BLOCKS, 1u};
