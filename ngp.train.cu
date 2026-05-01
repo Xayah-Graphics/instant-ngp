@@ -386,9 +386,8 @@ namespace ngp::cuda {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            Pcg32 seed_rng{config::TRAIN_SEED};
-            Pcg32 rng{seed_rng.next_uint()};
-            rng.advance(((static_cast<std::uint64_t>(density_grid_ema_step) * 2ull + rng_phase) << 32u) + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
+            Pcg32 rng{config::TRAIN_SEED};
+            rng.advance(((static_cast<std::uint64_t>(density_grid_ema_step) * 2ull + static_cast<std::uint64_t>(rng_phase) + 1ull) << 32u) + static_cast<std::uint64_t>(i) * RANDOM_VALUES_PER_THREAD);
 
             std::uint32_t idx = 0u;
             for (std::uint32_t j = 0u; j < 10u; ++j) {
