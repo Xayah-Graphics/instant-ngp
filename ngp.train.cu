@@ -1391,7 +1391,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemcpy(params_full_precision, host_params.data(), host_params.size() * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy mlp full precision params failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(param_gradients, 0, host_params.size() * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset mlp gradients failed: "} + cudaGetErrorString(status)};
 
-        const std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.mlp_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        constexpr std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.mlp_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         cast_params_to_half_kernel<config::NETWORK_PARAMETER_LAYOUT.mlp_param_count><<<blocks, THREADS_PER_BLOCK>>>(params_full_precision, reinterpret_cast<__half*>(params));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"cast_params_to_half_kernel failed: "} + cudaGetErrorString(status)};
@@ -1400,8 +1400,8 @@ namespace ngp::cuda {
     void initialize_grid_parameters(float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"grid parameter buffers are null."};
 
-        const std::uint32_t n_threads = (config::NETWORK_PARAMETER_LAYOUT.grid_param_count + RANDOM_VALUES_PER_THREAD - 1u) / RANDOM_VALUES_PER_THREAD;
-        const std::uint32_t blocks    = (n_threads + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        constexpr std::uint32_t n_threads = (config::NETWORK_PARAMETER_LAYOUT.grid_param_count + RANDOM_VALUES_PER_THREAD - 1u) / RANDOM_VALUES_PER_THREAD;
+        constexpr std::uint32_t blocks    = (n_threads + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         initialize_grid_params_kernel<<<blocks, THREADS_PER_BLOCK>>>(params_full_precision + config::NETWORK_PARAMETER_LAYOUT.grid_param_offset, reinterpret_cast<__half*>(params + config::NETWORK_PARAMETER_LAYOUT.grid_param_offset), reinterpret_cast<__half*>(param_gradients + config::NETWORK_PARAMETER_LAYOUT.grid_param_offset));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"initialize_grid_params_kernel failed: "} + cudaGetErrorString(status)};
@@ -1415,14 +1415,14 @@ namespace ngp::cuda {
     void upload_trainable_parameters(const float* const params_full_precision, float* const out_params_full_precision, std::uint16_t* const out_params, std::uint16_t* const out_param_gradients, float* const optimizer_first_moments, float* const optimizer_second_moments, std::uint32_t* const optimizer_param_steps) {
         if (params_full_precision == nullptr || out_params_full_precision == nullptr || out_params == nullptr || out_param_gradients == nullptr || optimizer_first_moments == nullptr || optimizer_second_moments == nullptr || optimizer_param_steps == nullptr) throw std::runtime_error{"invalid trainable parameter upload input."};
 
-        const std::size_t param_bytes = static_cast<std::size_t>(config::NETWORK_PARAMETER_LAYOUT.total_param_count) * sizeof(float);
+        constexpr std::size_t param_bytes = static_cast<std::size_t>(config::NETWORK_PARAMETER_LAYOUT.total_param_count) * sizeof(float);
         if (const cudaError_t status = cudaMemcpy(out_params_full_precision, params_full_precision, param_bytes, cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy trainable params upload failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(out_param_gradients, 0, static_cast<std::size_t>(config::NETWORK_PARAMETER_LAYOUT.total_param_count) * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded param gradients failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(optimizer_first_moments, 0, param_bytes); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer first moments failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(optimizer_second_moments, 0, param_bytes); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer second moments failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(optimizer_param_steps, 0, static_cast<std::size_t>(config::NETWORK_PARAMETER_LAYOUT.total_param_count) * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loaded optimizer param steps failed: "} + cudaGetErrorString(status)};
 
-        const std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.total_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        constexpr std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.total_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         cast_params_to_half_kernel<config::NETWORK_PARAMETER_LAYOUT.total_param_count><<<blocks, THREADS_PER_BLOCK>>>(out_params_full_precision, reinterpret_cast<__half*>(out_params));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"cast_params_to_half_kernel loaded params failed: "} + cudaGetErrorString(status)};
@@ -1912,7 +1912,7 @@ namespace ngp::cuda {
     void step_optimizer(float* const params_full_precision, std::uint16_t* const params, const std::uint16_t* const gradients, float* const first_moments, float* const second_moments, std::uint32_t* const param_steps) {
         if (params_full_precision == nullptr || params == nullptr || gradients == nullptr || first_moments == nullptr || second_moments == nullptr || param_steps == nullptr) throw std::runtime_error{"invalid optimizer input."};
 
-        const std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.total_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
+        constexpr std::uint32_t blocks = (config::NETWORK_PARAMETER_LAYOUT.total_param_count + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK;
         adam_step_kernel<<<blocks, THREADS_PER_BLOCK>>>(params_full_precision, reinterpret_cast<__half*>(params), reinterpret_cast<const __half*>(gradients), first_moments, second_moments, param_steps);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"adam_step_kernel failed: "} + cudaGetErrorString(status)};

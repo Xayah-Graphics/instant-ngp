@@ -236,7 +236,7 @@ namespace ngp::train {
                 std::uint64_t cols;
             };
 
-            const std::array tensors = std::to_array<SafetensorsTensor>({
+            constexpr std::array tensors = std::to_array<SafetensorsTensor>({
                 SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.density_input_weight_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::GRID_OUTPUT_WIDTH},
                 SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset, .rows = cuda::config::DENSITY_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
                 SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.rgb_input_weight_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::RGB_INPUT_WIDTH},
@@ -322,7 +322,7 @@ namespace ngp::train {
                 std::uint64_t cols;
             };
 
-            const std::array tensors = std::to_array<SafetensorsTensor>({
+            constexpr std::array tensors = std::to_array<SafetensorsTensor>({
                 SafetensorsTensor{.name = "density_mlp.input.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.density_input_weight_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::GRID_OUTPUT_WIDTH},
                 SafetensorsTensor{.name = "density_mlp.output.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.density_output_weight_offset, .rows = cuda::config::DENSITY_OUTPUT_WIDTH, .cols = cuda::config::MLP_WIDTH},
                 SafetensorsTensor{.name = "rgb_mlp.input.weight", .param_offset = cuda::config::NETWORK_PARAMETER_LAYOUT.rgb_input_weight_offset, .rows = cuda::config::MLP_WIDTH, .cols = cuda::config::RGB_INPUT_WIDTH},
