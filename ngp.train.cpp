@@ -143,6 +143,7 @@ namespace ngp::train {
                 .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
                 .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(cuda::config::NETWORK_BATCH_SIZE),
                 .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
+                .sample_efficiency_ratio                 = this->host.measured_sample_count_before_compaction == 0u ? 0.0f : static_cast<float>(this->host.measured_sample_count) / static_cast<float>(this->host.measured_sample_count_before_compaction),
                 .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / (128.0f * 128.0f * 128.0f),
             };
         } catch (const std::exception& error) {

@@ -13,6 +13,7 @@ namespace ngp::train {
         std::uint32_t density_grid_occupied_cells             = 0u;
         float loss                                            = 0.0f;
         float elapsed_ms                                      = 0.0f;
+        float sample_efficiency_ratio                         = 0.0f;
         float density_grid_occupancy_ratio                    = 0.0f;
     };
 
