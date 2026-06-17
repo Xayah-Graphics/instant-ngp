@@ -1,11 +1,22 @@
 import std;
-import xlog;
 import xcli;
 import ngp.dataset;
 import ngp.train;
 
 int main(const int argc, const char* const* const argv) {
     const std::span<const char* const> arguments{argv, static_cast<std::size_t>(argc)};
+    constexpr std::string_view ansi_reset = "\x1b[0m";
+    constexpr std::string_view ansi_dim = "\x1b[2m";
+    constexpr std::string_view ansi_bold = "\x1b[1m";
+    constexpr std::string_view ansi_cyan = "\x1b[36m";
+    constexpr std::string_view ansi_green = "\x1b[32m";
+    constexpr std::string_view ansi_yellow = "\x1b[33m";
+    constexpr std::string_view ansi_red = "\x1b[31m";
+    constexpr std::string_view ansi_validation_badge = "\x1b[1;37;45m";
+    constexpr std::string_view ansi_validation_metric = "\x1b[1;95m";
+    constexpr std::string_view ansi_validation_best = "\x1b[1;33m";
+    constexpr std::string_view ansi_test_badge = "\x1b[1;37;44m";
+    constexpr std::string_view ansi_test_metric = "\x1b[1;96m";
 
     std::filesystem::path dataset_path = "../data/nerf-synthetic/lego";
     std::int32_t steps = 200000;
@@ -16,26 +27,23 @@ int main(const int argc, const char* const* const argv) {
     float early_stop_min_delta_mse = 1e-6f;
     std::optional<std::filesystem::path> load_weights_path;
     std::optional<std::filesystem::path> export_weights_path;
-    std::optional<std::filesystem::path> log_file_path;
     std::string_view dataset_format;
 
     xcli::Command command{"Train Instant NGP."};
-    command.add_positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.reject_empty = true, .requirement = xcli::PathRequirement::existing_directory});
-    command.add_option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.reject_empty = true, .requirement = xcli::PathRequirement::existing_directory});
+    command.add_positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory});
+    command.add_option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory});
     command.add_option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true});
     command.add_option({.long_name = "steps", .value_name = "count", .description = "total training steps"}, steps, {.minimum = 1.0});
     command.add_option({.long_name = "chunk-steps", .value_name = "count", .description = "training steps per progress log"}, chunk_steps, {.minimum = 1.0});
     command.add_option({.long_name = "validation-interval", .value_name = "count", .description = "full validation interval in steps"}, validation_interval_steps, {.minimum = 1.0});
     command.add_option({.long_name = "early-stop-patience", .value_name = "count", .description = "validation checks without improvement before stopping"}, early_stop_patience, {.minimum = 1.0});
     command.add_option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum validation MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0});
-    command.add_option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before training"}, load_weights_path, {.reject_empty = true, .requirement = xcli::PathRequirement::existing_file});
-    command.add_option({.long_name = "export-weights", .value_name = "path", .description = "export final safetensors weights"}, export_weights_path, {.reject_empty = true, .requirement = xcli::PathRequirement::existing_parent_directory});
-    command.add_option({.long_name = "log-file", .value_name = "path", .description = "write plain text logs to a file"}, log_file_path);
+    command.add_option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before training"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file});
+    command.add_option({.long_name = "export-weights", .value_name = "path", .description = "export final safetensors weights"}, export_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory});
     command.add_example("../data/nerf-synthetic/lego --steps 30000");
     command.add_example("../data/dd-nerf-dataset/house1 --steps 30000");
     command.add_example("--dataset=../data/nerf-synthetic/lego --validation-interval=5000");
     command.add_example("--steps 1 --export-weights build-codex/weights.safetensors");
-    command.add_example("--steps 1 --log-file build/instant-ngp.log");
     command.add_example("--load-weights build-codex/weights.safetensors --steps 30000");
     command.add_validator("dataset-marker-set", [&dataset_path, &dataset_format] -> std::expected<void, std::string> {
         const bool has_nerf_synthetic_dataset =
@@ -50,34 +58,11 @@ int main(const int argc, const char* const* const argv) {
         return {};
     });
 
-    const xcli::HelpStyle help_style{
-        .reset = xlog::ansi::reset,
-        .dim = xlog::ansi::dim,
-        .bold = xlog::ansi::bold,
-        .heading = xlog::ansi::bold,
-        .executable = xlog::ansi::cyan,
-        .option = xlog::ansi::green,
-        .value = xlog::ansi::yellow,
-        .default_label = xlog::ansi::dim,
-    };
-    const std::string usage = command.help(arguments, help_style);
-
-    auto logger_result = xlog::Logger::create(xlog::LoggerConfig{});
-    if (!logger_result) throw std::runtime_error{logger_result.error()};
-    xlog::Logger logger = std::move(*logger_result);
-    logger.set_tag_style("CONFIG", {.begin = xlog::ansi::cyan, .end = xlog::ansi::reset});
-    logger.set_tag_style("INFO", {.begin = xlog::ansi::cyan, .end = xlog::ansi::reset});
-    logger.set_tag_style("WEIGHT", {.begin = xlog::ansi::yellow, .end = xlog::ansi::reset});
-    logger.set_tag_style("TRAIN", {.begin = xlog::ansi::green, .end = xlog::ansi::reset});
-    logger.set_tag_style("VALID", {.begin = xlog::ansi::validation_badge, .end = xlog::ansi::reset});
-    logger.set_tag_style("TEST", {.begin = xlog::ansi::test_badge, .end = xlog::ansi::reset});
-    logger.set_tag_style("SUMMARY", {.begin = xlog::ansi::bold, .end = xlog::ansi::reset});
-    logger.set_tag_style("DONE", {.begin = xlog::ansi::bold, .end = xlog::ansi::reset});
-    logger.set_tag_style("ERROR", {.begin = xlog::ansi::red, .end = xlog::ansi::reset});
+    const std::string usage = command.help(arguments);
 
     const auto cli_result = command.parse(arguments);
     if (!cli_result) {
-        logger.error("ERROR", "{}", cli_result.error());
+        std::println("{}error:{} {}", ansi_red, ansi_reset, cli_result.error());
         std::println("{}", usage);
         return 2;
     }
@@ -86,22 +71,17 @@ int main(const int argc, const char* const* const argv) {
         return 0;
     }
 
-    if (log_file_path.has_value()) {
-        const auto file_sink = logger.add_file_sink({.path = *log_file_path});
-        if (!file_sink) {
-            logger.error("ERROR", "{}", file_sink.error());
-            return 2;
-        }
-    }
-
     const auto validation_result = command.validate();
     if (!validation_result) {
-        logger.error("ERROR", "{}", validation_result.error());
+        std::println("{}error:{} {}", ansi_red, ansi_reset, validation_result.error());
         return 2;
     }
 
-    logger.info("CONFIG", "dataset={} format={} scene_scale={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={} log_file={}", dataset_path.string(), dataset_format, scene_scale, steps, chunk_steps, validation_interval_steps, early_stop_patience, early_stop_min_delta_mse, load_weights_path.has_value() ? load_weights_path->string() : "none", export_weights_path.has_value() ? export_weights_path->string() : "none", log_file_path.has_value() ? log_file_path->string() : "none");
-    logger.info("INFO", "loading dataset");
+    const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} format={} scene_scale={} steps={} chunk={} validation_interval={} patience={} min_delta_mse={} test_output=test load_weights={} export_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, steps, chunk_steps, validation_interval_steps, early_stop_patience, early_stop_min_delta_mse, load_weights_path.has_value() ? load_weights_path->string() : "none", export_weights_path.has_value() ? export_weights_path->string() : "none");
+
+    const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    std::println("{}[{:%F %T}]{} {}{:<7}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
 
     std::optional<std::string> pipeline_error;
     std::unique_ptr<ngp::train::InstantNGP> ngp;
@@ -120,7 +100,10 @@ int main(const int argc, const char* const* const argv) {
     if (!pipeline_error && load_weights_path.has_value()) {
         const auto loaded_weights = ngp->load_weights(*load_weights_path);
         if (!loaded_weights) pipeline_error = loaded_weights.error();
-        else logger.info("WEIGHT", "loaded={}", load_weights_path->string());
+        else {
+            const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, load_weights_path->string());
+        }
     }
 
     if (!pipeline_error) {
@@ -148,7 +131,8 @@ int main(const int argc, const char* const* const argv) {
             train_ms += stats->elapsed_ms;
             final_step = stats->step;
             trained_steps += requested_steps;
-            logger.info("TRAIN", "step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms grid={:>7.3f}ms rate={:>7.2f} step/s rays={:>6} samples={:>7}/{:<7} occupied={:>7} occupancy={:>6.2f}%", stats->step, steps, stats->loss, stats->elapsed_ms, stats->density_grid_update_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
+            const auto train_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms grid={:>7.3f}ms rate={:>7.2f} step/s rays={:>6} samples={:>7}/{:<7} occupied={:>7} occupancy={:>6.2f}%", ansi_dim, train_timestamp, ansi_reset, ansi_green, "TRAIN", ansi_reset, stats->step, steps, stats->loss, stats->elapsed_ms, stats->density_grid_update_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
 
             if (stats->step >= next_validation_step || stats->step >= static_cast<std::uint32_t>(steps)) {
                 const auto validation = ngp->validate();
@@ -167,8 +151,8 @@ int main(const int argc, const char* const* const argv) {
                     ++validation_checks_without_improvement;
                 }
 
-                if (validation_improved) logger.info("VALID", "step={:>6} status=improved mse={:.8f} psnr={:>5.2f} best={:.8f}@{} patience={}/{} images={:>3} pixels={} val={:>8.3f}ms", validation->step, validation->mse, validation->psnr, best_validation_mse, best_validation_step, validation_checks_without_improvement, early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
-                else logger.warn("VALID", "step={:>6} status=stalled mse={:.8f} psnr={:>5.2f} best={:.8f}@{} patience={}/{} images={:>3} pixels={} val={:>8.3f}ms", validation->step, validation->mse, validation->psnr, best_validation_mse, best_validation_step, validation_checks_without_improvement, early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
+                const auto validation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | patience={}{}{}/{} | images={:>3} pixels={} val={:>8.3f}ms", ansi_dim, validation_timestamp, ansi_reset, ansi_validation_badge, "VALID", ansi_reset, validation->step, validation_improved ? ansi_green : ansi_yellow, validation_improved ? "improved" : "stalled", ansi_reset, ansi_validation_metric, validation->mse, ansi_reset, ansi_cyan, validation->psnr, ansi_reset, ansi_validation_best, best_validation_mse, best_validation_step, ansi_reset, validation_checks_without_improvement == 0u ? ansi_green : ansi_yellow, validation_checks_without_improvement, ansi_reset, early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
 
                 if (validation_checks_without_improvement >= early_stop_patience) {
                     stopped_early = true;
@@ -179,23 +163,29 @@ int main(const int argc, const char* const* const argv) {
         }
 
         if (!pipeline_error) {
-            if (stopped_early) logger.warn("SUMMARY", "steps={} stopped_early=true first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", final_step, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
-            else logger.info("SUMMARY", "steps={} stopped_early=false first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", final_step, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
+            const auto summary_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
 
             const auto test = ngp->test();
             if (!test) pipeline_error = test.error();
-            else logger.info("TEST", "step={:>6} mse={:.8f} psnr={:>5.2f} images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", test->step, test->mse, test->psnr, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
+            else {
+                const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
+            }
         }
 
         if (!pipeline_error && export_weights_path.has_value()) {
             const auto exported_weights = ngp->export_weights(*export_weights_path);
             if (!exported_weights) pipeline_error = exported_weights.error();
-            else logger.info("WEIGHT", "exported={}", export_weights_path->string());
+            else {
+                const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<7}{} exported={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, export_weights_path->string());
+            }
         }
     }
 
-    if (!pipeline_error) logger.info("DONE", "pipeline=succeeded");
-    else logger.error("ERROR", "pipeline=failed error=\"{}\"", *pipeline_error);
-    logger.flush();
+    const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    if (!pipeline_error) std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=succeeded", ansi_dim, finish_timestamp, ansi_reset, ansi_bold, "DONE", ansi_reset);
+    else std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, *pipeline_error);
     return !pipeline_error ? 0 : 1;
 }

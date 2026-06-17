@@ -74,6 +74,7 @@ namespace xcli {
 
         std::expected<ParseResult, std::string> parse(std::span<const char* const> arguments);
         std::expected<void, std::string> validate();
+        std::string help(std::span<const char* const> arguments) const;
         std::string help(std::span<const char* const> arguments, const HelpStyle& style) const;
 
     private:

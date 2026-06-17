@@ -558,6 +558,19 @@ namespace xcli {
         return {};
     }
 
+    std::string Command::help(const std::span<const char* const> arguments) const {
+        return this->help(arguments, {
+            .reset = "\x1b[0m",
+            .dim = "\x1b[2m",
+            .bold = "\x1b[1m",
+            .heading = "\x1b[1m",
+            .executable = "\x1b[36m",
+            .option = "\x1b[32m",
+            .value = "\x1b[33m",
+            .default_label = "\x1b[2m",
+        });
+    }
+
     std::string Command::help(const std::span<const char* const> arguments, const HelpStyle& style) const {
         if (arguments.empty() || arguments.front() == nullptr) throw std::runtime_error{"argv must contain executable path."};
         const std::string executable_name = std::filesystem::path{arguments.front()}.filename().string();
