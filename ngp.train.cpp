@@ -11,67 +11,47 @@ import ngp.dataset;
 namespace ngp::train {
     InstantNGP::InstantNGP(const dataset::NGPDataset& dataset) {
         try {
+            this->host.scene_scale = dataset.scene_scale;
+            if (dataset.frame_sets.empty()) throw std::runtime_error{"dataset must contain at least one loaded frame set."};
+
             // ====================================================================================================
-            // 1. UPLOAD TRAIN/VALIDATION/TEST DATASET TO GPU
+            // 1. UPLOAD FRAME SETS TO GPU
             // ====================================================================================================
             {
-                if (this->host.frame_count = std::ranges::size(dataset.train); assert(this->host.frame_count > 0uz), this->host.frame_count > 0uz) {
-                    std::vector<std::uint8_t> train_pixels;
-                    std::vector<float> train_camera;
-                    train_pixels.reserve(std::ranges::fold_left(dataset.train | std::views::transform([](const auto& frame) { return frame.rgba.size(); }), 0uz, std::plus{}));
-                    train_camera.reserve(std::ranges::size(dataset.train) * 12uz);
-                    for (const auto& frame : dataset.train) {
-                        train_pixels.append_range(frame.rgba);
-                        train_camera.append_range(frame.camera);
-                    }
-                    cuda::upload_dataset(train_pixels.data(), train_pixels.size(), train_camera.data(), train_camera.size(), this->device.pixels, this->device.camera);
-                    this->host.frame_count = std::ranges::size(dataset.train);
-                    this->host.width       = std::ranges::begin(dataset.train)->width;
-                    this->host.height      = std::ranges::begin(dataset.train)->height;
-                    this->host.focal_x     = std::ranges::begin(dataset.train)->focal_x;
-                    this->host.focal_y     = std::ranges::begin(dataset.train)->focal_y;
-                    this->host.principal_x = std::ranges::begin(dataset.train)->principal_x;
-                    this->host.principal_y = std::ranges::begin(dataset.train)->principal_y;
-                    this->host.scene_scale = dataset.scene_scale;
-                }
+                this->host.frame_sets.reserve(dataset.frame_sets.size());
+                this->device.frame_sets.reserve(dataset.frame_sets.size());
+                for (const dataset::FrameSet& frame_set : dataset.frame_sets) {
+                    if (frame_set.name.empty()) throw std::runtime_error{"frame set name must not be empty."};
+                    if (frame_set.frames.empty()) throw std::runtime_error{std::format("frame set '{}' contains no frames.", frame_set.name)};
+                    for (const HostFrameSet& existing_frame_set : this->host.frame_sets)
+                        if (existing_frame_set.name == frame_set.name) throw std::runtime_error{std::format("frame set '{}' was loaded more than once.", frame_set.name)};
 
-                if (this->host.validation_frame_count = std::ranges::size(dataset.validation); this->host.validation_frame_count > 0) {
-                    std::vector<std::uint8_t> validation_pixels;
-                    std::vector<float> validation_camera;
-                    validation_pixels.reserve(std::ranges::fold_left(dataset.validation | std::views::transform([](const auto& frame) { return frame.rgba.size(); }), 0uz, std::plus{}));
-                    validation_camera.reserve(std::ranges::size(dataset.validation) * 12uz);
-                    for (const auto& frame : dataset.validation) {
-                        validation_pixels.append_range(frame.rgba);
-                        validation_camera.append_range(frame.camera);
+                    std::vector<std::uint8_t> pixels;
+                    std::vector<float> camera;
+                    pixels.reserve(std::ranges::fold_left(frame_set.frames | std::views::transform([](const auto& frame) { return frame.rgba.size(); }), 0uz, std::plus{}));
+                    camera.reserve(std::ranges::size(frame_set.frames) * 12uz);
+                    for (const dataset::Frame& frame : frame_set.frames) {
+                        pixels.append_range(frame.rgba);
+                        camera.append_range(frame.camera);
                     }
-                    cuda::upload_dataset(validation_pixels.data(), validation_pixels.size(), validation_camera.data(), validation_camera.size(), this->device.validation_pixels, this->device.validation_camera);
-                    this->host.validation_frame_count = std::ranges::size(dataset.validation);
-                    this->host.validation_width       = std::ranges::begin(dataset.validation)->width;
-                    this->host.validation_height      = std::ranges::begin(dataset.validation)->height;
-                    this->host.validation_focal_x     = std::ranges::begin(dataset.validation)->focal_x;
-                    this->host.validation_focal_y     = std::ranges::begin(dataset.validation)->focal_y;
-                    this->host.validation_principal_x = std::ranges::begin(dataset.validation)->principal_x;
-                    this->host.validation_principal_y = std::ranges::begin(dataset.validation)->principal_y;
-                }
 
-                if (this->host.test_frame_count = std::ranges::size(dataset.test); this->host.test_frame_count > 0) {
-                    std::vector<std::uint8_t> test_pixels;
-                    std::vector<float> test_camera;
-                    test_pixels.reserve(std::ranges::fold_left(dataset.test | std::views::transform([](const auto& frame) { return frame.rgba.size(); }), 0uz, std::plus{}));
-                    test_camera.reserve(std::ranges::size(dataset.test) * 12uz);
-                    for (const auto& frame : dataset.test) {
-                        test_pixels.append_range(frame.rgba);
-                        test_camera.append_range(frame.camera);
-                    }
-                    cuda::upload_dataset(test_pixels.data(), test_pixels.size(), test_camera.data(), test_camera.size(), this->device.test_pixels, this->device.test_camera);
+                    this->device.frame_sets.push_back({});
+                    DeviceFrameSet& device_frame_set = this->device.frame_sets.back();
+                    cuda::upload_dataset(pixels.data(), pixels.size(), camera.data(), camera.size(), device_frame_set.pixels, device_frame_set.camera);
 
-                    this->host.test_frame_count = std::ranges::size(dataset.test);
-                    this->host.test_width       = std::ranges::begin(dataset.test)->width;
-                    this->host.test_height      = std::ranges::begin(dataset.test)->height;
-                    this->host.test_focal_x     = std::ranges::begin(dataset.test)->focal_x;
-                    this->host.test_focal_y     = std::ranges::begin(dataset.test)->focal_y;
-                    this->host.test_principal_x = std::ranges::begin(dataset.test)->principal_x;
-                    this->host.test_principal_y = std::ranges::begin(dataset.test)->principal_y;
+                    const dataset::Frame& first_frame = frame_set.frames.front();
+                    this->host.frame_sets.push_back(HostFrameSet{
+                        .name         = frame_set.name,
+                        .frame_count  = static_cast<std::uint32_t>(frame_set.frames.size()),
+                        .width        = first_frame.width,
+                        .height       = first_frame.height,
+                        .focal_x      = first_frame.focal_x,
+                        .focal_y      = first_frame.focal_y,
+                        .principal_x  = first_frame.principal_x,
+                        .principal_y  = first_frame.principal_y,
+                    });
+                    this->host.comparison_width  = std::max(this->host.comparison_width, first_frame.width);
+                    this->host.comparison_height = std::max(this->host.comparison_height, first_frame.height);
                 }
             }
 
@@ -83,8 +63,8 @@ namespace ngp::train {
                 cuda::allocate_network_buffers(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
                 cuda::allocate_density_grid_buffers(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count);
                 cuda::allocate_training_loss_buffers(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values);
-                if (this->host.validation_frame_count != 0u || this->host.test_frame_count != 0u) cuda::allocate_evaluation_buffers(this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum);
-                if (this->host.test_frame_count != 0u) cuda::allocate_test_comparison_buffer(this->host.test_width, this->host.test_height, this->device.test_comparison_pixels);
+                cuda::allocate_evaluation_buffers(this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum);
+                cuda::allocate_evaluation_comparison_buffer(this->host.comparison_width, this->host.comparison_height, this->device.comparison_pixels);
                 cuda::allocate_trainable_parameter_buffers(this->device.params_full_precision, this->device.params, this->device.param_gradients);
                 cuda::allocate_adam_state(this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
                 cuda::initialize_mlp_parameters(this->device.params_full_precision, this->device.params, this->device.param_gradients);
@@ -92,29 +72,44 @@ namespace ngp::train {
             }
 
         } catch (...) {
+            for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
             cuda::destroy_cublaslt(this->device.cublaslt_handle);
-            cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients,
+            cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients,
                 this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
             throw;
         }
     }
 
     InstantNGP::~InstantNGP() noexcept {
+        for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
         cuda::destroy_cublaslt(this->device.cublaslt_handle);
-        cuda::free_device_buffers(this->device.pixels, this->device.camera, this->device.validation_pixels, this->device.validation_camera, this->device.test_pixels, this->device.test_camera, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
+        cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
             this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
     }
 
-    std::expected<TrainStats, std::string> InstantNGP::train(const std::int32_t iters) {
+    std::expected<OptimizationStats, std::string> InstantNGP::optimize(const OptimizationRequest request) {
         try {
+            if (request.frame_set.empty()) throw std::runtime_error{"optimization frame set must not be empty."};
+            if (request.iterations < 1) throw std::runtime_error{"optimization iterations must be positive."};
+            const HostFrameSet* host_frame_set = nullptr;
+            const DeviceFrameSet* device_frame_set = nullptr;
+            for (std::size_t frame_set_index = 0uz; frame_set_index < this->host.frame_sets.size(); ++frame_set_index) {
+                if (this->host.frame_sets[frame_set_index].name == request.frame_set) {
+                    host_frame_set = std::addressof(this->host.frame_sets[frame_set_index]);
+                    device_frame_set = std::addressof(this->device.frame_sets[frame_set_index]);
+                    break;
+                }
+            }
+            if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("optimization frame set '{}' is not loaded.", request.frame_set)};
+
             const auto train_start            = std::chrono::steady_clock::now();
             std::uint32_t loss_value_count    = this->host.rays_per_batch;
-            for (std::int32_t i = 0; i < iters; ++i) {
+            for (std::int32_t i = 0; i < request.iterations; ++i) {
                 loss_value_count = this->host.rays_per_batch;
-                cuda::update_density_grid(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_x, this->host.focal_y, this->host.principal_x, this->host.principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
-                cuda::sample_training_batch(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_x, this->host.focal_y, this->host.principal_x, this->host.principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
+                cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
+                cuda::sample_training_batch(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                 cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.network_output);
-                cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
+                cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, device_frame_set->pixels, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
                 cuda::pad_compacted_training_batch(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.network_output_gradients);
                 cuda::forward_network(this->device.compacted_sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output);
                 cuda::backward_network(this->device.compacted_sample_coords, this->device.params, this->device.param_gradients, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
@@ -123,7 +118,7 @@ namespace ngp::train {
                 cuda::read_counter(this->device.compacted_sample_counter, this->host.measured_sample_count);
                 if (this->host.measured_sample_count == 0u) {
                     cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-                    throw std::runtime_error{std::format("Training stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
+                    throw std::runtime_error{std::format("Optimization stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
                 }
 
                 this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, cuda::config::MAX_SAMPLES) + cuda::config::NETWORK_BATCH_GRANULARITY - 1u) / cuda::config::NETWORK_BATCH_GRANULARITY) * cuda::config::NETWORK_BATCH_GRANULARITY;
@@ -135,7 +130,7 @@ namespace ngp::train {
             float loss_sum = 0.0f;
             cuda::read_loss_sum(this->device.loss_values, loss_value_count, loss_sum);
             cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-            return TrainStats{
+            return OptimizationStats{
                 .step                                    = this->host.current_step,
                 .next_rays_per_batch                     = this->host.rays_per_batch,
                 .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
@@ -151,73 +146,69 @@ namespace ngp::train {
         }
     }
 
-    std::expected<ValidationStats, std::string> InstantNGP::validate() const {
+    std::expected<EvaluationStats, std::string> InstantNGP::evaluate(const EvaluationRequest request) const {
         try {
-            if (this->host.validation_frame_count == 0u) throw std::runtime_error{"No validation images are available in the current dataset."};
+            if (request.frame_set.empty()) throw std::runtime_error{"evaluation frame set must not be empty."};
+            const HostFrameSet* host_frame_set = nullptr;
+            const DeviceFrameSet* device_frame_set = nullptr;
+            for (std::size_t frame_set_index = 0uz; frame_set_index < this->host.frame_sets.size(); ++frame_set_index) {
+                if (this->host.frame_sets[frame_set_index].name == request.frame_set) {
+                    host_frame_set = std::addressof(this->host.frame_sets[frame_set_index]);
+                    device_frame_set = std::addressof(this->device.frame_sets[frame_set_index]);
+                    break;
+                }
+            }
+            if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("evaluation frame set '{}' is not loaded.", request.frame_set)};
+            if (request.refresh_acceleration) this->host.density_grid_ema_step = 0u;
+            if (this->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
 
-            const auto validation_start          = std::chrono::steady_clock::now();
-            const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.validation_width) * this->host.validation_height;
-            const std::uint64_t pixel_count      = pixels_per_image * this->host.validation_frame_count;
+            const bool writes_comparison = request.comparison_output_dir.has_value();
+            if (writes_comparison) {
+                if (request.comparison_output_dir->empty()) throw std::runtime_error{"comparison output directory must not be empty."};
+                if (this->device.comparison_pixels == nullptr) throw std::runtime_error{"comparison image buffer is not initialized."};
+                if (std::filesystem::exists(*request.comparison_output_dir) && !std::filesystem::is_directory(*request.comparison_output_dir)) throw std::runtime_error{std::format("comparison output path '{}' is not a directory.", request.comparison_output_dir->string())};
+                std::filesystem::create_directories(*request.comparison_output_dir);
+                if (!std::filesystem::is_directory(*request.comparison_output_dir)) throw std::runtime_error{std::format("failed to create comparison output directory '{}'.", request.comparison_output_dir->string())};
+                if (host_frame_set->width > static_cast<std::uint32_t>(std::numeric_limits<int>::max() / 2) || host_frame_set->height > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) throw std::runtime_error{"comparison image dimensions exceed PNG writer limits."};
+            }
+
+            const auto evaluation_start          = std::chrono::steady_clock::now();
+            const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(host_frame_set->width) * host_frame_set->height;
+            const std::uint64_t pixel_count      = pixels_per_image * host_frame_set->frame_count;
             double evaluation_loss_sum           = 0.0;
+            std::uint32_t comparison_image_count = 0u;
 
-            cuda::run_evaluation(this->device.validation_pixels, this->device.validation_camera, this->host.validation_frame_count, 0u, this->host.validation_frame_count, this->host.validation_width, this->host.validation_height, this->host.validation_focal_x, this->host.validation_focal_y, this->host.validation_principal_x, this->host.validation_principal_y, this->device.occupancy, this->device.params, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, nullptr, nullptr, evaluation_loss_sum);
+            if (!writes_comparison) {
+                cuda::run_evaluation(device_frame_set->pixels, device_frame_set->camera, host_frame_set->frame_count, 0u, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->device.occupancy, this->device.params, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, nullptr, nullptr, evaluation_loss_sum);
+            } else {
+                std::vector<std::uint8_t> comparison_image(static_cast<std::size_t>(host_frame_set->width) * host_frame_set->height * 2uz * 3uz);
+                for (std::uint32_t image_index = 0u; image_index < host_frame_set->frame_count; ++image_index) {
+                    double image_loss_sum = 0.0;
+                    cuda::run_evaluation(device_frame_set->pixels, device_frame_set->camera, host_frame_set->frame_count, image_index, 1u, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->device.occupancy, this->device.params, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, comparison_image.data(), image_loss_sum);
+                    evaluation_loss_sum += image_loss_sum;
 
-            const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
-            if (!std::isfinite(mse)) throw std::runtime_error{"validation produced non-finite MSE."};
-
-            return ValidationStats{
-                .step        = this->host.current_step,
-                .image_count = this->host.validation_frame_count,
-                .pixel_count = pixel_count,
-                .mse         = static_cast<float>(mse),
-                .psnr        = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
-                .elapsed_ms  = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - validation_start).count(),
-            };
-        } catch (const std::exception& error) {
-            return std::unexpected{std::string{error.what()}};
-        }
-    }
-
-    std::expected<TestStats, std::string> InstantNGP::test(const std::filesystem::path& output_dir) const {
-        try {
-            if (this->host.test_frame_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};
-            if (output_dir.empty()) throw std::runtime_error{"test output directory must not be empty."};
-            if (this->device.test_comparison_pixels == nullptr) throw std::runtime_error{"test comparison image buffer is not initialized."};
-            if (std::filesystem::exists(output_dir) && !std::filesystem::is_directory(output_dir)) throw std::runtime_error{std::format("test output path '{}' is not a directory.", output_dir.string())};
-            std::filesystem::create_directories(output_dir);
-            if (!std::filesystem::is_directory(output_dir)) throw std::runtime_error{std::format("failed to create test output directory '{}'.", output_dir.string())};
-            if (this->host.test_width > static_cast<std::uint32_t>(std::numeric_limits<int>::max() / 2) || this->host.test_height > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) throw std::runtime_error{"test image dimensions exceed PNG writer limits."};
-
-            const auto test_start                = std::chrono::steady_clock::now();
-            const std::uint64_t pixels_per_image = static_cast<std::uint64_t>(this->host.test_width) * this->host.test_height;
-            const std::uint64_t pixel_count      = pixels_per_image * this->host.test_frame_count;
-            double evaluation_loss_sum           = 0.0;
-            std::vector<std::uint8_t> comparison_image(static_cast<std::size_t>(this->host.test_width) * this->host.test_height * 2uz * 3uz);
-
-            for (std::uint32_t image_index = 0u; image_index < this->host.test_frame_count; ++image_index) {
-                double image_loss_sum = 0.0;
-                cuda::run_evaluation(this->device.test_pixels, this->device.test_camera, this->host.test_frame_count, image_index, 1u, this->host.test_width, this->host.test_height, this->host.test_focal_x, this->host.test_focal_y, this->host.test_principal_x, this->host.test_principal_y, this->device.occupancy, this->device.params, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.test_comparison_pixels, comparison_image.data(), image_loss_sum);
-                evaluation_loss_sum += image_loss_sum;
-
-                const std::filesystem::path output_path = output_dir / std::format("test_{:04}.png", image_index);
-                const std::string output_path_text      = output_path.string();
-                const int output_width                  = static_cast<int>(this->host.test_width * 2u);
-                const int output_height                 = static_cast<int>(this->host.test_height);
-                if (stbi_write_png(output_path_text.c_str(), output_width, output_height, 3, comparison_image.data(), output_width * 3) == 0) throw std::runtime_error{std::format("failed to write test comparison image '{}'.", output_path_text)};
+                    const std::filesystem::path output_path = *request.comparison_output_dir / std::format("{}_{:04}.png", host_frame_set->name, image_index);
+                    const std::string output_path_text      = output_path.string();
+                    const int output_width                  = static_cast<int>(host_frame_set->width * 2u);
+                    const int output_height                 = static_cast<int>(host_frame_set->height);
+                    if (stbi_write_png(output_path_text.c_str(), output_width, output_height, 3, comparison_image.data(), output_width * 3) == 0) throw std::runtime_error{std::format("failed to write comparison image '{}'.", output_path_text)};
+                    ++comparison_image_count;
+                }
             }
 
             const double mse = evaluation_loss_sum / (static_cast<double>(pixel_count) * 3.0);
-            if (!std::isfinite(mse)) throw std::runtime_error{"test produced non-finite MSE."};
+            if (!std::isfinite(mse)) throw std::runtime_error{"evaluation produced non-finite MSE."};
 
-            return TestStats{
+            return EvaluationStats{
+                .frame_set              = host_frame_set->name,
                 .step                   = this->host.current_step,
-                .image_count            = this->host.test_frame_count,
-                .comparison_image_count = this->host.test_frame_count,
+                .image_count            = host_frame_set->frame_count,
+                .comparison_image_count = comparison_image_count,
                 .pixel_count            = pixel_count,
                 .mse                    = static_cast<float>(mse),
                 .psnr                   = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity(),
-                .elapsed_ms             = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - test_start).count(),
-                .output_dir             = output_dir,
+                .elapsed_ms             = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - evaluation_start).count(),
+                .output_dir             = request.comparison_output_dir.value_or(std::filesystem::path{}),
             };
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
@@ -414,6 +405,7 @@ namespace ngp::train {
                 if (!std::isfinite(value)) throw std::runtime_error{"weights file contains non-finite values."};
 
             cuda::upload_trainable_parameters(host_params.data(), this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+            this->host.density_grid_ema_step = 0u;
             return {};
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};

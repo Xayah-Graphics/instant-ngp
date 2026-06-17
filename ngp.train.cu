@@ -1403,12 +1403,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_evaluation_loss_sum, sizeof(double)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation loss sum failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_test_comparison_buffer(const std::uint32_t width, const std::uint32_t height, std::uint8_t*& out_test_comparison_pixels) {
-        out_test_comparison_pixels = nullptr;
-        if (width == 0u || height == 0u) throw std::runtime_error{"invalid test comparison image dimensions."};
+    void allocate_evaluation_comparison_buffer(const std::uint32_t width, const std::uint32_t height, std::uint8_t*& out_comparison_pixels) {
+        out_comparison_pixels = nullptr;
+        if (width == 0u || height == 0u) throw std::runtime_error{"invalid evaluation comparison image dimensions."};
         const std::uint64_t byte_count = static_cast<std::uint64_t>(width) * height * 2u * 3u;
-        if (byte_count > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"test comparison image buffer is too large."};
-        if (const cudaError_t status = cudaMalloc(&out_test_comparison_pixels, static_cast<std::size_t>(byte_count)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc test comparison image failed: "} + cudaGetErrorString(status)};
+        if (byte_count > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"evaluation comparison image buffer is too large."};
+        if (const cudaError_t status = cudaMalloc(&out_comparison_pixels, static_cast<std::size_t>(byte_count)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc evaluation comparison image failed: "} + cudaGetErrorString(status)};
     }
 
     void allocate_trainable_parameter_buffers(float*& out_params_full_precision, std::uint16_t*& out_params, std::uint16_t*& out_param_gradients) {
@@ -1588,12 +1588,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"build_density_grid_bitfield_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint8_t* const occupancy, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const test_comparison_pixels, std::uint8_t* const host_test_comparison_pixels, double& out_loss_sum) {
+    void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint8_t* const occupancy, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const comparison_pixels, std::uint8_t* const host_comparison_pixels, double& out_loss_sum) {
         out_loss_sum                 = 0.0;
-        const bool writes_comparison = test_comparison_pixels != nullptr || host_test_comparison_pixels != nullptr;
+        const bool writes_comparison = comparison_pixels != nullptr || host_comparison_pixels != nullptr;
         if (evaluation_pixels == nullptr || evaluation_camera == nullptr || evaluation_frame_count == 0u || evaluation_image_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || occupancy == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || evaluation_numsteps == nullptr || evaluation_sample_counter == nullptr || evaluation_overflow_counter == nullptr || evaluation_loss_sum == nullptr) throw std::runtime_error{"invalid evaluation input."};
         if (evaluation_image_begin >= evaluation_frame_count || evaluation_image_count > evaluation_frame_count - evaluation_image_begin) throw std::runtime_error{"evaluation image range is out of bounds."};
-        if (writes_comparison && (test_comparison_pixels == nullptr || host_test_comparison_pixels == nullptr || evaluation_image_count != 1u)) throw std::runtime_error{"test comparison output requires exactly one evaluation image."};
+        if (writes_comparison && (comparison_pixels == nullptr || host_comparison_pixels == nullptr || evaluation_image_count != 1u)) throw std::runtime_error{"comparison output requires exactly one evaluation image."};
 
         const std::uint64_t total_pixels_64 = static_cast<std::uint64_t>(width) * height;
         if (total_pixels_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"evaluation image has too many pixels."};
@@ -1601,7 +1601,7 @@ namespace ngp::cuda {
         std::size_t comparison_byte_count = 0u;
         if (writes_comparison) {
             const std::uint64_t comparison_byte_count_64 = total_pixels_64 * 2u * 3u;
-            if (comparison_byte_count_64 > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"test comparison image is too large."};
+            if (comparison_byte_count_64 > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{"comparison image is too large."};
             comparison_byte_count = static_cast<std::size_t>(comparison_byte_count_64);
         }
 
@@ -1638,7 +1638,7 @@ namespace ngp::cuda {
                     evaluate_network(padded_used_samples, sample_coords, params, density_input, rgb_input, network_output);
                 }
 
-                accumulate_evaluation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, evaluation_image_index, width, height, evaluation_pixels, evaluation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), evaluation_loss_sum, writes_comparison ? test_comparison_pixels : nullptr);
+                accumulate_evaluation_loss_kernel<<<(tile_pixels + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(tile_pixels, pixel_offset, evaluation_image_index, width, height, evaluation_pixels, evaluation_numsteps, sample_coords, reinterpret_cast<const __half*>(network_output), evaluation_loss_sum, writes_comparison ? comparison_pixels : nullptr);
                 if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"accumulate_evaluation_loss_kernel failed: "} + cudaGetErrorString(status)};
             }
         }
@@ -1646,8 +1646,8 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"evaluation synchronization failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemcpy(&out_loss_sum, evaluation_loss_sum, sizeof(double), cudaMemcpyDeviceToHost); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy evaluation loss sum failed: "} + cudaGetErrorString(status)};
         if (writes_comparison) {
-            const cudaError_t status = cudaMemcpy(host_test_comparison_pixels, test_comparison_pixels, comparison_byte_count, cudaMemcpyDeviceToHost);
-            if (status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy test comparison image failed: "} + cudaGetErrorString(status)};
+            const cudaError_t status = cudaMemcpy(host_comparison_pixels, comparison_pixels, comparison_byte_count, cudaMemcpyDeviceToHost);
+            if (status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy comparison image failed: "} + cudaGetErrorString(status)};
         }
     }
 

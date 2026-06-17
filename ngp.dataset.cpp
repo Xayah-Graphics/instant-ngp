@@ -9,7 +9,7 @@ namespace ngp::dataset {
     namespace {
         inline constexpr float DEFAULT_SCENE_OFFSET = 0.5f;
 
-        std::vector<NGPDataset::Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name, const float scene_scale) {
+        std::vector<Frame> load_nerf_synthetic_split(const std::filesystem::path& dataset_path, const std::string_view file_name, const float scene_scale) {
             const std::filesystem::path json_path  = dataset_path / file_name;
             const std::filesystem::path split_root = json_path.parent_path();
             const nlohmann::json json              = nlohmann::json::parse(std::ifstream{json_path, std::ios::binary}, nullptr, true, true);
@@ -18,7 +18,7 @@ namespace ngp::dataset {
             const nlohmann::json& frames_json = json.at("frames");
             const std::size_t frame_count     = frames_json.size();
 
-            std::vector<NGPDataset::Frame> frames(frame_count);
+            std::vector<Frame> frames(frame_count);
             const std::vector<std::size_t> indices = std::views::iota(0uz, frame_count) | std::ranges::to<std::vector<std::size_t>>();
 
             std::for_each(std::execution::par, indices.begin(), indices.end(), [&](const std::size_t frame_index) {
@@ -51,7 +51,6 @@ namespace ngp::dataset {
                 for (const std::size_t row : std::views::iota(0uz, 4uz))
                     for (const std::size_t column : std::views::iota(0uz, 4uz)) camera[column][row] = transform_matrix.at(row).at(column).get<float>();
 
-
                 std::ranges::for_each(camera[1], [](float& value) { value = -value; });
                 std::ranges::for_each(camera[2], [](float& value) { value = -value; });
 
@@ -65,7 +64,7 @@ namespace ngp::dataset {
                 const std::array ngp_camera{camera_row1[0], camera_row2[0], camera_row0[0], camera_row1[1], camera_row2[1], camera_row0[1], camera_row1[2], camera_row2[2], camera_row0[2], camera_row1[3], camera_row2[3], camera_row0[3]};
                 const float focal_length = 0.5f * static_cast<float>(width_u) / std::tan(camera_angle_x * 0.5f);
 
-                frames[frame_index] = NGPDataset::Frame{
+                frames[frame_index] = Frame{
                     .rgba        = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size},
                     .camera      = ngp_camera,
                     .width       = width_u,
@@ -80,23 +79,39 @@ namespace ngp::dataset {
             return frames;
         }
     } // namespace
-    std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale, const DatasetLoadOptions options) {
+
+    std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale, const DatasetLoadPlan plan) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
-            return NGPDataset{
-                .train       = load_nerf_synthetic_split(path, "transforms_train.json", scene_scale),
-                .validation  = options.load_validation ? load_nerf_synthetic_split(path, "transforms_val.json", scene_scale) : std::vector<NGPDataset::Frame>{},
-                .test        = options.load_test ? load_nerf_synthetic_split(path, "transforms_test.json", scene_scale) : std::vector<NGPDataset::Frame>{},
-                .scene_scale = scene_scale,
-            };
+            if (plan.frame_sets.empty()) throw std::runtime_error{"dataset load plan must request at least one frame set."};
+
+            NGPDataset dataset{.scene_scale = scene_scale};
+            dataset.frame_sets.reserve(plan.frame_sets.size());
+
+            for (const std::string& frame_set_name : plan.frame_sets) {
+                if (frame_set_name != "train" && frame_set_name != "validation" && frame_set_name != "test") throw std::runtime_error{std::format("unknown frame set '{}'.", frame_set_name)};
+                for (const FrameSet& frame_set : dataset.frame_sets)
+                    if (frame_set.name == frame_set_name) throw std::runtime_error{std::format("frame set '{}' was requested more than once.", frame_set_name)};
+
+                const std::string file_name = frame_set_name == "validation" ? "transforms_val.json" : std::format("transforms_{}.json", frame_set_name);
+                const std::filesystem::path json_path = path / file_name;
+                if (!std::filesystem::is_regular_file(json_path)) throw std::runtime_error{std::format("NeRF synthetic dataset '{}' is missing {}, required by frame set '{}'.", path.string(), file_name, frame_set_name)};
+
+                std::vector<Frame> frames = load_nerf_synthetic_split(path, file_name, scene_scale);
+                if (frames.empty()) throw std::runtime_error{std::format("NeRF synthetic frame set '{}' is empty.", frame_set_name)};
+                dataset.frame_sets.push_back(FrameSet{.name = frame_set_name, .frames = std::move(frames)});
+            }
+
+            return dataset;
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
         }
     }
 
-    std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale, const DatasetLoadOptions options) {
+    std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale, const DatasetLoadPlan plan) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
+            if (plan.frame_sets.empty()) throw std::runtime_error{"dataset load plan must request at least one frame set."};
             const std::filesystem::path json_path = path / "cameras.json";
             if (!std::filesystem::is_regular_file(json_path)) throw std::runtime_error{std::format("DD-NeRF dataset '{}' is missing cameras.json.", path.string())};
             if (!std::filesystem::is_directory(path / "images")) throw std::runtime_error{std::format("DD-NeRF dataset '{}' is missing an images directory.", path.string())};
@@ -114,10 +129,17 @@ namespace ngp::dataset {
             if (!std::isfinite(focal_x) || !std::isfinite(focal_y) || focal_x <= 0.0f || focal_y <= 0.0f) throw std::runtime_error{"DD-NeRF cameras.json declares invalid focal lengths."};
             if (!std::isfinite(principal_x) || !std::isfinite(principal_y) || principal_x < 0.0f || principal_y < 0.0f || principal_x >= static_cast<float>(width) || principal_y >= static_cast<float>(height)) throw std::runtime_error{"DD-NeRF cameras.json declares an invalid principal point."};
 
-            NGPDataset dataset = {};
-            dataset.train.reserve(frames_json.size());
-            if (options.load_validation) dataset.validation.reserve(frames_json.size() / 10uz + 1uz);
-            if (options.load_test) dataset.test.reserve(frames_json.size() / 10uz + 1uz);
+            NGPDataset dataset{.scene_scale = scene_scale};
+            dataset.frame_sets.reserve(plan.frame_sets.size());
+            for (const std::string& frame_set_name : plan.frame_sets) {
+                if (frame_set_name != "train" && frame_set_name != "validation" && frame_set_name != "test") throw std::runtime_error{std::format("unknown frame set '{}'.", frame_set_name)};
+                for (const FrameSet& frame_set : dataset.frame_sets)
+                    if (frame_set.name == frame_set_name) throw std::runtime_error{std::format("frame set '{}' was requested more than once.", frame_set_name)};
+                FrameSet frame_set{.name = frame_set_name};
+                if (frame_set_name == "train") frame_set.frames.reserve(frames_json.size());
+                else frame_set.frames.reserve(frames_json.size() / 10uz + 1uz);
+                dataset.frame_sets.push_back(std::move(frame_set));
+            }
 
             for (const nlohmann::json& frame_json : frames_json) {
                 std::filesystem::path hash_path = frame_json.at("file_path").get<std::string>();
@@ -129,8 +151,15 @@ namespace ngp::dataset {
                 }
 
                 const std::uint64_t split = hash % 10ull;
-                if (split == 0ull && !options.load_test) continue;
-                if (split == 1ull && !options.load_validation) continue;
+                const std::string_view frame_set_name = split == 0ull ? "test" : (split == 1ull ? "validation" : "train");
+                FrameSet* target_frame_set = nullptr;
+                for (FrameSet& frame_set : dataset.frame_sets) {
+                    if (frame_set.name == frame_set_name) {
+                        target_frame_set = std::addressof(frame_set);
+                        break;
+                    }
+                }
+                if (target_frame_set == nullptr) continue;
 
                 std::filesystem::path image_path = frame_json.at("file_path").get<std::string>();
                 image_path.make_preferred();
@@ -164,7 +193,7 @@ namespace ngp::dataset {
                 const std::array ngp_camera{camera_row1[0], camera_row2[0], camera_row0[0], camera_row1[1], camera_row2[1], camera_row0[1], camera_row1[2], camera_row2[2], camera_row0[2], camera_row1[3], camera_row2[3], camera_row0[3]};
                 const std::size_t rgba_size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4uz;
 
-                NGPDataset::Frame frame{
+                target_frame_set->frames.push_back(Frame{
                     .rgba        = std::vector<std::uint8_t>{raw_pixels.get(), raw_pixels.get() + rgba_size},
                     .camera      = ngp_camera,
                     .width       = width,
@@ -173,19 +202,11 @@ namespace ngp::dataset {
                     .focal_y     = focal_y,
                     .principal_x = principal_x,
                     .principal_y = principal_y,
-                };
-                if (split == 0ull)
-                    dataset.test.push_back(std::move(frame));
-                else if (split == 1ull)
-                    dataset.validation.push_back(std::move(frame));
-                else
-                    dataset.train.push_back(std::move(frame));
+                });
             }
 
-            if (dataset.train.empty()) throw std::runtime_error{"DD-NeRF split produced no training frames."};
-            if (options.load_validation && dataset.validation.empty()) throw std::runtime_error{"DD-NeRF split produced no validation frames."};
-            if (options.load_test && dataset.test.empty()) throw std::runtime_error{"DD-NeRF split produced no test frames."};
-            dataset.scene_scale = scene_scale;
+            for (const FrameSet& frame_set : dataset.frame_sets)
+                if (frame_set.frames.empty()) throw std::runtime_error{std::format("DD-NeRF frame set '{}' is empty.", frame_set.name)};
             return dataset;
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};

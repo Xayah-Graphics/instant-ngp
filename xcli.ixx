@@ -64,6 +64,7 @@ namespace xcli {
         friend class Command;
         friend CommandItem option(const OptionSpec& spec, bool& target);
         friend CommandItem option(const OptionSpec& spec, std::string& target);
+        friend CommandItem option(const OptionSpec& spec, std::vector<std::string>& target);
         friend CommandItem option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule);
         friend CommandItem option(const OptionSpec& spec, std::optional<std::string>& target);
         friend CommandItem option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule);
@@ -99,7 +100,7 @@ namespace xcli {
             const void* target_address = nullptr;
             NumericRule numeric_rule;
             std::optional<PathRule> path_rule;
-            std::variant<bool*, std::string*, std::filesystem::path*, std::optional<std::string>*, std::optional<std::filesystem::path>*, std::int32_t*, std::uint32_t*, float*> target;
+            std::variant<bool*, std::string*, std::vector<std::string>*, std::filesystem::path*, std::optional<std::string>*, std::optional<std::filesystem::path>*, std::int32_t*, std::uint32_t*, float*> target;
         };
 
         struct PositionalAction final {
@@ -136,6 +137,7 @@ namespace xcli {
 
         std::expected<ParseResult, std::string> parse(std::span<const char* const> arguments);
         std::expected<void, std::string> validate();
+        bool option_provided(std::string_view long_name) const;
         std::string help(std::span<const char* const> arguments) const;
         std::string help(std::span<const char* const> arguments, const HelpStyle& style) const;
 
@@ -156,7 +158,7 @@ namespace xcli {
             const void* target_address = nullptr;
             NumericRule numeric_rule;
             std::optional<PathRule> path_rule;
-            std::variant<bool*, std::string*, std::filesystem::path*, std::optional<std::string>*, std::optional<std::filesystem::path>*, std::int32_t*, std::uint32_t*, float*> target;
+            std::variant<bool*, std::string*, std::vector<std::string>*, std::filesystem::path*, std::optional<std::string>*, std::optional<std::filesystem::path>*, std::int32_t*, std::uint32_t*, float*> target;
         };
 
         struct PositionalBinding final {
@@ -185,6 +187,7 @@ namespace xcli {
         Command& accept(CommandItem&& item);
         Command& bind_option(const OptionSpec& spec, bool& target);
         Command& bind_option(const OptionSpec& spec, std::string& target);
+        Command& bind_option(const OptionSpec& spec, std::vector<std::string>& target);
         Command& bind_option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule);
         Command& bind_option(const OptionSpec& spec, std::optional<std::string>& target);
         Command& bind_option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule);
@@ -199,6 +202,7 @@ namespace xcli {
 
     export CommandItem option(const OptionSpec& spec, bool& target);
     export CommandItem option(const OptionSpec& spec, std::string& target);
+    export CommandItem option(const OptionSpec& spec, std::vector<std::string>& target);
     export CommandItem option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule = {});
     export CommandItem option(const OptionSpec& spec, std::optional<std::string>& target);
     export CommandItem option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule = {});

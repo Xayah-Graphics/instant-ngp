@@ -12,65 +12,48 @@ int main(const int argc, const char* const* const argv) {
     constexpr std::string_view ansi_green = "\x1b[32m";
     constexpr std::string_view ansi_yellow = "\x1b[33m";
     constexpr std::string_view ansi_red = "\x1b[31m";
-    constexpr std::string_view ansi_validation_badge = "\x1b[1;37;45m";
-    constexpr std::string_view ansi_validation_metric = "\x1b[1;95m";
-    constexpr std::string_view ansi_validation_best = "\x1b[1;33m";
-    constexpr std::string_view ansi_test_badge = "\x1b[1;37;44m";
-    constexpr std::string_view ansi_test_metric = "\x1b[1;96m";
-
-    constexpr std::uint32_t default_validate_every_steps = 5000u;
+    constexpr std::string_view ansi_evaluation_badge = "\x1b[1;37;45m";
+    constexpr std::string_view ansi_evaluation_metric = "\x1b[1;95m";
+    constexpr std::string_view ansi_evaluation_best = "\x1b[1;33m";
 
     std::filesystem::path dataset_path;
+    std::string optimize_frame_set = "train";
+    std::vector<std::string> evaluation_frame_sets;
     std::int32_t steps = 200000;
     std::int32_t log_every_steps = 1000;
-    std::uint32_t validate_every_steps = default_validate_every_steps;
+    std::uint32_t evaluate_every_steps = 5000u;
     std::uint32_t early_stop_patience = 5u;
-    bool no_validation = false;
+    bool no_optimize = false;
+    bool no_evaluation = false;
     float scene_scale = ngp::dataset::DEFAULT_SCENE_SCALE;
     float early_stop_min_delta_mse = 1e-6f;
     std::optional<std::filesystem::path> load_weights_path;
     std::optional<std::filesystem::path> save_weights_path;
-    std::optional<std::filesystem::path> test_output_path;
+    std::optional<std::filesystem::path> comparison_output_dir;
     std::string_view dataset_format;
 
     xcli::Command command =
-        xcli::Command{"Train Instant NGP."}
+        xcli::Command{"Optimize and evaluate Instant NGP on named frame sets."}
         | xcli::positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false, .required = true}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
         | xcli::option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
-        | xcli::option({.long_name = "steps", .value_name = "count", .description = "total training steps"}, steps, {.minimum = 1.0})
-        | xcli::option({.long_name = "log-every", .value_name = "count", .description = "training steps per progress log"}, log_every_steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "optimize", .value_name = "frame-set", .description = "frame set used for parameter optimization"}, optimize_frame_set)
+        | xcli::option({.long_name = "no-optimize", .description = "skip parameter optimization", .show_default = false}, no_optimize)
+        | xcli::option({.long_name = "evaluate", .value_name = "frame-set", .description = "frame set to evaluate; repeat for multiple sets", .default_text = "validation"}, evaluation_frame_sets)
+        | xcli::option({.long_name = "no-evaluation", .description = "skip evaluation and early stopping", .show_default = false}, no_evaluation)
+        | xcli::option({.long_name = "evaluate-every", .value_name = "count", .description = "optimization steps per interval evaluation"}, evaluate_every_steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "steps", .value_name = "count", .description = "total optimization steps"}, steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "log-every", .value_name = "count", .description = "optimization steps per progress log"}, log_every_steps, {.minimum = 1.0})
         | xcli::option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true})
-        | xcli::option({.long_name = "validate-every", .value_name = "count", .description = "full validation interval in steps"}, validate_every_steps, {.minimum = 1.0})
-        | xcli::option({.long_name = "no-validation", .description = "skip validation and early stopping", .show_default = false}, no_validation)
-        | xcli::option({.long_name = "early-stop-patience", .value_name = "count", .description = "validation checks without improvement before stopping; 0 disables early stop"}, early_stop_patience, {.minimum = 0.0})
-        | xcli::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum validation MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
-        | xcli::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before training"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file})
-        | xcli::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights"}, save_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
-        | xcli::option({.long_name = "test-output", .value_name = "dir", .description = "opt-in final test and comparison image output directory"}, test_output_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
+        | xcli::option({.long_name = "early-stop-patience", .value_name = "count", .description = "first evaluation frame set checks without improvement before stopping; 0 disables early stop"}, early_stop_patience, {.minimum = 0.0})
+        | xcli::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum first evaluation frame set MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
+        | xcli::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before optimization or evaluation"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file})
+        | xcli::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights after optimization"}, save_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
+        | xcli::option({.long_name = "comparison-output", .value_name = "dir", .description = "save final evaluation comparison images"}, comparison_output_dir, {.requirement = xcli::PathRequirement::existing_parent_directory})
         | xcli::example("../data/nerf-synthetic/lego --steps 30000")
-        | xcli::example("../data/dd-nerf-dataset/house1 --steps 30000 --log-every 1000")
-        | xcli::example("--dataset=../data/nerf-synthetic/lego --validate-every=5000")
-        | xcli::example("../data/nerf-synthetic/lego --steps 1 --no-validation")
-        | xcli::example("../data/nerf-synthetic/lego --steps 1 --test-output build-codex/test-lego")
-        | xcli::example("--load-weights build-codex/weights.safetensors --steps 30000 --save-weights build-codex/final.safetensors")
-        | xcli::validator("validation-mode", [&no_validation, &validate_every_steps, default_validate_every_steps] -> std::expected<void, std::string> {
-            if (no_validation && validate_every_steps != default_validate_every_steps) return std::unexpected{std::format("--no-validation cannot be combined with --validate-every={} because validation is disabled.", validate_every_steps)};
-            return {};
-        })
-        | xcli::validator("dataset-marker-set", [&dataset_path, &dataset_format, &no_validation, &test_output_path] -> std::expected<void, std::string> {
-            const bool has_nerf_train = std::filesystem::status(dataset_path / "transforms_train.json").type() == std::filesystem::file_type::regular;
-            const bool has_nerf_validation = std::filesystem::status(dataset_path / "transforms_val.json").type() == std::filesystem::file_type::regular;
-            const bool has_nerf_test = std::filesystem::status(dataset_path / "transforms_test.json").type() == std::filesystem::file_type::regular;
-            const bool has_nerf_synthetic_dataset = has_nerf_train;
-            const bool has_dd_nerf_dataset =
-                std::filesystem::status(dataset_path / "cameras.json").type() == std::filesystem::file_type::regular &&
-                std::filesystem::status(dataset_path / "images").type() == std::filesystem::file_type::directory;
-            if (has_nerf_synthetic_dataset == has_dd_nerf_dataset) return std::unexpected{std::format("dataset path '{}' must contain exactly one supported dataset marker set: NeRF synthetic transforms_train.json or DD-NeRF cameras.json + images/.", dataset_path.string())};
-            if (has_nerf_synthetic_dataset && !no_validation && !has_nerf_validation) return std::unexpected{std::format("NeRF synthetic dataset '{}' is missing transforms_val.json, required because validation is enabled.", dataset_path.string())};
-            if (has_nerf_synthetic_dataset && test_output_path.has_value() && !has_nerf_test) return std::unexpected{std::format("NeRF synthetic dataset '{}' is missing transforms_test.json, required because --test-output was provided.", dataset_path.string())};
-            dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
-            return {};
-        });
+        | xcli::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-codex/model.safetensors")
+        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-codex/model.safetensors")
+        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-codex/model.safetensors --comparison-output build-codex/test-lego")
+        | xcli::example("../data/nerf-synthetic/lego --evaluate validation --evaluate test --steps 1");
 
     const std::string usage = command.help(arguments);
 
@@ -85,32 +68,120 @@ int main(const int argc, const char* const* const argv) {
         return 0;
     }
 
-    const auto validation_result = command.validate();
-    if (!validation_result) {
-        std::println("{}error:{} {}", ansi_red, ansi_reset, validation_result.error());
+    const auto path_validation = command.validate();
+    if (!path_validation) {
+        std::println("{}error:{} {}", ansi_red, ansi_reset, path_validation.error());
         return 2;
     }
 
-    const bool validation_enabled = !no_validation;
-    const bool early_stop_enabled = validation_enabled && early_stop_patience != 0u;
-    const ngp::dataset::DatasetLoadOptions dataset_load_options{
-        .load_validation = validation_enabled,
-        .load_test       = test_output_path.has_value(),
-    };
-    const std::string validation_stage = validation_enabled ? std::format("every:{}", validate_every_steps) : std::string{"off"};
-    const std::string early_stop_stage = early_stop_enabled ? std::format("patience:{},min_delta:{:.6g}", early_stop_patience, static_cast<double>(early_stop_min_delta_mse)) : std::string{"off"};
-    const std::string test_stage = test_output_path.has_value() ? std::format("test_output={}", test_output_path->string()) : std::string{"test=off"};
+    if (!command.option_provided("evaluate") && !no_evaluation) evaluation_frame_sets.push_back("validation");
+
+    std::optional<std::string> cli_error;
+    if (optimize_frame_set != "train" && optimize_frame_set != "validation" && optimize_frame_set != "test") cli_error = std::format("--optimize must be one of train, validation, or test; got '{}'.", optimize_frame_set);
+    else {
+        for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+            if (evaluation_frame_set != "train" && evaluation_frame_set != "validation" && evaluation_frame_set != "test") {
+                cli_error = std::format("--evaluate must be one of train, validation, or test; got '{}'.", evaluation_frame_set);
+                break;
+            }
+            std::uint32_t duplicate_count = 0u;
+            for (const std::string& other_evaluation_frame_set : evaluation_frame_sets)
+                if (other_evaluation_frame_set == evaluation_frame_set) ++duplicate_count;
+            if (duplicate_count > 1u) {
+                cli_error = std::format("frame set '{}' was provided to --evaluate more than once.", evaluation_frame_set);
+                break;
+            }
+        }
+    }
+    if (!cli_error && no_optimize && !load_weights_path.has_value()) cli_error = "--no-optimize requires --load-weights.";
+    else if (!cli_error && no_optimize && no_evaluation) cli_error = "--no-optimize cannot be combined with --no-evaluation.";
+    else if (!cli_error && no_optimize && command.option_provided("optimize")) cli_error = "--optimize is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("steps")) cli_error = "--steps is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("log-every")) cli_error = "--log-every is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("save-weights")) cli_error = "--save-weights is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("evaluate-every")) cli_error = "--evaluate-every is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("early-stop-patience")) cli_error = "--early-stop-patience is not valid with --no-optimize.";
+    else if (!cli_error && no_optimize && command.option_provided("early-stop-min-delta")) cli_error = "--early-stop-min-delta is not valid with --no-optimize.";
+    else if (!cli_error && no_evaluation && command.option_provided("evaluate")) cli_error = "--evaluate is not valid with --no-evaluation.";
+    else if (!cli_error && no_evaluation && comparison_output_dir.has_value()) cli_error = "--comparison-output is not valid with --no-evaluation.";
+    else if (!cli_error && no_evaluation && command.option_provided("evaluate-every")) cli_error = "--evaluate-every is not valid with --no-evaluation.";
+    else if (!cli_error && no_evaluation && command.option_provided("early-stop-patience")) cli_error = "--early-stop-patience is not valid with --no-evaluation.";
+    else if (!cli_error && no_evaluation && command.option_provided("early-stop-min-delta")) cli_error = "--early-stop-min-delta is not valid with --no-evaluation.";
+    if (cli_error.has_value()) {
+        std::println("{}error:{} {}", ansi_red, ansi_reset, *cli_error);
+        return 2;
+    }
+
+    std::vector<std::string> requested_frame_sets;
+    if (!no_optimize) requested_frame_sets.push_back(optimize_frame_set);
+    if (!no_evaluation) {
+        for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+            bool already_requested = false;
+            for (const std::string& requested_frame_set : requested_frame_sets)
+                if (requested_frame_set == evaluation_frame_set) already_requested = true;
+            if (!already_requested) requested_frame_sets.push_back(evaluation_frame_set);
+        }
+    }
+
+    const bool has_nerf_train = std::filesystem::status(dataset_path / "transforms_train.json").type() == std::filesystem::file_type::regular;
+    const bool has_nerf_validation = std::filesystem::status(dataset_path / "transforms_val.json").type() == std::filesystem::file_type::regular;
+    const bool has_nerf_test = std::filesystem::status(dataset_path / "transforms_test.json").type() == std::filesystem::file_type::regular;
+    const bool has_nerf_synthetic_dataset = has_nerf_train || has_nerf_validation || has_nerf_test;
+    const bool has_dd_nerf_dataset =
+        std::filesystem::status(dataset_path / "cameras.json").type() == std::filesystem::file_type::regular &&
+        std::filesystem::status(dataset_path / "images").type() == std::filesystem::file_type::directory;
+    if (has_nerf_synthetic_dataset == has_dd_nerf_dataset) {
+        std::println("{}error:{} dataset path '{}' must contain exactly one supported dataset marker set: NeRF synthetic transforms_*.json or DD-NeRF cameras.json + images/.", ansi_red, ansi_reset, dataset_path.string());
+        return 2;
+    }
+    if (has_nerf_synthetic_dataset) {
+        for (const std::string& requested_frame_set : requested_frame_sets) {
+            if (requested_frame_set == "train" && !has_nerf_train) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_train.json, required by frame set 'train'.", dataset_path.string());
+            else if (requested_frame_set == "validation" && !has_nerf_validation) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_val.json, required by frame set 'validation'.", dataset_path.string());
+            else if (requested_frame_set == "test" && !has_nerf_test) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_test.json, required by frame set 'test'.", dataset_path.string());
+            if (cli_error.has_value()) break;
+        }
+    }
+    if (cli_error.has_value()) {
+        std::println("{}error:{} {}", ansi_red, ansi_reset, *cli_error);
+        return 2;
+    }
+    dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
+
+    const bool evaluation_enabled = !no_evaluation;
+    const bool optimization_enabled = !no_optimize;
+    const bool early_stop_enabled = optimization_enabled && evaluation_enabled && early_stop_patience != 0u;
+
+    std::string frame_set_stage;
+    for (const std::string& requested_frame_set : requested_frame_sets) {
+        if (!frame_set_stage.empty()) frame_set_stage += ",";
+        frame_set_stage += requested_frame_set;
+    }
+    std::string evaluation_stage = "off";
+    if (evaluation_enabled) {
+        evaluation_stage = "sets:";
+        for (std::size_t evaluation_index = 0uz; evaluation_index < evaluation_frame_sets.size(); ++evaluation_index) {
+            if (evaluation_index != 0uz) evaluation_stage += ",";
+            evaluation_stage += evaluation_frame_sets[evaluation_index];
+        }
+        if (optimization_enabled) evaluation_stage += std::format(",every:{}", evaluate_every_steps);
+    }
+    const std::string optimize_stage = optimization_enabled ? optimize_frame_set : "off";
+    const std::string early_stop_stage = early_stop_enabled ? std::format("frame_set:{},patience:{},min_delta:{:.6g}", evaluation_frame_sets.front(), early_stop_patience, static_cast<double>(early_stop_min_delta_mse)) : std::string{"off"};
+    const std::string comparison_stage = comparison_output_dir.has_value() ? std::format("comparison_output={}", comparison_output_dir->string()) : std::string{"comparison_output=off"};
 
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    std::println("{}[{:%F %T}]{} {}{:<7}{} dataset={} format={} scene_scale={} steps={} log_every={} validation={} early_stop={} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, steps, log_every_steps, validation_stage, early_stop_stage, test_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
+    if (optimization_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} dataset={} format={} scene_scale={} frame_sets={} optimize={} steps={} log_every={} evaluation={} early_stop={} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, optimize_stage, steps, log_every_steps, evaluation_stage, early_stop_stage, comparison_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
+    else std::println("{}[{:%F %T}]{} {}{:<8}{} dataset={} format={} scene_scale={} frame_sets={} optimize=off evaluation={} {} load_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, evaluation_stage, comparison_stage, load_weights_path.has_value() ? load_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    std::println("{}[{:%F %T}]{} {}{:<7}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
+    std::println("{}[{:%F %T}]{} {}{:<8}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
 
     std::optional<std::string> pipeline_error;
     std::unique_ptr<ngp::train::InstantNGP> ngp;
+    const ngp::dataset::DatasetLoadPlan dataset_load_plan{.frame_sets = requested_frame_sets};
 
-    const auto dataset = dataset_format == "nerf-synthetic" ? ngp::dataset::load_nerf_synthetic(dataset_path, scene_scale, dataset_load_options) : ngp::dataset::load_dd_nerf_dataset(dataset_path, scene_scale, dataset_load_options);
+    const auto dataset = dataset_format == "nerf-synthetic" ? ngp::dataset::load_nerf_synthetic(dataset_path, scene_scale, dataset_load_plan) : ngp::dataset::load_dd_nerf_dataset(dataset_path, scene_scale, dataset_load_plan);
     if (!dataset) {
         pipeline_error = dataset.error();
     } else {
@@ -126,71 +197,78 @@ int main(const int argc, const char* const* const argv) {
         if (!loaded_weights) pipeline_error = loaded_weights.error();
         else {
             const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-            std::println("{}[{:%F %T}]{} {}{:<7}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, load_weights_path->string());
+            std::println("{}[{:%F %T}]{} {}{:<8}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, load_weights_path->string());
         }
     }
 
-    if (!pipeline_error) {
+    if (!pipeline_error && optimization_enabled) {
         float first_loss = 0.0f;
         float last_loss = 0.0f;
-        float train_ms = 0.0f;
-        float best_validation_mse = std::numeric_limits<float>::infinity();
-        float best_validation_psnr = 0.0f;
+        float optimize_ms = 0.0f;
+        float best_evaluation_mse = std::numeric_limits<float>::infinity();
+        float best_evaluation_psnr = 0.0f;
         std::uint32_t final_step = 0u;
-        std::uint32_t best_validation_step = 0u;
-        std::uint32_t validation_checks_without_improvement = 0u;
+        std::uint32_t best_evaluation_step = 0u;
+        std::uint32_t evaluation_checks_without_improvement = 0u;
         bool stopped_early = false;
-        std::uint32_t next_validation_step = validate_every_steps;
+        std::uint32_t next_evaluation_step = evaluate_every_steps;
 
-        for (std::int32_t trained_steps = 0; trained_steps < steps;) {
-            const std::int32_t requested_steps = std::min(log_every_steps, steps - trained_steps);
-            const auto stats = ngp->train(requested_steps);
+        for (std::int32_t optimized_steps = 0; optimized_steps < steps;) {
+            const std::int32_t requested_steps = std::min(log_every_steps, steps - optimized_steps);
+            const auto stats = ngp->optimize({.frame_set = optimize_frame_set, .iterations = requested_steps});
             if (!stats) {
                 pipeline_error = stats.error();
                 break;
             }
 
-            if (trained_steps == 0) first_loss = stats->loss;
+            if (optimized_steps == 0) first_loss = stats->loss;
             last_loss = stats->loss;
-            train_ms += stats->elapsed_ms;
+            optimize_ms += stats->elapsed_ms;
             final_step = stats->step;
-            trained_steps += requested_steps;
-            const auto train_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-            std::println("{}[{:%F %T}]{} {}{:<7}{} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms rate={:>7.2f} step/s next_rays={:>6} samples={:>7}/{:<7} sample_eff={:>6.2f}% occupied={:>7} occupancy={:>6.2f}%", ansi_dim, train_timestamp, ansi_reset, ansi_green, "TRAIN", ansi_reset, stats->step, steps, stats->loss, stats->elapsed_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->next_rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->sample_efficiency_ratio * 100.0f, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
+            optimized_steps += requested_steps;
+            const auto optimize_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            std::println("{}[{:%F %T}]{} {}{:<8}{} frame_set={} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms rate={:>7.2f} step/s next_rays={:>6} samples={:>7}/{:<7} sample_eff={:>6.2f}% occupied={:>7} occupancy={:>6.2f}%", ansi_dim, optimize_timestamp, ansi_reset, ansi_green, "OPTIMIZE", ansi_reset, optimize_frame_set, stats->step, steps, stats->loss, stats->elapsed_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->next_rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->sample_efficiency_ratio * 100.0f, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
 
-            if (validation_enabled && (stats->step >= next_validation_step || stats->step >= static_cast<std::uint32_t>(steps))) {
-                const auto validation = ngp->validate();
-                if (!validation) {
-                    pipeline_error = validation.error();
-                    break;
+            if (evaluation_enabled && (stats->step >= next_evaluation_step || stats->step >= static_cast<std::uint32_t>(steps))) {
+                bool first_evaluation_improved = false;
+                for (std::size_t evaluation_index = 0uz; evaluation_index < evaluation_frame_sets.size(); ++evaluation_index) {
+                    const auto evaluation = ngp->evaluate({.frame_set = evaluation_frame_sets[evaluation_index]});
+                    if (!evaluation) {
+                        pipeline_error = evaluation.error();
+                        break;
+                    }
+
+                    const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                    if (evaluation_index == 0uz) {
+                        first_evaluation_improved = evaluation->mse < best_evaluation_mse - early_stop_min_delta_mse;
+                        if (first_evaluation_improved) {
+                            best_evaluation_mse = evaluation->mse;
+                            best_evaluation_psnr = evaluation->psnr;
+                            best_evaluation_step = evaluation->step;
+                            evaluation_checks_without_improvement = 0u;
+                        } else if (early_stop_enabled) {
+                            ++evaluation_checks_without_improvement;
+                        }
+
+                        if (early_stop_enabled) std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | patience={}{}{}/{} | images={:>3} pixels={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, first_evaluation_improved ? ansi_green : ansi_yellow, first_evaluation_improved ? "improved" : "stalled", ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, ansi_evaluation_best, best_evaluation_mse, best_evaluation_step, ansi_reset, evaluation_checks_without_improvement == 0u ? ansi_green : ansi_yellow, evaluation_checks_without_improvement, ansi_reset, early_stop_patience, evaluation->image_count, evaluation->pixel_count, evaluation->elapsed_ms);
+                        else std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | early_stop=off | images={:>3} pixels={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, first_evaluation_improved ? ansi_green : ansi_yellow, first_evaluation_improved ? "improved" : "stalled", ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, ansi_evaluation_best, best_evaluation_mse, best_evaluation_step, ansi_reset, evaluation->image_count, evaluation->pixel_count, evaluation->elapsed_ms);
+                    } else {
+                        std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}evaluated{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} pixels={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->pixel_count, evaluation->elapsed_ms);
+                    }
                 }
-
-                const bool validation_improved = validation->mse < best_validation_mse - early_stop_min_delta_mse;
-                if (validation_improved) {
-                    best_validation_mse = validation->mse;
-                    best_validation_psnr = validation->psnr;
-                    best_validation_step = validation->step;
-                    validation_checks_without_improvement = 0u;
-                } else if (early_stop_enabled) {
-                    ++validation_checks_without_improvement;
-                }
-
-                const auto validation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                if (early_stop_enabled) std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | patience={}{}{}/{} | images={:>3} pixels={} val={:>8.3f}ms", ansi_dim, validation_timestamp, ansi_reset, ansi_validation_badge, "VALID", ansi_reset, validation->step, validation_improved ? ansi_green : ansi_yellow, validation_improved ? "improved" : "stalled", ansi_reset, ansi_validation_metric, validation->mse, ansi_reset, ansi_cyan, validation->psnr, ansi_reset, ansi_validation_best, best_validation_mse, best_validation_step, ansi_reset, validation_checks_without_improvement == 0u ? ansi_green : ansi_yellow, validation_checks_without_improvement, ansi_reset, early_stop_patience, validation->image_count, validation->pixel_count, validation->elapsed_ms);
-                else std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} status={}{}{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | {}BEST={:.8f}@{}{} | early_stop=off | images={:>3} pixels={} val={:>8.3f}ms", ansi_dim, validation_timestamp, ansi_reset, ansi_validation_badge, "VALID", ansi_reset, validation->step, validation_improved ? ansi_green : ansi_yellow, validation_improved ? "improved" : "stalled", ansi_reset, ansi_validation_metric, validation->mse, ansi_reset, ansi_cyan, validation->psnr, ansi_reset, ansi_validation_best, best_validation_mse, best_validation_step, ansi_reset, validation->image_count, validation->pixel_count, validation->elapsed_ms);
-
-                if (early_stop_enabled && validation_checks_without_improvement >= early_stop_patience) {
+                if (pipeline_error) break;
+                if (early_stop_enabled && !first_evaluation_improved && evaluation_checks_without_improvement >= early_stop_patience) {
                     stopped_early = true;
                     break;
                 }
-                while (next_validation_step <= stats->step) next_validation_step += validate_every_steps;
+                while (next_evaluation_step <= stats->step) next_evaluation_step += evaluate_every_steps;
             }
         }
 
         if (!pipeline_error) {
             const auto summary_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-            if (validation_enabled) std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s best_validation={:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms, best_validation_mse, best_validation_step, best_validation_psnr);
-            else std::println("{}[{:%F %T}]{} {}{:<7}{} steps={} stopped_early=false first_loss={:.6f} last_loss={:.6f} train={:.3f}s avg={:.2f} step/s validation=off", ansi_dim, summary_timestamp, ansi_reset, ansi_bold, "SUMMARY", ansi_reset, final_step, first_loss, last_loss, train_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / train_ms);
+            if (evaluation_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} steps={} stopped_early={} first_loss={:.6f} last_loss={:.6f} optimize={:.3f}s avg={:.2f} step/s best_evaluation={}:{:.8f}@{} psnr={:.2f}", ansi_dim, summary_timestamp, ansi_reset, stopped_early ? ansi_yellow : ansi_bold, "SUMMARY", ansi_reset, final_step, stopped_early, first_loss, last_loss, optimize_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / optimize_ms, evaluation_frame_sets.front(), best_evaluation_mse, best_evaluation_step, best_evaluation_psnr);
+            else std::println("{}[{:%F %T}]{} {}{:<8}{} steps={} stopped_early=false first_loss={:.6f} last_loss={:.6f} optimize={:.3f}s avg={:.2f} step/s evaluation=off", ansi_dim, summary_timestamp, ansi_reset, ansi_bold, "SUMMARY", ansi_reset, final_step, first_loss, last_loss, optimize_ms * 0.001f, static_cast<float>(final_step) * 1000.0f / optimize_ms);
         }
 
         if (!pipeline_error && save_weights_path.has_value()) {
@@ -198,22 +276,40 @@ int main(const int argc, const char* const* const argv) {
             if (!saved_weights) pipeline_error = saved_weights.error();
             else {
                 const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                std::println("{}[{:%F %T}]{} {}{:<7}{} saved={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, save_weights_path->string());
+                std::println("{}[{:%F %T}]{} {}{:<8}{} saved={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, save_weights_path->string());
             }
         }
 
-        if (!pipeline_error && test_output_path.has_value()) {
-            const auto test = ngp->test(*test_output_path);
-            if (!test) pipeline_error = test.error();
-            else {
-                const auto test_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                std::println("{}[{:%F %T}]{} {} {:<7} {} step={:>6} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} test={:>8.3f}ms", ansi_dim, test_timestamp, ansi_reset, ansi_test_badge, "TEST", ansi_reset, test->step, ansi_test_metric, test->mse, ansi_reset, ansi_cyan, test->psnr, ansi_reset, test->image_count, test->comparison_image_count, test->pixel_count, test->output_dir.string(), test->elapsed_ms);
+        if (!pipeline_error && comparison_output_dir.has_value()) {
+            for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+                const std::filesystem::path output_dir = evaluation_frame_sets.size() == 1uz ? *comparison_output_dir : *comparison_output_dir / evaluation_frame_set;
+                const auto evaluation = ngp->evaluate({.frame_set = evaluation_frame_set, .comparison_output_dir = output_dir});
+                if (!evaluation) {
+                    pipeline_error = evaluation.error();
+                    break;
+                }
+                const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}saved{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->comparison_image_count, evaluation->pixel_count, evaluation->output_dir.string(), evaluation->elapsed_ms);
             }
         }
     }
 
+    if (!pipeline_error && !optimization_enabled) {
+        for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+            const std::optional<std::filesystem::path> output_dir = comparison_output_dir.has_value() ? std::optional<std::filesystem::path>{evaluation_frame_sets.size() == 1uz ? *comparison_output_dir : *comparison_output_dir / evaluation_frame_set} : std::nullopt;
+            const auto evaluation = ngp->evaluate({.frame_set = evaluation_frame_set, .comparison_output_dir = output_dir});
+            if (!evaluation) {
+                pipeline_error = evaluation.error();
+                break;
+            }
+            const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+            if (output_dir.has_value()) std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}saved{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->comparison_image_count, evaluation->pixel_count, evaluation->output_dir.string(), evaluation->elapsed_ms);
+            else std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}evaluated{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} pixels={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->pixel_count, evaluation->elapsed_ms);
+        }
+    }
+
     const auto finish_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    if (!pipeline_error) std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=succeeded", ansi_dim, finish_timestamp, ansi_reset, ansi_bold, "DONE", ansi_reset);
-    else std::println("{}[{:%F %T}]{} {}{:<7}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, *pipeline_error);
+    if (!pipeline_error) std::println("{}[{:%F %T}]{} {}{:<8}{} pipeline=succeeded", ansi_dim, finish_timestamp, ansi_reset, ansi_bold, "DONE", ansi_reset);
+    else std::println("{}[{:%F %T}]{} {}{:<8}{} pipeline=failed error=\"{}\"", ansi_dim, finish_timestamp, ansi_reset, ansi_red, "ERROR", ansi_reset, *pipeline_error);
     return !pipeline_error ? 0 : 1;
 }

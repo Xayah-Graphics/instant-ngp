@@ -42,6 +42,22 @@ namespace xcli {
         }};
     }
 
+    CommandItem option(const OptionSpec& spec, std::vector<std::string>& target) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .target = std::addressof(target),
+        }};
+    }
+
     CommandItem option(const OptionSpec& spec, std::filesystem::path& target, const PathRule rule) {
         return CommandItem{CommandItem::OptionAction{
             .spec = {
@@ -206,6 +222,7 @@ namespace xcli {
 
             if (bool** target = std::get_if<bool*>(std::addressof(action->target))) return this->bind_option(spec, **target);
             if (std::string** target = std::get_if<std::string*>(std::addressof(action->target))) return this->bind_option(spec, **target);
+            if (std::vector<std::string>** target = std::get_if<std::vector<std::string>*>(std::addressof(action->target))) return this->bind_option(spec, **target);
             if (std::filesystem::path** target = std::get_if<std::filesystem::path*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->path_rule.value_or(PathRule{}));
             if (std::optional<std::string>** target = std::get_if<std::optional<std::string>*>(std::addressof(action->target))) return this->bind_option(spec, **target);
             if (std::optional<std::filesystem::path>** target = std::get_if<std::optional<std::filesystem::path>*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->path_rule.value_or(PathRule{}));
@@ -278,6 +295,42 @@ namespace xcli {
         binding.target = std::addressof(target);
         if (spec.default_text.has_value()) binding.default_text = std::string{*spec.default_text};
         else if (spec.show_default) binding.default_text = target;
+        if (binding.long_name.empty()) throw std::runtime_error{"option long_name must not be empty."};
+        if (binding.long_name.starts_with("-")) throw std::runtime_error{std::format("option '{}' must be registered without '-' prefixes.", binding.long_name)};
+        if (binding.long_name == "help") throw std::runtime_error{"option '--help' is reserved."};
+        if (binding.value_name.empty()) throw std::runtime_error{std::format("option '--{}' must declare value_name.", binding.long_name)};
+        for (const char character : binding.long_name) {
+            const bool valid_character = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-';
+            if (!valid_character) throw std::runtime_error{std::format("option '{}' contains invalid character '{}'.", binding.long_name, character)};
+        }
+        if (binding.short_name.has_value() && (*binding.short_name == 'h' || *binding.short_name == '-' || *binding.short_name == '=' || *binding.short_name == '\0')) throw std::runtime_error{std::format("option '--{}' uses invalid or reserved short name.", binding.long_name)};
+        for (const OptionBinding& option : this->options) {
+            if (option.long_name == binding.long_name) throw std::runtime_error{std::format("option '--{}' was registered more than once.", binding.long_name)};
+            if (option.short_name.has_value() && binding.short_name.has_value() && *option.short_name == *binding.short_name) throw std::runtime_error{std::format("short option '-{}' was registered more than once.", *binding.short_name)};
+        }
+        this->options.push_back(std::move(binding));
+        return *this;
+    }
+
+    Command& Command::bind_option(const OptionSpec& spec, std::vector<std::string>& target) {
+        OptionBinding binding = {};
+        binding.long_name = spec.long_name;
+        binding.short_name = spec.short_name;
+        binding.value_name = spec.value_name;
+        binding.description = spec.description;
+        binding.show_default = spec.show_default;
+        binding.required = spec.required;
+        binding.target_address = std::addressof(target);
+        binding.target = std::addressof(target);
+        if (spec.default_text.has_value()) binding.default_text = std::string{*spec.default_text};
+        else if (spec.show_default && !target.empty()) {
+            std::string default_text;
+            for (const std::string& value : target) {
+                if (!default_text.empty()) default_text += ",";
+                default_text += value;
+            }
+            binding.default_text = std::move(default_text);
+        }
         if (binding.long_name.empty()) throw std::runtime_error{"option long_name must not be empty."};
         if (binding.long_name.starts_with("-")) throw std::runtime_error{std::format("option '{}' must be registered without '-' prefixes.", binding.long_name)};
         if (binding.long_name == "help") throw std::runtime_error{"option '--help' is reserved."};
@@ -587,10 +640,15 @@ namespace xcli {
                     if (value.empty()) return std::unexpected{std::format("{} requires a value.", display_name)};
                 }
 
-                for (const OptionBinding& option : this->options) if (option.target_address == matched_option->target_address && option.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
-                for (const PositionalBinding& positional : this->positionals) if (positional.target_address == matched_option->target_address && positional.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                const bool option_appends_values = std::holds_alternative<std::vector<std::string>*>(matched_option->target);
+                if (!option_appends_values) {
+                    for (const OptionBinding& option : this->options) if (option.target_address == matched_option->target_address && option.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                    for (const PositionalBinding& positional : this->positionals) if (positional.target_address == matched_option->target_address && positional.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                }
                 if (std::string** target = std::get_if<std::string*>(std::addressof(matched_option->target))) {
                     **target = std::string{value};
+                } else if (std::vector<std::string>** target = std::get_if<std::vector<std::string>*>(std::addressof(matched_option->target))) {
+                    (**target).push_back(std::string{value});
                 } else if (std::filesystem::path** target = std::get_if<std::filesystem::path*>(std::addressof(matched_option->target))) {
                     **target = std::filesystem::path{value};
                 } else if (std::optional<std::string>** target = std::get_if<std::optional<std::string>*>(std::addressof(matched_option->target))) {
@@ -650,10 +708,15 @@ namespace xcli {
                 if (arguments[index + 1uz] == nullptr) return std::unexpected{std::format("{} requires a value.", display_name)};
                 const std::string_view value{arguments[++index]};
                 if (value.empty()) return std::unexpected{std::format("{} requires a value.", display_name)};
-                for (const OptionBinding& option : this->options) if (option.target_address == matched_option->target_address && option.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
-                for (const PositionalBinding& positional : this->positionals) if (positional.target_address == matched_option->target_address && positional.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                const bool option_appends_values = std::holds_alternative<std::vector<std::string>*>(matched_option->target);
+                if (!option_appends_values) {
+                    for (const OptionBinding& option : this->options) if (option.target_address == matched_option->target_address && option.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                    for (const PositionalBinding& positional : this->positionals) if (positional.target_address == matched_option->target_address && positional.seen) return std::unexpected{std::format("{} was provided more than once.", display_name)};
+                }
                 if (std::string** target = std::get_if<std::string*>(std::addressof(matched_option->target))) {
                     **target = std::string{value};
+                } else if (std::vector<std::string>** target = std::get_if<std::vector<std::string>*>(std::addressof(matched_option->target))) {
+                    (**target).push_back(std::string{value});
                 } else if (std::filesystem::path** target = std::get_if<std::filesystem::path*>(std::addressof(matched_option->target))) {
                     **target = std::filesystem::path{value};
                 } else if (std::optional<std::string>** target = std::get_if<std::optional<std::string>*>(std::addressof(matched_option->target))) {
@@ -798,6 +861,14 @@ namespace xcli {
             if (!validation) return std::unexpected{std::format("{}: {}", validator.name, validation.error())};
         }
         return {};
+    }
+
+    bool Command::option_provided(const std::string_view long_name) const {
+        if (long_name.empty()) throw std::runtime_error{"option name must not be empty."};
+        if (long_name.starts_with("-")) throw std::runtime_error{std::format("option name '{}' must not include '-' prefixes.", long_name)};
+        for (const OptionBinding& option : this->options)
+            if (option.long_name == long_name) return option.seen;
+        throw std::runtime_error{std::format("option '{}' is not registered.", long_name)};
     }
 
     std::string Command::help(const std::span<const char* const> arguments) const {
