@@ -79,6 +79,14 @@ namespace ngp::train {
                 cuda::initialize_grid_parameters(this->device.params_full_precision, this->device.params, this->device.param_gradients);
             }
 
+            this->host.current_step = 0u;
+            this->host.rays_per_batch = cuda::config::INITIAL_RAYS_PER_BATCH;
+            this->host.inference_sample_count = cuda::config::MAX_SAMPLES;
+            this->host.measured_sample_count_before_compaction = 0u;
+            this->host.measured_sample_count = 0u;
+            this->host.density_grid_ema_step = 0u;
+            this->host.density_grid_occupied_cells = 0u;
+
         } catch (...) {
             for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
             cuda::destroy_cublaslt(this->device.cublaslt_handle);

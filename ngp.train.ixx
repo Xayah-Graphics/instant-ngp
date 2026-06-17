@@ -1,5 +1,3 @@
-module;
-#include "ngp.train.h"
 export module ngp.train;
 import std;
 
@@ -154,8 +152,8 @@ namespace ngp::train {
 
             // Mutated by optimize(): step, adaptive batch shape, and latest counters.
             std::uint32_t current_step                            = 0u;
-            std::uint32_t rays_per_batch                          = cuda::config::INITIAL_RAYS_PER_BATCH;
-            std::uint32_t inference_sample_count                  = cuda::config::MAX_SAMPLES;
+            std::uint32_t rays_per_batch                          = 0u;
+            std::uint32_t inference_sample_count                  = 0u;
             std::uint32_t measured_sample_count_before_compaction = 0u;
             std::uint32_t measured_sample_count                   = 0u;
             mutable std::uint32_t density_grid_ema_step           = 0u;
