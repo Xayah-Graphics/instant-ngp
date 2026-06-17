@@ -7,7 +7,7 @@ import std;
 namespace ngp::train {
     export struct TrainStats final {
         std::uint32_t step                                    = 0u;
-        std::uint32_t rays_per_batch                          = 0u;
+        std::uint32_t next_rays_per_batch                     = 0u;
         std::uint32_t measured_sample_count_before_compaction = 0u;
         std::uint32_t measured_sample_count                   = 0u;
         std::uint32_t density_grid_occupied_cells             = 0u;
