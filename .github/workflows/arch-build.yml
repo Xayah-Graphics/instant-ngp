@@ -113,6 +113,7 @@ jobs:
           set -euxo pipefail
           cmake -S . -B "${INSTANT_NGP_BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+            -DNGP_BUILD_BENCHMARKS=ON \
             -DCUDAToolkit_ROOT="${CUDAToolkit_ROOT}"
 
       - name: Build

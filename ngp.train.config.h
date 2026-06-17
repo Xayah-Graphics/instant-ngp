@@ -2,7 +2,6 @@
 #define NGP_TRAIN_CONFIG_H
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string_view>

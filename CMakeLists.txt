@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 4.3.0)
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 project(InstantNGP VERSION 1.0.0 LANGUAGES CXX CUDA)
 
+option(NGP_BUILD_BENCHMARKS "Build optional benchmark runners" OFF)
 
 # ============================================================================
 # C++ Configuration
@@ -74,40 +75,13 @@ download_if_needed(
         "${CMAKE_CURRENT_BINARY_DIR}/vendor/json/json.hpp"
 )
 download_if_needed(
-        "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
-        "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
-)
-download_if_needed(
         "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image_write.h"
         "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image_write.h"
 )
 
 # ============================================================================
-# Libraries
+# Core Library
 # ============================================================================
-add_library(xcli)
-target_sources(
-        xcli
-        PRIVATE
-        xcli.cpp
-        PUBLIC
-        FILE_SET cxx_modules TYPE CXX_MODULES FILES
-        xcli.ixx
-)
-set_property(TARGET xcli PROPERTY CXX_MODULE_STD ON)
-
-add_library(ngp-dataset)
-target_sources(
-        ngp-dataset
-        PRIVATE
-        ngp.dataset.cpp
-        PUBLIC
-        FILE_SET cxx_modules TYPE CXX_MODULES FILES
-        ngp.dataset.ixx
-)
-target_include_directories(ngp-dataset PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-set_property(TARGET ngp-dataset PROPERTY CXX_MODULE_STD ON)
-
 add_library(ngp-train)
 target_sources(
         ngp-train
@@ -127,8 +101,38 @@ set_property(TARGET ngp-train PROPERTY CXX_MODULE_STD ON)
 
 
 # ============================================================================
-# Executable
+# Optional Benchmarks
 # ============================================================================
-add_executable(instant-ngp-app main.cpp)
-target_link_libraries(instant-ngp-app PRIVATE xcli ngp-dataset ngp-train)
-set_property(TARGET instant-ngp-app PROPERTY CXX_MODULE_STD ON)
+if (NGP_BUILD_BENCHMARKS)
+    download_if_needed(
+            "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
+    )
+
+    add_library(benchmark-xcli)
+    target_sources(
+            benchmark-xcli
+            PRIVATE
+            benchmarks/xcli.cpp
+            PUBLIC
+            FILE_SET cxx_modules TYPE CXX_MODULES FILES
+            benchmarks/xcli.ixx
+    )
+    set_property(TARGET benchmark-xcli PROPERTY CXX_MODULE_STD ON)
+
+    add_library(benchmark-ngp-dataset)
+    target_sources(
+            benchmark-ngp-dataset
+            PRIVATE
+            benchmarks/ngp.dataset.cpp
+            PUBLIC
+            FILE_SET cxx_modules TYPE CXX_MODULES FILES
+            benchmarks/ngp.dataset.ixx
+    )
+    target_include_directories(benchmark-ngp-dataset PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    set_property(TARGET benchmark-ngp-dataset PROPERTY CXX_MODULE_STD ON)
+
+    add_executable(instant-ngp-benchmark benchmarks/main.cpp)
+    target_link_libraries(instant-ngp-benchmark PRIVATE benchmark-xcli benchmark-ngp-dataset ngp-train)
+    set_property(TARGET instant-ngp-benchmark PROPERTY CXX_MODULE_STD ON)
+endif ()

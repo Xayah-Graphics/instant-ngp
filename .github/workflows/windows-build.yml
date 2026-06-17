@@ -64,6 +64,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE="$env:CMAKE_BUILD_TYPE" `
+            -DNGP_BUILD_BENCHMARKS=ON `
             -DCUDAToolkit_ROOT="$env:CUDA_PATH"
 
       - name: Build

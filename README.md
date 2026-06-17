@@ -10,7 +10,7 @@ On dev...
 
 ## 2. Build Instruction
 
-#### Build
+#### Build Core Library
 
 - CMake 4.3.0 or higher
 - Ninja build system (for CXX std module support)
@@ -20,4 +20,14 @@ On dev...
 ```
 cmake -B build -S . -G Ninja
 cmake --build build -j 30
+```
+
+The default build only produces the core `ngp-train` library. Dataset loading, CLI parsing, and the runnable benchmark runner are intentionally kept outside the core library.
+
+#### Build Benchmarks
+
+```
+cmake -B build-benchmarks -S . -G Ninja -DNGP_BUILD_BENCHMARKS=ON
+cmake --build build-benchmarks -j 30
+build-benchmarks\instant-ngp-benchmark.exe --help
 ```

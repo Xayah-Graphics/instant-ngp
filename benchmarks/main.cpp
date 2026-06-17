@@ -33,7 +33,7 @@ int main(const int argc, const char* const* const argv) {
     std::string_view dataset_format;
 
     xcli::Command command =
-        xcli::Command{"Optimize and evaluate Instant NGP on named frame sets."}
+        xcli::Command{"Benchmark Instant NGP optimization and evaluation on named frame sets."}
         | xcli::positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false, .required = true}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
         | xcli::option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
         | xcli::option({.long_name = "optimize", .value_name = "frame-set", .description = "frame set used for parameter optimization"}, optimize_frame_set)
@@ -50,9 +50,9 @@ int main(const int argc, const char* const* const argv) {
         | xcli::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights after optimization"}, save_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
         | xcli::option({.long_name = "comparison-output", .value_name = "dir", .description = "save final evaluation comparison images"}, comparison_output_dir, {.requirement = xcli::PathRequirement::existing_parent_directory})
         | xcli::example("../data/nerf-synthetic/lego --steps 30000")
-        | xcli::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-codex/model.safetensors")
-        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-codex/model.safetensors")
-        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-codex/model.safetensors --comparison-output build-codex/test-lego")
+        | xcli::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-benchmarks/model.safetensors")
+        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-benchmarks/model.safetensors")
+        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-benchmarks/model.safetensors --comparison-output build-benchmarks/test-lego")
         | xcli::example("../data/nerf-synthetic/lego --evaluate validation --evaluate test --steps 1");
 
     const std::string usage = command.help(arguments);
