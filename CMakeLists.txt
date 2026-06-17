@@ -87,27 +87,37 @@ target_sources(
 )
 set_property(TARGET xcli PROPERTY CXX_MODULE_STD ON)
 
-add_library(instant-ngp)
+add_library(ngp-dataset)
 target_sources(
-        instant-ngp
+        ngp-dataset
         PRIVATE
         ngp.dataset.cpp
+        PUBLIC
+        FILE_SET cxx_modules TYPE CXX_MODULES FILES
+        ngp.dataset.ixx
+)
+target_include_directories(ngp-dataset PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+set_property(TARGET ngp-dataset PROPERTY CXX_MODULE_STD ON)
+
+add_library(ngp-train)
+target_sources(
+        ngp-train
+        PRIVATE
         ngp.train.cpp
         ngp.train.cu
         ngp.train.h
         PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
-        ngp.dataset.ixx
         ngp.train.ixx
 )
-target_include_directories(instant-ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-target_link_libraries(instant-ngp PRIVATE CUDA::cublas CUDA::cublasLt)
-set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
+target_include_directories(ngp-train PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+target_link_libraries(ngp-train PRIVATE CUDA::cublas CUDA::cublasLt)
+set_property(TARGET ngp-train PROPERTY CXX_MODULE_STD ON)
 
 
 # ============================================================================
 # Executable
 # ============================================================================
 add_executable(instant-ngp-app main.cpp)
-target_link_libraries(instant-ngp-app PRIVATE xcli instant-ngp)
+target_link_libraries(instant-ngp-app PRIVATE xcli ngp-dataset ngp-train)
 set_property(TARGET instant-ngp-app PROPERTY CXX_MODULE_STD ON)

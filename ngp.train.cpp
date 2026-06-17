@@ -6,21 +6,21 @@ module;
 #include "stb/stb_image_write.h"
 module ngp.train;
 import std;
-import ngp.dataset;
 
 namespace ngp::train {
-    InstantNGP::InstantNGP(const dataset::NGPDataset& dataset) {
+    void InstantNGP::initialize(const std::span<const FrameSetView> frame_sets, const float scene_scale) {
         try {
-            this->host.scene_scale = dataset.scene_scale;
-            if (dataset.frame_sets.empty()) throw std::runtime_error{"dataset must contain at least one loaded frame set."};
+            this->host.scene_scale = scene_scale;
+            if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
+            if (frame_sets.empty()) throw std::runtime_error{"dataset must contain at least one loaded frame set."};
 
             // ====================================================================================================
             // 1. UPLOAD FRAME SETS TO GPU
             // ====================================================================================================
             {
-                this->host.frame_sets.reserve(dataset.frame_sets.size());
-                this->device.frame_sets.reserve(dataset.frame_sets.size());
-                for (const dataset::FrameSet& frame_set : dataset.frame_sets) {
+                this->host.frame_sets.reserve(frame_sets.size());
+                this->device.frame_sets.reserve(frame_sets.size());
+                for (const FrameSetView& frame_set : frame_sets) {
                     if (frame_set.name.empty()) throw std::runtime_error{"frame set name must not be empty."};
                     if (frame_set.frames.empty()) throw std::runtime_error{std::format("frame set '{}' contains no frames.", frame_set.name)};
                     for (const HostFrameSet& existing_frame_set : this->host.frame_sets)
@@ -29,8 +29,16 @@ namespace ngp::train {
                     std::vector<std::uint8_t> pixels;
                     std::vector<float> camera;
                     pixels.reserve(std::ranges::fold_left(frame_set.frames | std::views::transform([](const auto& frame) { return frame.rgba.size(); }), 0uz, std::plus{}));
-                    camera.reserve(std::ranges::size(frame_set.frames) * 12uz);
-                    for (const dataset::Frame& frame : frame_set.frames) {
+                    camera.reserve(frame_set.frames.size() * 12uz);
+                    for (const FrameView& frame : frame_set.frames) {
+                        if (frame.width == 0u || frame.height == 0u) throw std::runtime_error{std::format("frame set '{}' contains a frame with invalid dimensions.", frame_set.name)};
+                        if (!std::isfinite(frame.focal_x) || !std::isfinite(frame.focal_y) || frame.focal_x <= 0.0f || frame.focal_y <= 0.0f) throw std::runtime_error{std::format("frame set '{}' contains a frame with invalid focal length.", frame_set.name)};
+                        if (!std::isfinite(frame.principal_x) || !std::isfinite(frame.principal_y) || frame.principal_x < 0.0f || frame.principal_y < 0.0f || frame.principal_x >= static_cast<float>(frame.width) || frame.principal_y >= static_cast<float>(frame.height)) throw std::runtime_error{std::format("frame set '{}' contains a frame with invalid principal point.", frame_set.name)};
+                        if (frame.camera.size() != 12uz) throw std::runtime_error{std::format("frame set '{}' contains a frame with {} camera values; expected 12.", frame_set.name, frame.camera.size())};
+                        if (frame.height > std::numeric_limits<std::uint64_t>::max() / static_cast<std::uint64_t>(frame.width) / 4ull) throw std::runtime_error{std::format("frame set '{}' contains an image that is too large.", frame_set.name)};
+                        const std::uint64_t rgba_byte_count = static_cast<std::uint64_t>(frame.width) * static_cast<std::uint64_t>(frame.height) * 4ull;
+                        if (rgba_byte_count > std::numeric_limits<std::size_t>::max()) throw std::runtime_error{std::format("frame set '{}' contains an image that is too large.", frame_set.name)};
+                        if (frame.rgba.size() != static_cast<std::size_t>(rgba_byte_count)) throw std::runtime_error{std::format("frame set '{}' contains a frame with {} RGBA bytes; expected {}.", frame_set.name, frame.rgba.size(), rgba_byte_count)};
                         pixels.append_range(frame.rgba);
                         camera.append_range(frame.camera);
                     }
@@ -39,9 +47,9 @@ namespace ngp::train {
                     DeviceFrameSet& device_frame_set = this->device.frame_sets.back();
                     cuda::upload_dataset(pixels.data(), pixels.size(), camera.data(), camera.size(), device_frame_set.pixels, device_frame_set.camera);
 
-                    const dataset::Frame& first_frame = frame_set.frames.front();
+                    const FrameView& first_frame = frame_set.frames.front();
                     this->host.frame_sets.push_back(HostFrameSet{
-                        .name         = frame_set.name,
+                        .name         = std::string{frame_set.name},
                         .frame_count  = static_cast<std::uint32_t>(frame_set.frames.size()),
                         .width        = first_frame.width,
                         .height       = first_frame.height,
