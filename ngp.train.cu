@@ -1523,8 +1523,7 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, float& out_elapsed_ms) {
-        out_elapsed_ms                  = 0.0f;
+    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step) {
         std::uint32_t density_grid_skip = current_step / DENSITY_GRID_SKIP_INTERVAL;
         if (density_grid_skip < 1u) density_grid_skip = 1u;
         if (density_grid_skip > DENSITY_GRID_MAX_SKIP) density_grid_skip = DENSITY_GRID_MAX_SKIP;
@@ -1532,7 +1531,6 @@ namespace ngp::cuda {
 
         if (frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || camera == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr || density_grid_mean == nullptr || density_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid density grid update input."};
 
-        const auto start                            = std::chrono::steady_clock::now();
         const std::uint32_t uniform_sample_count    = current_step < DENSITY_GRID_WARMUP_STEPS ? DENSITY_GRID_WARMUP_SAMPLES : DENSITY_GRID_STEADY_UNIFORM_SAMPLES;
         const std::uint32_t nonuniform_sample_count = current_step < DENSITY_GRID_WARMUP_STEPS ? 0u : DENSITY_GRID_STEADY_NONUNIFORM_SAMPLES;
         const std::uint32_t sample_count            = uniform_sample_count + nonuniform_sample_count;
@@ -1590,8 +1588,6 @@ namespace ngp::cuda {
         build_density_grid_bitfield_kernel<<<(NERF_GRID_CELLS / 8u + THREADS_PER_BLOCK - 1u) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(density_grid_values, density_grid_mean, occupancy, density_grid_occupied_count);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"build_density_grid_bitfield_kernel failed: "} + cudaGetErrorString(status)};
 
-        if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"density grid update synchronization failed: "} + cudaGetErrorString(status)};
-        out_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
     void run_evaluation(const std::uint8_t* const evaluation_pixels, const float* const evaluation_camera, const std::uint32_t evaluation_frame_count, const std::uint32_t evaluation_image_begin, const std::uint32_t evaluation_image_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint8_t* const occupancy, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, std::uint32_t* const evaluation_numsteps, std::uint32_t* const evaluation_sample_counter, std::uint32_t* const evaluation_overflow_counter, double* const evaluation_loss_sum, std::uint8_t* const test_comparison_pixels, std::uint8_t* const host_test_comparison_pixels, double& out_loss_sum) {

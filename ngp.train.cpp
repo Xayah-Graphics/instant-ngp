@@ -109,12 +109,9 @@ namespace ngp::train {
         try {
             const auto train_start            = std::chrono::steady_clock::now();
             std::uint32_t loss_rays_per_batch = this->host.rays_per_batch;
-            this->host.density_grid_update_ms = 0.0f;
             for (std::int32_t i = 0; i < iters; ++i) {
-                loss_rays_per_batch          = this->host.rays_per_batch;
-                float density_grid_update_ms = 0.0f;
-                cuda::update_density_grid(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_x, this->host.focal_y, this->host.principal_x, this->host.principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, density_grid_update_ms);
-                this->host.density_grid_update_ms += density_grid_update_ms;
+                loss_rays_per_batch = this->host.rays_per_batch;
+                cuda::update_density_grid(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_x, this->host.focal_y, this->host.principal_x, this->host.principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
                 cuda::sample_training_batch(this->device.camera, this->host.frame_count, this->host.width, this->host.height, this->host.focal_x, this->host.focal_y, this->host.principal_x, this->host.principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                 cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.network_output);
                 cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, this->device.pixels, this->host.frame_count, this->host.width, this->host.height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
@@ -146,7 +143,6 @@ namespace ngp::train {
                 .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
                 .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(cuda::config::NETWORK_BATCH_SIZE),
                 .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
-                .density_grid_update_ms                  = this->host.density_grid_update_ms,
                 .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / (128.0f * 128.0f * 128.0f),
             };
         } catch (const std::exception& error) {

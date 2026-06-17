@@ -13,7 +13,6 @@ namespace ngp::train {
         std::uint32_t density_grid_occupied_cells             = 0u;
         float loss                                            = 0.0f;
         float elapsed_ms                                      = 0.0f;
-        float density_grid_update_ms                          = 0.0f;
         float density_grid_occupancy_ratio                    = 0.0f;
     };
 
@@ -86,7 +85,6 @@ namespace ngp::train {
             std::uint32_t measured_sample_count                   = 0u;
             std::uint32_t density_grid_ema_step                   = 0u;
             std::uint32_t density_grid_occupied_cells             = 0u;
-            float density_grid_update_ms                          = 0.0f;
         } host;
 
         struct DeviceData {
