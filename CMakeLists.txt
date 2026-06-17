@@ -36,6 +36,15 @@ endif ()
 # ============================================================================
 find_package(CUDAToolkit 13.2 REQUIRED)
 
+set(NGP_TRAIN_PROFILE "baseline" CACHE STRING "Compile-time Instant NGP train profile")
+set_property(CACHE NGP_TRAIN_PROFILE PROPERTY STRINGS baseline)
+set(NGP_TRAIN_PROFILES baseline)
+if (NOT NGP_TRAIN_PROFILE IN_LIST NGP_TRAIN_PROFILES)
+    message(FATAL_ERROR "Unknown NGP_TRAIN_PROFILE='${NGP_TRAIN_PROFILE}'. Supported profiles: ${NGP_TRAIN_PROFILES}")
+endif ()
+string(MAKE_C_IDENTIFIER "${NGP_TRAIN_PROFILE}" NGP_TRAIN_PROFILE_DEFINITION_SUFFIX)
+string(TOUPPER "${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}" NGP_TRAIN_PROFILE_DEFINITION_SUFFIX)
+
 function(download_if_needed url out_path)
     if (EXISTS "${out_path}")
         message(STATUS "Using cached file: ${out_path}")
@@ -105,12 +114,14 @@ target_sources(
         PRIVATE
         ngp.train.cpp
         ngp.train.cu
+        ngp.train.config.h
         ngp.train.h
         PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
         ngp.train.ixx
 )
 target_include_directories(ngp-train PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+target_compile_definitions(ngp-train PRIVATE "NGP_TRAIN_PROFILE_${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}=1")
 target_link_libraries(ngp-train PRIVATE CUDA::cublas CUDA::cublasLt)
 set_property(TARGET ngp-train PROPERTY CXX_MODULE_STD ON)
 
