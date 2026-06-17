@@ -178,10 +178,9 @@ namespace ngp::train {
         }
     }
 
-    std::expected<TestStats, std::string> InstantNGP::test() const {
+    std::expected<TestStats, std::string> InstantNGP::test(const std::filesystem::path& output_dir) const {
         try {
             if (this->host.test_frame_count == 0u) throw std::runtime_error{"No test images are available in the current dataset."};
-            const std::filesystem::path output_dir = "test";
             if (output_dir.empty()) throw std::runtime_error{"test output directory must not be empty."};
             if (this->device.test_comparison_pixels == nullptr) throw std::runtime_error{"test comparison image buffer is not initialized."};
             if (std::filesystem::exists(output_dir) && !std::filesystem::is_directory(output_dir)) throw std::runtime_error{std::format("test output path '{}' is not a directory.", output_dir.string())};

@@ -80,13 +80,13 @@ namespace ngp::dataset {
             return frames;
         }
     } // namespace
-    std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale) {
+    std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, const float scene_scale, const DatasetLoadOptions options) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             return NGPDataset{
                 .train       = load_nerf_synthetic_split(path, "transforms_train.json", scene_scale),
-                .validation  = load_nerf_synthetic_split(path, "transforms_val.json", scene_scale),
-                .test        = load_nerf_synthetic_split(path, "transforms_test.json", scene_scale),
+                .validation  = options.load_validation ? load_nerf_synthetic_split(path, "transforms_val.json", scene_scale) : std::vector<NGPDataset::Frame>{},
+                .test        = options.load_test ? load_nerf_synthetic_split(path, "transforms_test.json", scene_scale) : std::vector<NGPDataset::Frame>{},
                 .scene_scale = scene_scale,
             };
         } catch (const std::exception& error) {
@@ -94,7 +94,7 @@ namespace ngp::dataset {
         }
     }
 
-    std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale) {
+    std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, const float scene_scale, const DatasetLoadOptions options) {
         try {
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             const std::filesystem::path json_path = path / "cameras.json";
@@ -116,8 +116,8 @@ namespace ngp::dataset {
 
             NGPDataset dataset = {};
             dataset.train.reserve(frames_json.size());
-            dataset.validation.reserve(frames_json.size() / 10uz + 1uz);
-            dataset.test.reserve(frames_json.size() / 10uz + 1uz);
+            if (options.load_validation) dataset.validation.reserve(frames_json.size() / 10uz + 1uz);
+            if (options.load_test) dataset.test.reserve(frames_json.size() / 10uz + 1uz);
 
             for (const nlohmann::json& frame_json : frames_json) {
                 std::filesystem::path hash_path = frame_json.at("file_path").get<std::string>();
@@ -127,6 +127,10 @@ namespace ngp::dataset {
                     hash ^= static_cast<std::uint64_t>(byte);
                     hash *= 1099511628211ull;
                 }
+
+                const std::uint64_t split = hash % 10ull;
+                if (split == 0ull && !options.load_test) continue;
+                if (split == 1ull && !options.load_validation) continue;
 
                 std::filesystem::path image_path = frame_json.at("file_path").get<std::string>();
                 image_path.make_preferred();
@@ -170,17 +174,17 @@ namespace ngp::dataset {
                     .principal_x = principal_x,
                     .principal_y = principal_y,
                 };
-                if (hash % 10ull == 0ull)
+                if (split == 0ull)
                     dataset.test.push_back(std::move(frame));
-                else if (hash % 10ull == 1ull)
+                else if (split == 1ull)
                     dataset.validation.push_back(std::move(frame));
                 else
                     dataset.train.push_back(std::move(frame));
             }
 
             if (dataset.train.empty()) throw std::runtime_error{"DD-NeRF split produced no training frames."};
-            if (dataset.validation.empty()) throw std::runtime_error{"DD-NeRF split produced no validation frames."};
-            if (dataset.test.empty()) throw std::runtime_error{"DD-NeRF split produced no test frames."};
+            if (options.load_validation && dataset.validation.empty()) throw std::runtime_error{"DD-NeRF split produced no validation frames."};
+            if (options.load_test && dataset.test.empty()) throw std::runtime_error{"DD-NeRF split produced no test frames."};
             dataset.scene_scale = scene_scale;
             return dataset;
         } catch (const std::exception& error) {

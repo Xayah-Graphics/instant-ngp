@@ -21,6 +21,11 @@ namespace ngp::dataset {
         float scene_scale             = 0.0f;
     };
 
-    export std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE);
-    export std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE);
+    export struct DatasetLoadOptions final {
+        bool load_validation = true;
+        bool load_test       = false;
+    };
+
+    export std::expected<NGPDataset, std::string> load_nerf_synthetic(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE, DatasetLoadOptions options = {});
+    export std::expected<NGPDataset, std::string> load_dd_nerf_dataset(const std::filesystem::path& path, float scene_scale = DEFAULT_SCENE_SCALE, DatasetLoadOptions options = {});
 } // namespace ngp::dataset

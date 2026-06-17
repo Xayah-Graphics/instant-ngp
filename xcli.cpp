@@ -700,7 +700,17 @@ namespace xcli {
         }
 
         for (const OptionBinding& option : this->options) if (option.required && !option.seen) return std::unexpected{std::format("--{} is required.", option.long_name)};
-        for (const PositionalBinding& positional : this->positionals) if (positional.required && !positional.seen) return std::unexpected{std::format("{} is required.", positional.name)};
+        for (const PositionalBinding& positional : this->positionals) {
+            if (!positional.required || positional.seen) continue;
+            bool same_target_option_seen = false;
+            for (const OptionBinding& option : this->options) {
+                if (option.target_address == positional.target_address && option.seen) {
+                    same_target_option_seen = true;
+                    break;
+                }
+            }
+            if (!same_target_option_seen) return std::unexpected{std::format("{} is required.", positional.name)};
+        }
         return ParseResult{};
     }
 

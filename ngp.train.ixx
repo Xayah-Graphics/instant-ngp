@@ -48,7 +48,7 @@ namespace ngp::train {
 
         std::expected<TrainStats, std::string> train(std::int32_t iters);
         std::expected<ValidationStats, std::string> validate() const;
-        std::expected<TestStats, std::string> test() const;
+        std::expected<TestStats, std::string> test(const std::filesystem::path& output_dir) const;
         std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
         std::expected<void, std::string> load_weights(const std::filesystem::path& path);
 
