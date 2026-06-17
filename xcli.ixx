@@ -54,23 +54,85 @@ namespace xcli {
         std::string_view default_label;
     };
 
+    export struct CommandItem final {
+        CommandItem(CommandItem&&) = default;
+        CommandItem& operator=(CommandItem&&) = default;
+        CommandItem(const CommandItem&) = delete;
+        CommandItem& operator=(const CommandItem&) = delete;
+
+    private:
+        friend class Command;
+        friend CommandItem option(const OptionSpec& spec, bool& target);
+        friend CommandItem option(const OptionSpec& spec, std::string& target);
+        friend CommandItem option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule);
+        friend CommandItem option(const OptionSpec& spec, std::optional<std::string>& target);
+        friend CommandItem option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule);
+        friend CommandItem option(const OptionSpec& spec, std::int32_t& target, NumericRule rule);
+        friend CommandItem option(const OptionSpec& spec, std::uint32_t& target, NumericRule rule);
+        friend CommandItem option(const OptionSpec& spec, float& target, NumericRule rule);
+        friend CommandItem positional(const PositionalSpec& spec, std::string& target);
+        friend CommandItem positional(const PositionalSpec& spec, std::filesystem::path& target, PathRule rule);
+        friend CommandItem example(std::string_view arguments);
+        friend CommandItem validator(std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator);
+
+        struct StoredOptionSpec final {
+            std::string long_name;
+            std::optional<char> short_name;
+            std::string value_name;
+            std::string description;
+            std::optional<std::string> default_text;
+            bool show_default = true;
+            bool required     = false;
+        };
+
+        struct StoredPositionalSpec final {
+            std::string name;
+            std::string description;
+            std::optional<std::string> default_text;
+            bool show_default = true;
+            bool required     = false;
+        };
+
+        struct OptionAction final {
+            StoredOptionSpec spec;
+            bool requires_value = true;
+            const void* target_address = nullptr;
+            NumericRule numeric_rule;
+            std::optional<PathRule> path_rule;
+            std::variant<bool*, std::string*, std::filesystem::path*, std::optional<std::string>*, std::optional<std::filesystem::path>*, std::int32_t*, std::uint32_t*, float*> target;
+        };
+
+        struct PositionalAction final {
+            StoredPositionalSpec spec;
+            const void* target_address = nullptr;
+            std::optional<PathRule> path_rule;
+            std::variant<std::string*, std::filesystem::path*> target;
+        };
+
+        struct ExampleAction final {
+            std::string arguments;
+        };
+
+        struct ValidatorAction final {
+            std::string name;
+            std::move_only_function<std::expected<void, std::string>()> validator;
+        };
+
+        explicit CommandItem(OptionAction action);
+        explicit CommandItem(PositionalAction action);
+        explicit CommandItem(ExampleAction action);
+        explicit CommandItem(ValidatorAction action);
+
+        std::variant<OptionAction, PositionalAction, ExampleAction, ValidatorAction> action;
+    };
+
     export class Command final {
     public:
         explicit Command(std::string_view description);
-
-        Command& add_option(const OptionSpec& spec, bool& target);
-        Command& add_option(const OptionSpec& spec, std::string& target);
-        Command& add_option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule = {});
-        Command& add_option(const OptionSpec& spec, std::optional<std::string>& target);
-        Command& add_option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule = {});
-        Command& add_option(const OptionSpec& spec, std::int32_t& target, NumericRule rule = {});
-        Command& add_option(const OptionSpec& spec, std::uint32_t& target, NumericRule rule = {});
-        Command& add_option(const OptionSpec& spec, float& target, NumericRule rule = {});
-
-        Command& add_positional(const PositionalSpec& spec, std::string& target);
-        Command& add_positional(const PositionalSpec& spec, std::filesystem::path& target, PathRule rule = {});
-        Command& add_example(std::string_view arguments);
-        Command& add_validator(std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator);
+        Command(Command&&) = default;
+        Command& operator=(Command&&) = default;
+        Command(const Command&) = delete;
+        Command& operator=(const Command&) = delete;
 
         std::expected<ParseResult, std::string> parse(std::span<const char* const> arguments);
         std::expected<void, std::string> validate();
@@ -78,6 +140,9 @@ namespace xcli {
         std::string help(std::span<const char* const> arguments, const HelpStyle& style) const;
 
     private:
+        friend Command operator|(Command&& command, CommandItem&& item);
+        friend Command& operator|(Command& command, CommandItem&& item);
+
         struct OptionBinding final {
             std::string long_name;
             std::optional<char> short_name;
@@ -116,5 +181,36 @@ namespace xcli {
         std::vector<PositionalBinding> positionals;
         std::vector<std::string> examples;
         std::vector<ValidatorBinding> validators;
+
+        Command& accept(CommandItem&& item);
+        Command& bind_option(const OptionSpec& spec, bool& target);
+        Command& bind_option(const OptionSpec& spec, std::string& target);
+        Command& bind_option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule);
+        Command& bind_option(const OptionSpec& spec, std::optional<std::string>& target);
+        Command& bind_option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule);
+        Command& bind_option(const OptionSpec& spec, std::int32_t& target, NumericRule rule);
+        Command& bind_option(const OptionSpec& spec, std::uint32_t& target, NumericRule rule);
+        Command& bind_option(const OptionSpec& spec, float& target, NumericRule rule);
+        Command& bind_positional(const PositionalSpec& spec, std::string& target);
+        Command& bind_positional(const PositionalSpec& spec, std::filesystem::path& target, PathRule rule);
+        Command& bind_example(std::string_view arguments);
+        Command& bind_validator(std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator);
     };
+
+    export CommandItem option(const OptionSpec& spec, bool& target);
+    export CommandItem option(const OptionSpec& spec, std::string& target);
+    export CommandItem option(const OptionSpec& spec, std::filesystem::path& target, PathRule rule = {});
+    export CommandItem option(const OptionSpec& spec, std::optional<std::string>& target);
+    export CommandItem option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, PathRule rule = {});
+    export CommandItem option(const OptionSpec& spec, std::int32_t& target, NumericRule rule = {});
+    export CommandItem option(const OptionSpec& spec, std::uint32_t& target, NumericRule rule = {});
+    export CommandItem option(const OptionSpec& spec, float& target, NumericRule rule = {});
+
+    export CommandItem positional(const PositionalSpec& spec, std::string& target);
+    export CommandItem positional(const PositionalSpec& spec, std::filesystem::path& target, PathRule rule = {});
+    export CommandItem example(std::string_view arguments);
+    export CommandItem validator(std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator);
+
+    export Command operator|(Command&& command, CommandItem&& item);
+    export Command& operator|(Command& command, CommandItem&& item);
 } // namespace xcli

@@ -4,7 +4,239 @@ import std;
 namespace xcli {
     Command::Command(const std::string_view description) : description{description} {}
 
-    Command& Command::add_option(const OptionSpec& spec, bool& target) {
+    CommandItem::CommandItem(OptionAction value) : action{std::move(value)} {}
+    CommandItem::CommandItem(PositionalAction value) : action{std::move(value)} {}
+    CommandItem::CommandItem(ExampleAction value) : action{std::move(value)} {}
+    CommandItem::CommandItem(ValidatorAction value) : action{std::move(value)} {}
+
+    CommandItem option(const OptionSpec& spec, bool& target) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .requires_value = false,
+            .target_address = std::addressof(target),
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::string& target) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::filesystem::path& target, const PathRule rule) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .path_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::optional<std::string>& target) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, const PathRule rule) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .path_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::int32_t& target, const NumericRule rule) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .numeric_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, std::uint32_t& target, const NumericRule rule) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .numeric_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem option(const OptionSpec& spec, float& target, const NumericRule rule) {
+        return CommandItem{CommandItem::OptionAction{
+            .spec = {
+                .long_name = std::string{spec.long_name},
+                .short_name = spec.short_name,
+                .value_name = std::string{spec.value_name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .numeric_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem positional(const PositionalSpec& spec, std::string& target) {
+        return CommandItem{CommandItem::PositionalAction{
+            .spec = {
+                .name = std::string{spec.name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem positional(const PositionalSpec& spec, std::filesystem::path& target, const PathRule rule) {
+        return CommandItem{CommandItem::PositionalAction{
+            .spec = {
+                .name = std::string{spec.name},
+                .description = std::string{spec.description},
+                .default_text = spec.default_text.has_value() ? std::optional<std::string>{std::string{*spec.default_text}} : std::nullopt,
+                .show_default = spec.show_default,
+                .required = spec.required,
+            },
+            .target_address = std::addressof(target),
+            .path_rule = rule,
+            .target = std::addressof(target),
+        }};
+    }
+
+    CommandItem example(const std::string_view arguments) {
+        return CommandItem{CommandItem::ExampleAction{.arguments = std::string{arguments}}};
+    }
+
+    CommandItem validator(const std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator) {
+        return CommandItem{CommandItem::ValidatorAction{.name = std::string{name}, .validator = std::move(validator)}};
+    }
+
+    Command operator|(Command&& command, CommandItem&& item) {
+        command.accept(std::move(item));
+        return std::move(command);
+    }
+
+    Command& operator|(Command& command, CommandItem&& item) {
+        command.accept(std::move(item));
+        return command;
+    }
+
+    Command& Command::accept(CommandItem&& item) {
+        if (CommandItem::OptionAction* action = std::get_if<CommandItem::OptionAction>(std::addressof(item.action))) {
+            std::optional<std::string_view> default_text;
+            if (action->spec.default_text.has_value()) default_text = *action->spec.default_text;
+            const OptionSpec spec{
+                .long_name = action->spec.long_name,
+                .short_name = action->spec.short_name,
+                .value_name = action->spec.value_name,
+                .description = action->spec.description,
+                .default_text = default_text,
+                .show_default = action->spec.show_default,
+                .required = action->spec.required,
+            };
+
+            if (bool** target = std::get_if<bool*>(std::addressof(action->target))) return this->bind_option(spec, **target);
+            if (std::string** target = std::get_if<std::string*>(std::addressof(action->target))) return this->bind_option(spec, **target);
+            if (std::filesystem::path** target = std::get_if<std::filesystem::path*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->path_rule.value_or(PathRule{}));
+            if (std::optional<std::string>** target = std::get_if<std::optional<std::string>*>(std::addressof(action->target))) return this->bind_option(spec, **target);
+            if (std::optional<std::filesystem::path>** target = std::get_if<std::optional<std::filesystem::path>*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->path_rule.value_or(PathRule{}));
+            if (std::int32_t** target = std::get_if<std::int32_t*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->numeric_rule);
+            if (std::uint32_t** target = std::get_if<std::uint32_t*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->numeric_rule);
+            if (float** target = std::get_if<float*>(std::addressof(action->target))) return this->bind_option(spec, **target, action->numeric_rule);
+            std::unreachable();
+        }
+
+        if (CommandItem::PositionalAction* action = std::get_if<CommandItem::PositionalAction>(std::addressof(item.action))) {
+            std::optional<std::string_view> default_text;
+            if (action->spec.default_text.has_value()) default_text = *action->spec.default_text;
+            const PositionalSpec spec{
+                .name = action->spec.name,
+                .description = action->spec.description,
+                .default_text = default_text,
+                .show_default = action->spec.show_default,
+                .required = action->spec.required,
+            };
+
+            if (std::string** target = std::get_if<std::string*>(std::addressof(action->target))) return this->bind_positional(spec, **target);
+            if (std::filesystem::path** target = std::get_if<std::filesystem::path*>(std::addressof(action->target))) return this->bind_positional(spec, **target, action->path_rule.value_or(PathRule{}));
+            std::unreachable();
+        }
+
+        if (CommandItem::ExampleAction* action = std::get_if<CommandItem::ExampleAction>(std::addressof(item.action))) return this->bind_example(action->arguments);
+        if (CommandItem::ValidatorAction* action = std::get_if<CommandItem::ValidatorAction>(std::addressof(item.action))) return this->bind_validator(action->name, std::move(action->validator));
+        std::unreachable();
+    }
+
+    Command& Command::bind_option(const OptionSpec& spec, bool& target) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -34,7 +266,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::string& target) {
+    Command& Command::bind_option(const OptionSpec& spec, std::string& target) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -63,7 +295,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::filesystem::path& target, const PathRule rule) {
+    Command& Command::bind_option(const OptionSpec& spec, std::filesystem::path& target, const PathRule rule) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -93,7 +325,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::optional<std::string>& target) {
+    Command& Command::bind_option(const OptionSpec& spec, std::optional<std::string>& target) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -122,7 +354,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, const PathRule rule) {
+    Command& Command::bind_option(const OptionSpec& spec, std::optional<std::filesystem::path>& target, const PathRule rule) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -152,7 +384,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::int32_t& target, const NumericRule rule) {
+    Command& Command::bind_option(const OptionSpec& spec, std::int32_t& target, const NumericRule rule) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -182,7 +414,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, std::uint32_t& target, const NumericRule rule) {
+    Command& Command::bind_option(const OptionSpec& spec, std::uint32_t& target, const NumericRule rule) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -212,7 +444,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_option(const OptionSpec& spec, float& target, const NumericRule rule) {
+    Command& Command::bind_option(const OptionSpec& spec, float& target, const NumericRule rule) {
         OptionBinding binding = {};
         binding.long_name = spec.long_name;
         binding.short_name = spec.short_name;
@@ -242,7 +474,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_positional(const PositionalSpec& spec, std::string& target) {
+    Command& Command::bind_positional(const PositionalSpec& spec, std::string& target) {
         PositionalBinding binding = {};
         binding.name = spec.name;
         binding.description = spec.description;
@@ -266,7 +498,7 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_positional(const PositionalSpec& spec, std::filesystem::path& target, const PathRule rule) {
+    Command& Command::bind_positional(const PositionalSpec& spec, std::filesystem::path& target, const PathRule rule) {
         PositionalBinding binding = {};
         binding.name = spec.name;
         binding.description = spec.description;
@@ -291,13 +523,13 @@ namespace xcli {
         return *this;
     }
 
-    Command& Command::add_example(const std::string_view arguments) {
+    Command& Command::bind_example(const std::string_view arguments) {
         if (arguments.empty()) throw std::runtime_error{"example arguments must not be empty."};
         this->examples.emplace_back(arguments);
         return *this;
     }
 
-    Command& Command::add_validator(const std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator) {
+    Command& Command::bind_validator(const std::string_view name, std::move_only_function<std::expected<void, std::string>()> validator) {
         if (name.empty()) throw std::runtime_error{"validator name must not be empty."};
         if (!validator) throw std::runtime_error{std::format("validator '{}' must not be empty.", name)};
         for (const ValidatorBinding& existing_validator : this->validators) if (existing_validator.name == name) throw std::runtime_error{std::format("validator '{}' was registered more than once.", name)};

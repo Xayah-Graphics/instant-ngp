@@ -29,34 +29,35 @@ int main(const int argc, const char* const* const argv) {
     std::optional<std::filesystem::path> export_weights_path;
     std::string_view dataset_format;
 
-    xcli::Command command{"Train Instant NGP."};
-    command.add_positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory});
-    command.add_option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory});
-    command.add_option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true});
-    command.add_option({.long_name = "steps", .value_name = "count", .description = "total training steps"}, steps, {.minimum = 1.0});
-    command.add_option({.long_name = "chunk-steps", .value_name = "count", .description = "training steps per progress log"}, chunk_steps, {.minimum = 1.0});
-    command.add_option({.long_name = "validation-interval", .value_name = "count", .description = "full validation interval in steps"}, validation_interval_steps, {.minimum = 1.0});
-    command.add_option({.long_name = "early-stop-patience", .value_name = "count", .description = "validation checks without improvement before stopping"}, early_stop_patience, {.minimum = 1.0});
-    command.add_option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum validation MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0});
-    command.add_option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before training"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file});
-    command.add_option({.long_name = "export-weights", .value_name = "path", .description = "export final safetensors weights"}, export_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory});
-    command.add_example("../data/nerf-synthetic/lego --steps 30000");
-    command.add_example("../data/dd-nerf-dataset/house1 --steps 30000");
-    command.add_example("--dataset=../data/nerf-synthetic/lego --validation-interval=5000");
-    command.add_example("--steps 1 --export-weights build-codex/weights.safetensors");
-    command.add_example("--load-weights build-codex/weights.safetensors --steps 30000");
-    command.add_validator("dataset-marker-set", [&dataset_path, &dataset_format] -> std::expected<void, std::string> {
-        const bool has_nerf_synthetic_dataset =
-            std::filesystem::status(dataset_path / "transforms_train.json").type() == std::filesystem::file_type::regular &&
-            std::filesystem::status(dataset_path / "transforms_val.json").type() == std::filesystem::file_type::regular &&
-            std::filesystem::status(dataset_path / "transforms_test.json").type() == std::filesystem::file_type::regular;
-        const bool has_dd_nerf_dataset =
-            std::filesystem::status(dataset_path / "cameras.json").type() == std::filesystem::file_type::regular &&
-            std::filesystem::status(dataset_path / "images").type() == std::filesystem::file_type::directory;
-        if (has_nerf_synthetic_dataset == has_dd_nerf_dataset) return std::unexpected{std::format("dataset path '{}' must contain exactly one supported dataset marker set: NeRF synthetic transforms_*.json or DD-NeRF cameras.json + images/.", dataset_path.string())};
-        dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
-        return {};
-    });
+    xcli::Command command =
+        xcli::Command{"Train Instant NGP."}
+        | xcli::positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
+        | xcli::option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root"}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
+        | xcli::option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true})
+        | xcli::option({.long_name = "steps", .value_name = "count", .description = "total training steps"}, steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "chunk-steps", .value_name = "count", .description = "training steps per progress log"}, chunk_steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "validation-interval", .value_name = "count", .description = "full validation interval in steps"}, validation_interval_steps, {.minimum = 1.0})
+        | xcli::option({.long_name = "early-stop-patience", .value_name = "count", .description = "validation checks without improvement before stopping"}, early_stop_patience, {.minimum = 1.0})
+        | xcli::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum validation MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
+        | xcli::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before training"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file})
+        | xcli::option({.long_name = "export-weights", .value_name = "path", .description = "export final safetensors weights"}, export_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
+        | xcli::example("../data/nerf-synthetic/lego --steps 30000")
+        | xcli::example("../data/dd-nerf-dataset/house1 --steps 30000")
+        | xcli::example("--dataset=../data/nerf-synthetic/lego --validation-interval=5000")
+        | xcli::example("--steps 1 --export-weights build-codex/weights.safetensors")
+        | xcli::example("--load-weights build-codex/weights.safetensors --steps 30000")
+        | xcli::validator("dataset-marker-set", [&dataset_path, &dataset_format] -> std::expected<void, std::string> {
+            const bool has_nerf_synthetic_dataset =
+                std::filesystem::status(dataset_path / "transforms_train.json").type() == std::filesystem::file_type::regular &&
+                std::filesystem::status(dataset_path / "transforms_val.json").type() == std::filesystem::file_type::regular &&
+                std::filesystem::status(dataset_path / "transforms_test.json").type() == std::filesystem::file_type::regular;
+            const bool has_dd_nerf_dataset =
+                std::filesystem::status(dataset_path / "cameras.json").type() == std::filesystem::file_type::regular &&
+                std::filesystem::status(dataset_path / "images").type() == std::filesystem::file_type::directory;
+            if (has_nerf_synthetic_dataset == has_dd_nerf_dataset) return std::unexpected{std::format("dataset path '{}' must contain exactly one supported dataset marker set: NeRF synthetic transforms_*.json or DD-NeRF cameras.json + images/.", dataset_path.string())};
+            dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
+            return {};
+        });
 
     const std::string usage = command.help(arguments);
 
