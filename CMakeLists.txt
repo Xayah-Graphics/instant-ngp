@@ -76,6 +76,28 @@ download_if_needed(
 # ============================================================================
 # Libraries
 # ============================================================================
+add_library(xlog)
+target_sources(
+        xlog
+        PRIVATE
+        xlog.cpp
+        PUBLIC
+        FILE_SET cxx_modules TYPE CXX_MODULES FILES
+        xlog.ixx
+)
+set_property(TARGET xlog PROPERTY CXX_MODULE_STD ON)
+
+add_library(xcli)
+target_sources(
+        xcli
+        PRIVATE
+        xcli.cpp
+        PUBLIC
+        FILE_SET cxx_modules TYPE CXX_MODULES FILES
+        xcli.ixx
+)
+set_property(TARGET xcli PROPERTY CXX_MODULE_STD ON)
+
 add_library(instant-ngp)
 target_sources(
         instant-ngp
@@ -98,5 +120,5 @@ set_property(TARGET instant-ngp PROPERTY CXX_MODULE_STD ON)
 # Executable
 # ============================================================================
 add_executable(instant-ngp-app main.cpp)
-target_link_libraries(instant-ngp-app PRIVATE instant-ngp)
+target_link_libraries(instant-ngp-app PRIVATE xlog xcli instant-ngp)
 set_property(TARGET instant-ngp-app PROPERTY CXX_MODULE_STD ON)
