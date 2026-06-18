@@ -143,6 +143,23 @@ set_property(TARGET ngp-train PROPERTY CXX_MODULE_STD ON)
 # Optional Benchmarks
 # ============================================================================
 if (NGP_BUILD_BENCHMARKS)
+    set(NGP_DATASET_COMMIT "766467492f48c2dce1c9012b413c4e27fec27293")
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.ixx"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/nerf_synthetic.ixx"
+    )
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.cpp"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/nerf_synthetic.cpp"
+    )
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/dd_nerf.ixx"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/dd_nerf.ixx"
+    )
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/dd_nerf.cpp"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/dd_nerf.cpp"
+    )
     download_if_needed(
             "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
             "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
@@ -159,17 +176,29 @@ if (NGP_BUILD_BENCHMARKS)
     )
     set_property(TARGET benchmark-xcli PROPERTY CXX_MODULE_STD ON)
 
-    add_library(benchmark-ngp-dataset)
+    add_library(dataset-nerf-synthetic)
     target_sources(
-            benchmark-ngp-dataset
+            dataset-nerf-synthetic
             PRIVATE
-            benchmarks/ngp.dataset.cpp
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/nerf_synthetic.cpp"
             PUBLIC
             FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            benchmarks/ngp.dataset.ixx
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/nerf_synthetic.ixx"
     )
-    target_include_directories(benchmark-ngp-dataset PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-    set_property(TARGET benchmark-ngp-dataset PROPERTY CXX_MODULE_STD ON)
+    target_include_directories(dataset-nerf-synthetic PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    set_property(TARGET dataset-nerf-synthetic PROPERTY CXX_MODULE_STD ON)
+
+    add_library(dataset-dd-nerf)
+    target_sources(
+            dataset-dd-nerf
+            PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/dd_nerf.cpp"
+            PUBLIC
+            FILE_SET cxx_modules TYPE CXX_MODULES FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/dd_nerf.ixx"
+    )
+    target_include_directories(dataset-dd-nerf PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    set_property(TARGET dataset-dd-nerf PROPERTY CXX_MODULE_STD ON)
 
     foreach (profile IN LISTS NGP_TRAIN_PROFILES)
         string(MAKE_C_IDENTIFIER "${profile}" profile_definition_suffix)
@@ -195,7 +224,7 @@ if (NGP_BUILD_BENCHMARKS)
         add_executable(instant-ngp-benchmark-${profile} benchmarks/main.cpp)
         target_include_directories(instant-ngp-benchmark-${profile} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
         target_compile_definitions(instant-ngp-benchmark-${profile} PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${profile}\"")
-        target_link_libraries(instant-ngp-benchmark-${profile} PRIVATE benchmark-xcli benchmark-ngp-dataset ngp-train-${profile} CUDA::cudart)
+        target_link_libraries(instant-ngp-benchmark-${profile} PRIVATE benchmark-xcli dataset-nerf-synthetic dataset-dd-nerf ngp-train-${profile} CUDA::cudart)
         set_property(TARGET instant-ngp-benchmark-${profile} PROPERTY CXX_MODULE_STD ON)
     endforeach ()
 endif ()

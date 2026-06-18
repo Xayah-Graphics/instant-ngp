@@ -2,7 +2,8 @@
 #include "json/json.hpp"
 import std;
 import xcli;
-import ngp.dataset;
+import nerf_synthetic;
+import dd_nerf;
 import ngp.train;
 
 #ifndef NGP_TRAIN_PROFILE_NAME
@@ -22,6 +23,39 @@ int main(const int argc, const char* const* const argv) {
     constexpr std::string_view ansi_evaluation_badge = "\x1b[1;37;45m";
     constexpr std::string_view ansi_evaluation_metric = "\x1b[1;95m";
     constexpr std::string_view ansi_evaluation_best = "\x1b[1;33m";
+    struct DatasetProvider final {
+        std::string_view name;
+        bool (*matches)(const std::filesystem::path&);
+        std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> (*create)(const std::filesystem::path&, const std::vector<std::string>&, float);
+    };
+    const std::array dataset_providers{
+        DatasetProvider{
+            .name = "nerf-synthetic",
+            .matches = nerf_synthetic::is_dataset,
+            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
+                const auto dataset = nerf_synthetic::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
+                if (!dataset) return std::unexpected{dataset.error()};
+                try {
+                    return std::make_unique<ngp::train::InstantNGP>(*dataset);
+                } catch (const std::exception& error) {
+                    return std::unexpected{std::string{error.what()}};
+                }
+            },
+        },
+        DatasetProvider{
+            .name = "dd-nerf-dataset",
+            .matches = dd_nerf::is_dataset,
+            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
+                const auto dataset = dd_nerf::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
+                if (!dataset) return std::unexpected{dataset.error()};
+                try {
+                    return std::make_unique<ngp::train::InstantNGP>(*dataset);
+                } catch (const std::exception& error) {
+                    return std::unexpected{std::string{error.what()}};
+                }
+            },
+        },
+    };
 
     std::filesystem::path dataset_path;
     std::string optimize_frame_set = "train";
@@ -32,7 +66,8 @@ int main(const int argc, const char* const* const argv) {
     std::uint32_t early_stop_patience = 5u;
     bool no_optimize = false;
     bool no_evaluation = false;
-    float scene_scale = ngp::dataset::DEFAULT_SCENE_SCALE;
+    constexpr float default_scene_scale = 0.33f;
+    float scene_scale = default_scene_scale;
     float early_stop_min_delta_mse = 1e-6f;
     std::optional<std::filesystem::path> load_weights_path;
     std::optional<std::filesystem::path> save_weights_path;
@@ -134,30 +169,32 @@ int main(const int argc, const char* const* const argv) {
         }
     }
 
-    const bool has_nerf_train = std::filesystem::status(dataset_path / "transforms_train.json").type() == std::filesystem::file_type::regular;
-    const bool has_nerf_validation = std::filesystem::status(dataset_path / "transforms_val.json").type() == std::filesystem::file_type::regular;
-    const bool has_nerf_test = std::filesystem::status(dataset_path / "transforms_test.json").type() == std::filesystem::file_type::regular;
-    const bool has_nerf_synthetic_dataset = has_nerf_train || has_nerf_validation || has_nerf_test;
-    const bool has_dd_nerf_dataset =
-        std::filesystem::status(dataset_path / "cameras.json").type() == std::filesystem::file_type::regular &&
-        std::filesystem::status(dataset_path / "images").type() == std::filesystem::file_type::directory;
-    if (has_nerf_synthetic_dataset == has_dd_nerf_dataset) {
-        std::println("{}error:{} dataset path '{}' must contain exactly one supported dataset marker set: NeRF synthetic transforms_*.json or DD-NeRF cameras.json + images/.", ansi_red, ansi_reset, dataset_path.string());
-        return 2;
+    const DatasetProvider* dataset_provider = nullptr;
+    std::vector<std::string_view> matched_dataset_formats;
+    for (const DatasetProvider& provider : dataset_providers) {
+        if (!provider.matches(dataset_path)) continue;
+        matched_dataset_formats.push_back(provider.name);
+        if (dataset_provider == nullptr) dataset_provider = std::addressof(provider);
     }
-    if (has_nerf_synthetic_dataset) {
-        for (const std::string& requested_frame_set : requested_frame_sets) {
-            if (requested_frame_set == "train" && !has_nerf_train) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_train.json, required by frame set 'train'.", dataset_path.string());
-            else if (requested_frame_set == "validation" && !has_nerf_validation) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_val.json, required by frame set 'validation'.", dataset_path.string());
-            else if (requested_frame_set == "test" && !has_nerf_test) cli_error = std::format("NeRF synthetic dataset '{}' is missing transforms_test.json, required by frame set 'test'.", dataset_path.string());
-            if (cli_error.has_value()) break;
+    if (dataset_provider == nullptr) {
+        std::string supported_formats;
+        for (const DatasetProvider& provider : dataset_providers) {
+            if (!supported_formats.empty()) supported_formats += ", ";
+            supported_formats += provider.name;
         }
-    }
-    if (cli_error.has_value()) {
-        std::println("{}error:{} {}", ansi_red, ansi_reset, *cli_error);
+        std::println("{}error:{} dataset path '{}' does not match any supported dataset format: {}.", ansi_red, ansi_reset, dataset_path.string(), supported_formats);
         return 2;
     }
-    dataset_format = has_nerf_synthetic_dataset ? "nerf-synthetic" : "dd-nerf-dataset";
+    if (matched_dataset_formats.size() > 1uz) {
+        std::string matched_formats;
+        for (const std::string_view matched_format : matched_dataset_formats) {
+            if (!matched_formats.empty()) matched_formats += ", ";
+            matched_formats += matched_format;
+        }
+        std::println("{}error:{} dataset path '{}' matches multiple dataset formats: {}.", ansi_red, ansi_reset, dataset_path.string(), matched_formats);
+        return 2;
+    }
+    dataset_format = dataset_provider->name;
 
     const bool evaluation_enabled = !no_evaluation;
     const bool optimization_enabled = !no_optimize;
@@ -191,7 +228,6 @@ int main(const int argc, const char* const* const argv) {
 
     std::optional<std::string> pipeline_error;
     std::unique_ptr<ngp::train::InstantNGP> ngp;
-    const ngp::dataset::DatasetLoadPlan dataset_load_plan{.frame_sets = requested_frame_sets};
     const bool benchmark_output_enabled = benchmark_output_path.has_value();
     const auto benchmark_start = std::chrono::steady_clock::now();
     std::uint64_t benchmark_peak_vram_bytes = 0u;
@@ -211,16 +247,9 @@ int main(const int argc, const char* const* const argv) {
         }
     };
 
-    const auto dataset = dataset_format == "nerf-synthetic" ? ngp::dataset::load_nerf_synthetic(dataset_path, scene_scale, dataset_load_plan) : ngp::dataset::load_dd_nerf_dataset(dataset_path, scene_scale, dataset_load_plan);
-    if (!dataset) {
-        pipeline_error = dataset.error();
-    } else {
-        try {
-            ngp = std::make_unique<ngp::train::InstantNGP>(*dataset);
-        } catch (const std::exception& error) {
-            pipeline_error = std::string{error.what()};
-        }
-    }
+    auto created_ngp = dataset_provider->create(dataset_path, requested_frame_sets, scene_scale);
+    if (!created_ngp) pipeline_error = created_ngp.error();
+    else ngp = std::move(*created_ngp);
     if (!pipeline_error && benchmark_output_enabled) {
         const auto memory = query_used_device_memory();
         if (!memory) pipeline_error = memory.error();

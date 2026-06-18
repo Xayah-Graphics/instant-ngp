@@ -26,6 +26,8 @@ The default build only produces the core `ngp-train` library. Dataset loading, C
 
 #### Build Benchmarks
 
+Benchmark builds download dataset loader modules from the fixed `Xayah-Graphics/dataset` commit `766467492f48c2dce1c9012b413c4e27fec27293`.
+
 ```
 cmake -B build-benchmarks -S . -G Ninja -DNGP_BUILD_BENCHMARKS=ON
 cmake --build build-benchmarks -j 30
