@@ -145,6 +145,8 @@ set_property(TARGET libngp PROPERTY CXX_MODULE_STD ON)
 if (NGP_BUILD_APP)
     set(NGP_DATASET_COMMIT "bc636fbfc7507e8173156393f71c0b569f5fe95b")
     set(NGP_DATASET_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/${NGP_DATASET_COMMIT}")
+    set(NGP_UTIL_COMMIT "bb261075e7c8a4722b23f42c3be01aa24024731a")
+    set(NGP_UTIL_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/util/${NGP_UTIL_COMMIT}")
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.ixx"
             "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.ixx"
@@ -165,17 +167,25 @@ if (NGP_BUILD_APP)
             "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
             "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
     )
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/util/${NGP_UTIL_COMMIT}/xcli.ixx"
+            "${NGP_UTIL_VENDOR_DIR}/xcli.ixx"
+    )
+    download_if_needed(
+            "https://raw.githubusercontent.com/Xayah-Graphics/util/${NGP_UTIL_COMMIT}/xcli.cpp"
+            "${NGP_UTIL_VENDOR_DIR}/xcli.cpp"
+    )
 
-    add_library(xcli)
+    add_library(xayah-util-xcli)
     target_sources(
-            xcli
+            xayah-util-xcli
             PRIVATE
-            xcli.cpp
+            "${NGP_UTIL_VENDOR_DIR}/xcli.cpp"
             PUBLIC
             FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            xcli.ixx
+            "${NGP_UTIL_VENDOR_DIR}/xcli.ixx"
     )
-    set_property(TARGET xcli PROPERTY CXX_MODULE_STD ON)
+    set_property(TARGET xayah-util-xcli PROPERTY CXX_MODULE_STD ON)
 
     add_library(dataset-loader)
     target_sources(
@@ -194,6 +204,6 @@ if (NGP_BUILD_APP)
     add_executable(instant_ngp main.cpp)
     target_include_directories(instant_ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
     target_compile_definitions(instant_ngp PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
-    target_link_libraries(instant_ngp PRIVATE xcli dataset-loader libngp CUDA::cudart)
+    target_link_libraries(instant_ngp PRIVATE xayah-util-xcli dataset-loader libngp CUDA::cudart)
     set_property(TARGET instant_ngp PROPERTY CXX_MODULE_STD ON)
 endif ()

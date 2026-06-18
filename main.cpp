@@ -1,7 +1,7 @@
 #include <cuda_runtime_api.h>
 #include "json/json.hpp"
 import std;
-import xcli;
+import xayah.util.xcli;
 import dataset.nerf_synthetic;
 import dataset.dd_nerf;
 import ngp.train;
@@ -76,30 +76,30 @@ int main(const int argc, const char* const* const argv) {
     std::optional<std::filesystem::path> benchmark_output_path;
     std::string_view dataset_format;
 
-    xcli::Command command =
-        xcli::Command{"Run Instant NGP optimization and evaluation on named frame sets."}
-        | xcli::positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false, .required = true}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
-        | xcli::option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false}, dataset_path, {.requirement = xcli::PathRequirement::existing_directory})
-        | xcli::option({.long_name = "optimize", .value_name = "frame-set", .description = "frame set used for parameter optimization"}, optimize_frame_set)
-        | xcli::option({.long_name = "no-optimize", .description = "skip parameter optimization", .show_default = false}, no_optimize)
-        | xcli::option({.long_name = "evaluate", .value_name = "frame-set", .description = "frame set to evaluate; repeat for multiple sets", .default_text = "validation"}, evaluation_frame_sets)
-        | xcli::option({.long_name = "no-evaluation", .description = "skip evaluation and early stopping", .show_default = false}, no_evaluation)
-        | xcli::option({.long_name = "evaluate-every", .value_name = "count", .description = "optimization steps per interval evaluation"}, evaluate_every_steps, {.minimum = 1.0})
-        | xcli::option({.long_name = "steps", .value_name = "count", .description = "total optimization steps"}, steps, {.minimum = 1.0})
-        | xcli::option({.long_name = "log-every", .value_name = "count", .description = "optimization steps per progress log"}, log_every_steps, {.minimum = 1.0})
-        | xcli::option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true})
-        | xcli::option({.long_name = "early-stop-patience", .value_name = "count", .description = "first evaluation frame set checks without improvement before stopping; 0 disables early stop"}, early_stop_patience, {.minimum = 0.0})
-        | xcli::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum first evaluation frame set MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
-        | xcli::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before optimization or evaluation"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file})
-        | xcli::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights after optimization"}, save_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
-        | xcli::option({.long_name = "comparison-output", .value_name = "dir", .description = "save final evaluation comparison images"}, comparison_output_dir, {.requirement = xcli::PathRequirement::existing_parent_directory})
-        | xcli::option({.long_name = "benchmark-output", .value_name = "path", .description = "append one benchmark result row to .jsonl or .csv"}, benchmark_output_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
-        | xcli::example("../data/nerf-synthetic/lego --steps 30000")
-        | xcli::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-app/model.safetensors")
-        | xcli::example("../data/nerf-synthetic/lego --steps 1000 --evaluate validation --benchmark-output build-app/results.jsonl")
-        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-app/model.safetensors")
-        | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-app/model.safetensors --comparison-output build-app/test-lego")
-        | xcli::example("../data/nerf-synthetic/lego --evaluate validation --evaluate test --steps 1");
+    xayah::util::Command command =
+        xayah::util::Command{"Run Instant NGP optimization and evaluation on named frame sets."}
+        | xayah::util::positional({.name = "dataset-path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false, .required = true}, dataset_path, {.requirement = xayah::util::PathRequirement::existing_directory})
+        | xayah::util::option({.long_name = "dataset", .value_name = "path", .description = "NeRF synthetic or DD-NeRF dataset root", .show_default = false}, dataset_path, {.requirement = xayah::util::PathRequirement::existing_directory})
+        | xayah::util::option({.long_name = "optimize", .value_name = "frame-set", .description = "frame set used for parameter optimization"}, optimize_frame_set)
+        | xayah::util::option({.long_name = "no-optimize", .description = "skip parameter optimization", .show_default = false}, no_optimize)
+        | xayah::util::option({.long_name = "evaluate", .value_name = "frame-set", .description = "frame set to evaluate; repeat for multiple sets", .default_text = "validation"}, evaluation_frame_sets)
+        | xayah::util::option({.long_name = "no-evaluation", .description = "skip evaluation and early stopping", .show_default = false}, no_evaluation)
+        | xayah::util::option({.long_name = "evaluate-every", .value_name = "count", .description = "optimization steps per interval evaluation"}, evaluate_every_steps, {.minimum = 1.0})
+        | xayah::util::option({.long_name = "steps", .value_name = "count", .description = "total optimization steps"}, steps, {.minimum = 1.0})
+        | xayah::util::option({.long_name = "log-every", .value_name = "count", .description = "optimization steps per progress log"}, log_every_steps, {.minimum = 1.0})
+        | xayah::util::option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true})
+        | xayah::util::option({.long_name = "early-stop-patience", .value_name = "count", .description = "first evaluation frame set checks without improvement before stopping; 0 disables early stop"}, early_stop_patience, {.minimum = 0.0})
+        | xayah::util::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum first evaluation frame set MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
+        | xayah::util::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before optimization or evaluation"}, load_weights_path, {.requirement = xayah::util::PathRequirement::existing_file})
+        | xayah::util::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights after optimization"}, save_weights_path, {.requirement = xayah::util::PathRequirement::existing_parent_directory})
+        | xayah::util::option({.long_name = "comparison-output", .value_name = "dir", .description = "save final evaluation comparison images"}, comparison_output_dir, {.requirement = xayah::util::PathRequirement::existing_parent_directory})
+        | xayah::util::option({.long_name = "benchmark-output", .value_name = "path", .description = "append one benchmark result row to .jsonl or .csv"}, benchmark_output_path, {.requirement = xayah::util::PathRequirement::existing_parent_directory})
+        | xayah::util::example("../data/nerf-synthetic/lego --steps 30000")
+        | xayah::util::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-app/model.safetensors")
+        | xayah::util::example("../data/nerf-synthetic/lego --steps 1000 --evaluate validation --benchmark-output build-app/results.jsonl")
+        | xayah::util::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-app/model.safetensors")
+        | xayah::util::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-app/model.safetensors --comparison-output build-app/test-lego")
+        | xayah::util::example("../data/nerf-synthetic/lego --evaluate validation --evaluate test --steps 1");
 
     const std::string usage = command.help(arguments);
 

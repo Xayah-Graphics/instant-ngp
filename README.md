@@ -22,7 +22,7 @@ cmake -B build -S . -G Ninja
 cmake --build build -j 30
 ```
 
-The default build only produces the core `libngp` library. Dataset loading, CLI parsing, and the runnable app are intentionally kept outside the core library.
+The default build only produces the core `libngp` library. Dataset loading, CLI parsing, and the runnable app are intentionally kept outside the core library. App builds download pinned dataset loaders from `Xayah-Graphics/dataset` and the pinned CLI module from `Xayah-Graphics/util`.
 
 #### Build App
 
