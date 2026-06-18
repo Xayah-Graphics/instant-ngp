@@ -2,8 +2,8 @@
 #include "json/json.hpp"
 import std;
 import xcli;
-import nerf_synthetic;
-import dd_nerf;
+import dataset.nerf_synthetic;
+import dataset.dd_nerf;
 import ngp.train;
 
 #ifndef NGP_TRAIN_PROFILE_NAME
@@ -23,6 +23,7 @@ int main(const int argc, const char* const* const argv) {
     constexpr std::string_view ansi_evaluation_badge = "\x1b[1;37;45m";
     constexpr std::string_view ansi_evaluation_metric = "\x1b[1;95m";
     constexpr std::string_view ansi_evaluation_best = "\x1b[1;33m";
+
     struct DatasetProvider final {
         std::string_view name;
         bool (*matches)(const std::filesystem::path&);
@@ -31,12 +32,12 @@ int main(const int argc, const char* const* const argv) {
     const std::array dataset_providers{
         DatasetProvider{
             .name = "nerf-synthetic",
-            .matches = nerf_synthetic::is_dataset,
+            .matches = dataset::nerf_synthetic::is_dataset,
             .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
-                const auto dataset = nerf_synthetic::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
-                if (!dataset) return std::unexpected{dataset.error()};
+                const auto loaded_dataset = dataset::nerf_synthetic::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
+                if (!loaded_dataset) return std::unexpected{loaded_dataset.error()};
                 try {
-                    return std::make_unique<ngp::train::InstantNGP>(*dataset);
+                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset);
                 } catch (const std::exception& error) {
                     return std::unexpected{std::string{error.what()}};
                 }
@@ -44,12 +45,12 @@ int main(const int argc, const char* const* const argv) {
         },
         DatasetProvider{
             .name = "dd-nerf-dataset",
-            .matches = dd_nerf::is_dataset,
+            .matches = dataset::dd_nerf::is_dataset,
             .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
-                const auto dataset = dd_nerf::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
-                if (!dataset) return std::unexpected{dataset.error()};
+                const auto loaded_dataset = dataset::dd_nerf::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
+                if (!loaded_dataset) return std::unexpected{loaded_dataset.error()};
                 try {
-                    return std::make_unique<ngp::train::InstantNGP>(*dataset);
+                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset);
                 } catch (const std::exception& error) {
                     return std::unexpected{std::string{error.what()}};
                 }
