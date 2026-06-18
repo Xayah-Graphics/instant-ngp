@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  arch-build-and-benchmark:
+  arch-build:
     name: Build (Arch Linux, CMake+Ninja)
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -82,7 +82,7 @@ jobs:
           set -euxo pipefail
           cmake -S . -B "${INSTANT_NGP_BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-            -DNGP_BUILD_BENCHMARKS=ON \
+            -DNGP_BUILD_APP=ON \
             -DCUDAToolkit_ROOT="${CUDAToolkit_ROOT}"
 
       - name: Build

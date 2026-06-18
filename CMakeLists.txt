@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.3.0)
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 project(InstantNGP VERSION 1.0.0 LANGUAGES CXX CUDA)
 
-option(NGP_BUILD_BENCHMARKS "Build optional benchmark runners" OFF)
+option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
 
 # ============================================================================
 # C++ Configuration
@@ -121,9 +121,9 @@ download_if_needed(
 # ============================================================================
 # Core Library
 # ============================================================================
-add_library(ngp-train)
+add_library(libngp)
 target_sources(
-        ngp-train
+        libngp
         PRIVATE
         ngp.train.cpp
         ngp.train.cu
@@ -133,17 +133,17 @@ target_sources(
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
         ngp.train.ixx
 )
-target_include_directories(ngp-train PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-target_compile_definitions(ngp-train PRIVATE "NGP_TRAIN_PROFILE_${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}=1")
-target_link_libraries(ngp-train PRIVATE CUDA::cublas CUDA::cublasLt)
-set_property(TARGET ngp-train PROPERTY CXX_MODULE_STD ON)
+target_include_directories(libngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+target_compile_definitions(libngp PRIVATE "NGP_TRAIN_PROFILE_${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}=1")
+target_link_libraries(libngp PRIVATE CUDA::cublas CUDA::cublasLt)
+set_property(TARGET libngp PROPERTY CXX_MODULE_STD ON)
 
 
 # ============================================================================
-# Optional Benchmarks
+# Optional App
 # ============================================================================
-if (NGP_BUILD_BENCHMARKS)
-    set(NGP_DATASET_COMMIT "549c1b722bead607d6165d95334a1aa6b23a5d51")
+if (NGP_BUILD_APP)
+    set(NGP_DATASET_COMMIT "bc636fbfc7507e8173156393f71c0b569f5fe95b")
     set(NGP_DATASET_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/${NGP_DATASET_COMMIT}")
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.ixx"
@@ -166,16 +166,16 @@ if (NGP_BUILD_BENCHMARKS)
             "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
     )
 
-    add_library(benchmark-xcli)
+    add_library(xcli)
     target_sources(
-            benchmark-xcli
+            xcli
             PRIVATE
-            benchmarks/xcli.cpp
+            xcli.cpp
             PUBLIC
             FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            benchmarks/xcli.ixx
+            xcli.ixx
     )
-    set_property(TARGET benchmark-xcli PROPERTY CXX_MODULE_STD ON)
+    set_property(TARGET xcli PROPERTY CXX_MODULE_STD ON)
 
     add_library(dataset-loader)
     target_sources(
@@ -191,31 +191,9 @@ if (NGP_BUILD_BENCHMARKS)
     target_include_directories(dataset-loader PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
     set_property(TARGET dataset-loader PROPERTY CXX_MODULE_STD ON)
 
-    foreach (profile IN LISTS NGP_TRAIN_PROFILES)
-        string(MAKE_C_IDENTIFIER "${profile}" profile_definition_suffix)
-        string(TOUPPER "${profile_definition_suffix}" profile_definition_suffix)
-
-        add_library(ngp-train-${profile})
-        target_sources(
-                ngp-train-${profile}
-                PRIVATE
-                ngp.train.cpp
-                ngp.train.cu
-                ngp.train.config.h
-                ngp.train.h
-                PUBLIC
-                FILE_SET cxx_modules TYPE CXX_MODULES FILES
-                ngp.train.ixx
-        )
-        target_include_directories(ngp-train-${profile} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-        target_compile_definitions(ngp-train-${profile} PRIVATE "NGP_TRAIN_PROFILE_${profile_definition_suffix}=1")
-        target_link_libraries(ngp-train-${profile} PRIVATE CUDA::cublas CUDA::cublasLt)
-        set_property(TARGET ngp-train-${profile} PROPERTY CXX_MODULE_STD ON)
-
-        add_executable(instant-ngp-benchmark-${profile} benchmarks/main.cpp)
-        target_include_directories(instant-ngp-benchmark-${profile} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-        target_compile_definitions(instant-ngp-benchmark-${profile} PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${profile}\"")
-        target_link_libraries(instant-ngp-benchmark-${profile} PRIVATE benchmark-xcli dataset-loader ngp-train-${profile} CUDA::cudart)
-        set_property(TARGET instant-ngp-benchmark-${profile} PROPERTY CXX_MODULE_STD ON)
-    endforeach ()
+    add_executable(instant_ngp main.cpp)
+    target_include_directories(instant_ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    target_compile_definitions(instant_ngp PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
+    target_link_libraries(instant_ngp PRIVATE xcli dataset-loader libngp CUDA::cudart)
+    set_property(TARGET instant_ngp PROPERTY CXX_MODULE_STD ON)
 endif ()

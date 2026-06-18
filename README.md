@@ -22,12 +22,20 @@ cmake -B build -S . -G Ninja
 cmake --build build -j 30
 ```
 
-The default build only produces the core `ngp-train` library. Dataset loading, CLI parsing, and the runnable benchmark runner are intentionally kept outside the core library.
+The default build only produces the core `libngp` library. Dataset loading, CLI parsing, and the runnable app are intentionally kept outside the core library.
 
-#### Build Benchmarks
+#### Build App
 
 ```
-cmake -B build-benchmarks -S . -G Ninja -DNGP_BUILD_BENCHMARKS=ON
-cmake --build build-benchmarks -j 30
-build-benchmarks\instant-ngp-benchmark-baseline.exe --help
+cmake -B build-app -S . -G Ninja -DNGP_BUILD_APP=ON -DNGP_TRAIN_PROFILE=baseline
+cmake --build build-app -j 30
+build-app\instant_ngp.exe --help
+```
+
+Use a separate build directory for each compile-time profile:
+
+```
+cmake -B build-density-skip-8 -S . -G Ninja -DNGP_BUILD_APP=ON -DNGP_TRAIN_PROFILE=density_skip_8
+cmake --build build-density-skip-8 -j 30
+build-density-skip-8\instant_ngp.exe data\nerf-synthetic\lego --steps 1 --no-evaluation
 ```
