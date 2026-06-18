@@ -265,6 +265,8 @@ namespace ngp::train {
 
             nlohmann::json metadata             = nlohmann::json::object();
             metadata["format"]                  = "instant-ngp-new.weights.v2";
+            metadata["train_profile"]           = std::string{ngp::train::config::active_profile_name};
+            metadata["architecture_fingerprint"] = std::format("grid:l{}:f{}:base{}:hash{}:offsets{}|mlp:w{}:density{}:rgb{}:dout{}:dir{}:out{}", ngp::train::config::grid_n_levels, ngp::train::config::grid_features_per_level, ngp::train::config::grid_base_resolution, ngp::train::config::grid_log2_hashmap_size, grid_offsets_text, ngp::train::config::mlp_width, ngp::train::config::density_hidden_layers, ngp::train::config::rgb_hidden_layers, ngp::train::config::density_output_width, ngp::train::config::direction_output_width, ngp::train::config::network_output_width);
             metadata["grid_n_levels"]           = std::format("{}", ngp::train::config::grid_n_levels);
             metadata["grid_features_per_level"] = std::format("{}", ngp::train::config::grid_features_per_level);
             metadata["grid_base_resolution"]    = std::format("{}", ngp::train::config::grid_base_resolution);
@@ -341,6 +343,8 @@ namespace ngp::train {
 
             nlohmann::json expected_metadata             = nlohmann::json::object();
             expected_metadata["format"]                  = "instant-ngp-new.weights.v2";
+            expected_metadata["train_profile"]           = std::string{ngp::train::config::active_profile_name};
+            expected_metadata["architecture_fingerprint"] = std::format("grid:l{}:f{}:base{}:hash{}:offsets{}|mlp:w{}:density{}:rgb{}:dout{}:dir{}:out{}", ngp::train::config::grid_n_levels, ngp::train::config::grid_features_per_level, ngp::train::config::grid_base_resolution, ngp::train::config::grid_log2_hashmap_size, grid_offsets_text, ngp::train::config::mlp_width, ngp::train::config::density_hidden_layers, ngp::train::config::rgb_hidden_layers, ngp::train::config::density_output_width, ngp::train::config::direction_output_width, ngp::train::config::network_output_width);
             expected_metadata["grid_n_levels"]           = std::format("{}", ngp::train::config::grid_n_levels);
             expected_metadata["grid_features_per_level"] = std::format("{}", ngp::train::config::grid_features_per_level);
             expected_metadata["grid_base_resolution"]    = std::format("{}", ngp::train::config::grid_base_resolution);

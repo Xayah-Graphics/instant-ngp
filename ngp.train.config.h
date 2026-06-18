@@ -25,7 +25,6 @@ namespace ngp::train::config {
 
     struct BatchConfig final {
         std::uint32_t network_batch_size = 1u << 18u;
-        std::uint32_t network_batch_granularity = 16u * 8u;
         std::uint32_t initial_rays_per_batch = 1u << 12u;
         std::uint32_t max_sample_multiplier = 16u;
     };
@@ -101,27 +100,283 @@ namespace ngp::train::config {
 
     namespace profiles {
         inline constexpr TrainProfile baseline = {};
+
+        inline constexpr TrainProfile batch_network_2e17 = {
+            .batch = {.network_batch_size = 1u << 17u, .initial_rays_per_batch = 1u << 12u, .max_sample_multiplier = 32u},
+        };
+        inline constexpr TrainProfile batch_network_2e19 = {
+            .batch = {.network_batch_size = 1u << 19u, .initial_rays_per_batch = 1u << 12u, .max_sample_multiplier = 16u},
+        };
+        inline constexpr TrainProfile batch_samples_x8 = {
+            .batch = {.network_batch_size = 1u << 18u, .initial_rays_per_batch = 1u << 12u, .max_sample_multiplier = 8u},
+            .evaluation = {.tile_rays = 2048u},
+        };
+        inline constexpr TrainProfile batch_samples_x24 = {
+            .batch = {.network_batch_size = 1u << 18u, .initial_rays_per_batch = 1u << 12u, .max_sample_multiplier = 24u},
+        };
+        inline constexpr TrainProfile batch_rays_2e11 = {
+            .batch = {.network_batch_size = 1u << 18u, .initial_rays_per_batch = 1u << 11u, .max_sample_multiplier = 16u},
+        };
+        inline constexpr TrainProfile batch_rays_2e13 = {
+            .batch = {.network_batch_size = 1u << 18u, .initial_rays_per_batch = 1u << 13u, .max_sample_multiplier = 16u},
+        };
+
+        inline constexpr TrainProfile density_skip_8 = {
+            .density_grid = {.skip_interval = 8u, .max_skip = 8u},
+        };
+        inline constexpr TrainProfile density_skip_32 = {
+            .density_grid = {.skip_interval = 32u, .max_skip = 32u},
+        };
+        inline constexpr TrainProfile density_uniform_div2 = {
+            .density_grid = {.steady_uniform_sample_divisor = 2u},
+        };
+        inline constexpr TrainProfile density_uniform_div8 = {
+            .density_grid = {.steady_uniform_sample_divisor = 8u},
+        };
+        inline constexpr TrainProfile density_nonuniform_div2 = {
+            .density_grid = {.steady_nonuniform_sample_divisor = 2u},
+        };
+        inline constexpr TrainProfile density_nonuniform_div8 = {
+            .density_grid = {.steady_nonuniform_sample_divisor = 8u},
+        };
+        inline constexpr TrainProfile density_decay_090 = {
+            .density_grid = {.decay = 0.90f},
+        };
+        inline constexpr TrainProfile density_decay_099 = {
+            .density_grid = {.decay = 0.99f},
+        };
+
+        inline constexpr TrainProfile raymarch_steps_512 = {
+            .raymarch = {.nerf_steps = 512u},
+        };
+        inline constexpr TrainProfile raymarch_steps_2048 = {
+            .raymarch = {.nerf_steps = 2048u},
+            .evaluation = {.tile_rays = 2048u},
+        };
+        inline constexpr TrainProfile raymarch_random_samples_8 = {
+            .raymarch = {.max_random_samples_per_ray = 8u},
+        };
+        inline constexpr TrainProfile raymarch_random_samples_32 = {
+            .raymarch = {.max_random_samples_per_ray = 32u},
+        };
+        inline constexpr TrainProfile raymarch_transmittance_1em3 = {
+            .raymarch = {.transmittance_epsilon = 1e-3f},
+        };
+        inline constexpr TrainProfile raymarch_transmittance_1em5 = {
+            .raymarch = {.transmittance_epsilon = 1e-5f},
+        };
+        inline constexpr TrainProfile raymarch_thickness_0p005 = {
+            .raymarch = {.nerf_min_optical_thickness = 0.005f},
+        };
+        inline constexpr TrainProfile raymarch_thickness_0p02 = {
+            .raymarch = {.nerf_min_optical_thickness = 0.02f},
+        };
+
+        inline constexpr TrainProfile hash_log2_18 = {
+            .grid = {.log2_hashmap_size = 18u},
+        };
+        inline constexpr TrainProfile hash_log2_20 = {
+            .grid = {.log2_hashmap_size = 20u},
+        };
+        inline constexpr TrainProfile hash_base_8 = {
+            .grid = {.base_resolution = 8u},
+        };
+        inline constexpr TrainProfile hash_base_32 = {
+            .grid = {.base_resolution = 32u},
+        };
+
+        inline constexpr TrainProfile optimizer_lr_5em3 = {
+            .optimizer = {.learning_rate = 5e-3f},
+        };
+        inline constexpr TrainProfile optimizer_lr_2em2 = {
+            .optimizer = {.learning_rate = 2e-2f},
+        };
+        inline constexpr TrainProfile optimizer_l2_0 = {
+            .optimizer = {.l2_reg = 0.0f},
+        };
+        inline constexpr TrainProfile optimizer_l2_1em5 = {
+            .optimizer = {.l2_reg = 1e-5f},
+        };
+        inline constexpr TrainProfile optimizer_loss_scale_64 = {
+            .optimizer = {.loss_scale = 64.0f},
+        };
+        inline constexpr TrainProfile optimizer_loss_scale_256 = {
+            .optimizer = {.loss_scale = 256.0f},
+        };
+
+        inline constexpr TrainProfile kernel_threads_256 = {
+            .kernel = {.threads_per_block = 256u},
+        };
+        inline constexpr TrainProfile kernel_grid_forward_256 = {
+            .kernel = {.grid_forward_threads = 256u},
+        };
+        inline constexpr TrainProfile kernel_grid_backward_128 = {
+            .kernel = {.grid_backward_threads = 128u},
+        };
+        inline constexpr TrainProfile kernel_grid_backward_512 = {
+            .kernel = {.grid_backward_threads = 512u},
+        };
+        inline constexpr TrainProfile kernel_mlp_forward_iters_4 = {
+            .kernel = {.mlp_forward_iters = 4u},
+        };
     }
 
-#if defined(NGP_TRAIN_PROFILE_BASELINE)
-#define NGP_TRAIN_PROFILE_BASELINE_SELECTED 1
-#else
-#define NGP_TRAIN_PROFILE_BASELINE_SELECTED 0
-#endif
-
-#define NGP_TRAIN_PROFILE_SELECTION_COUNT NGP_TRAIN_PROFILE_BASELINE_SELECTED
-
-#if NGP_TRAIN_PROFILE_SELECTION_COUNT != 1
+#if defined(NGP_TRAIN_PROFILE_BASELINE) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_NETWORK_2E17) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_NETWORK_2E19) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_SAMPLES_X8) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_SAMPLES_X24) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_RAYS_2E11) + \
+    defined(NGP_TRAIN_PROFILE_BATCH_RAYS_2E13) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_SKIP_8) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_SKIP_32) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_UNIFORM_DIV2) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_UNIFORM_DIV8) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_NONUNIFORM_DIV2) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_NONUNIFORM_DIV8) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_DECAY_090) + \
+    defined(NGP_TRAIN_PROFILE_DENSITY_DECAY_099) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_STEPS_512) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_STEPS_2048) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_RANDOM_SAMPLES_8) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_RANDOM_SAMPLES_32) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_TRANSMITTANCE_1EM3) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_TRANSMITTANCE_1EM5) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_THICKNESS_0P005) + \
+    defined(NGP_TRAIN_PROFILE_RAYMARCH_THICKNESS_0P02) + \
+    defined(NGP_TRAIN_PROFILE_HASH_LOG2_18) + \
+    defined(NGP_TRAIN_PROFILE_HASH_LOG2_20) + \
+    defined(NGP_TRAIN_PROFILE_HASH_BASE_8) + \
+    defined(NGP_TRAIN_PROFILE_HASH_BASE_32) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_LR_5EM3) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_LR_2EM2) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_L2_0) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_L2_1EM5) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_LOSS_SCALE_64) + \
+    defined(NGP_TRAIN_PROFILE_OPTIMIZER_LOSS_SCALE_256) + \
+    defined(NGP_TRAIN_PROFILE_KERNEL_THREADS_256) + \
+    defined(NGP_TRAIN_PROFILE_KERNEL_GRID_FORWARD_256) + \
+    defined(NGP_TRAIN_PROFILE_KERNEL_GRID_BACKWARD_128) + \
+    defined(NGP_TRAIN_PROFILE_KERNEL_GRID_BACKWARD_512) + \
+    defined(NGP_TRAIN_PROFILE_KERNEL_MLP_FORWARD_ITERS_4) != 1
 #error "Exactly one NGP_TRAIN_PROFILE_* compile-time profile must be selected."
 #endif
 
-#if NGP_TRAIN_PROFILE_BASELINE_SELECTED == 1
+#if defined(NGP_TRAIN_PROFILE_BASELINE)
     inline constexpr TrainProfile active_profile = profiles::baseline;
     inline constexpr std::string_view active_profile_name = "baseline";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_NETWORK_2E17)
+    inline constexpr TrainProfile active_profile = profiles::batch_network_2e17;
+    inline constexpr std::string_view active_profile_name = "batch_network_2e17";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_NETWORK_2E19)
+    inline constexpr TrainProfile active_profile = profiles::batch_network_2e19;
+    inline constexpr std::string_view active_profile_name = "batch_network_2e19";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_SAMPLES_X8)
+    inline constexpr TrainProfile active_profile = profiles::batch_samples_x8;
+    inline constexpr std::string_view active_profile_name = "batch_samples_x8";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_SAMPLES_X24)
+    inline constexpr TrainProfile active_profile = profiles::batch_samples_x24;
+    inline constexpr std::string_view active_profile_name = "batch_samples_x24";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_RAYS_2E11)
+    inline constexpr TrainProfile active_profile = profiles::batch_rays_2e11;
+    inline constexpr std::string_view active_profile_name = "batch_rays_2e11";
+#elif defined(NGP_TRAIN_PROFILE_BATCH_RAYS_2E13)
+    inline constexpr TrainProfile active_profile = profiles::batch_rays_2e13;
+    inline constexpr std::string_view active_profile_name = "batch_rays_2e13";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_SKIP_8)
+    inline constexpr TrainProfile active_profile = profiles::density_skip_8;
+    inline constexpr std::string_view active_profile_name = "density_skip_8";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_SKIP_32)
+    inline constexpr TrainProfile active_profile = profiles::density_skip_32;
+    inline constexpr std::string_view active_profile_name = "density_skip_32";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_UNIFORM_DIV2)
+    inline constexpr TrainProfile active_profile = profiles::density_uniform_div2;
+    inline constexpr std::string_view active_profile_name = "density_uniform_div2";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_UNIFORM_DIV8)
+    inline constexpr TrainProfile active_profile = profiles::density_uniform_div8;
+    inline constexpr std::string_view active_profile_name = "density_uniform_div8";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_NONUNIFORM_DIV2)
+    inline constexpr TrainProfile active_profile = profiles::density_nonuniform_div2;
+    inline constexpr std::string_view active_profile_name = "density_nonuniform_div2";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_NONUNIFORM_DIV8)
+    inline constexpr TrainProfile active_profile = profiles::density_nonuniform_div8;
+    inline constexpr std::string_view active_profile_name = "density_nonuniform_div8";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_DECAY_090)
+    inline constexpr TrainProfile active_profile = profiles::density_decay_090;
+    inline constexpr std::string_view active_profile_name = "density_decay_090";
+#elif defined(NGP_TRAIN_PROFILE_DENSITY_DECAY_099)
+    inline constexpr TrainProfile active_profile = profiles::density_decay_099;
+    inline constexpr std::string_view active_profile_name = "density_decay_099";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_STEPS_512)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_steps_512;
+    inline constexpr std::string_view active_profile_name = "raymarch_steps_512";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_STEPS_2048)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_steps_2048;
+    inline constexpr std::string_view active_profile_name = "raymarch_steps_2048";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_RANDOM_SAMPLES_8)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_random_samples_8;
+    inline constexpr std::string_view active_profile_name = "raymarch_random_samples_8";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_RANDOM_SAMPLES_32)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_random_samples_32;
+    inline constexpr std::string_view active_profile_name = "raymarch_random_samples_32";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_TRANSMITTANCE_1EM3)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_transmittance_1em3;
+    inline constexpr std::string_view active_profile_name = "raymarch_transmittance_1em3";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_TRANSMITTANCE_1EM5)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_transmittance_1em5;
+    inline constexpr std::string_view active_profile_name = "raymarch_transmittance_1em5";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_THICKNESS_0P005)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_thickness_0p005;
+    inline constexpr std::string_view active_profile_name = "raymarch_thickness_0p005";
+#elif defined(NGP_TRAIN_PROFILE_RAYMARCH_THICKNESS_0P02)
+    inline constexpr TrainProfile active_profile = profiles::raymarch_thickness_0p02;
+    inline constexpr std::string_view active_profile_name = "raymarch_thickness_0p02";
+#elif defined(NGP_TRAIN_PROFILE_HASH_LOG2_18)
+    inline constexpr TrainProfile active_profile = profiles::hash_log2_18;
+    inline constexpr std::string_view active_profile_name = "hash_log2_18";
+#elif defined(NGP_TRAIN_PROFILE_HASH_LOG2_20)
+    inline constexpr TrainProfile active_profile = profiles::hash_log2_20;
+    inline constexpr std::string_view active_profile_name = "hash_log2_20";
+#elif defined(NGP_TRAIN_PROFILE_HASH_BASE_8)
+    inline constexpr TrainProfile active_profile = profiles::hash_base_8;
+    inline constexpr std::string_view active_profile_name = "hash_base_8";
+#elif defined(NGP_TRAIN_PROFILE_HASH_BASE_32)
+    inline constexpr TrainProfile active_profile = profiles::hash_base_32;
+    inline constexpr std::string_view active_profile_name = "hash_base_32";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_LR_5EM3)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_lr_5em3;
+    inline constexpr std::string_view active_profile_name = "optimizer_lr_5em3";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_LR_2EM2)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_lr_2em2;
+    inline constexpr std::string_view active_profile_name = "optimizer_lr_2em2";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_L2_0)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_l2_0;
+    inline constexpr std::string_view active_profile_name = "optimizer_l2_0";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_L2_1EM5)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_l2_1em5;
+    inline constexpr std::string_view active_profile_name = "optimizer_l2_1em5";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_LOSS_SCALE_64)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_loss_scale_64;
+    inline constexpr std::string_view active_profile_name = "optimizer_loss_scale_64";
+#elif defined(NGP_TRAIN_PROFILE_OPTIMIZER_LOSS_SCALE_256)
+    inline constexpr TrainProfile active_profile = profiles::optimizer_loss_scale_256;
+    inline constexpr std::string_view active_profile_name = "optimizer_loss_scale_256";
+#elif defined(NGP_TRAIN_PROFILE_KERNEL_THREADS_256)
+    inline constexpr TrainProfile active_profile = profiles::kernel_threads_256;
+    inline constexpr std::string_view active_profile_name = "kernel_threads_256";
+#elif defined(NGP_TRAIN_PROFILE_KERNEL_GRID_FORWARD_256)
+    inline constexpr TrainProfile active_profile = profiles::kernel_grid_forward_256;
+    inline constexpr std::string_view active_profile_name = "kernel_grid_forward_256";
+#elif defined(NGP_TRAIN_PROFILE_KERNEL_GRID_BACKWARD_128)
+    inline constexpr TrainProfile active_profile = profiles::kernel_grid_backward_128;
+    inline constexpr std::string_view active_profile_name = "kernel_grid_backward_128";
+#elif defined(NGP_TRAIN_PROFILE_KERNEL_GRID_BACKWARD_512)
+    inline constexpr TrainProfile active_profile = profiles::kernel_grid_backward_512;
+    inline constexpr std::string_view active_profile_name = "kernel_grid_backward_512";
+#elif defined(NGP_TRAIN_PROFILE_KERNEL_MLP_FORWARD_ITERS_4)
+    inline constexpr TrainProfile active_profile = profiles::kernel_mlp_forward_iters_4;
+    inline constexpr std::string_view active_profile_name = "kernel_mlp_forward_iters_4";
 #endif
-
-#undef NGP_TRAIN_PROFILE_SELECTION_COUNT
-#undef NGP_TRAIN_PROFILE_BASELINE_SELECTED
 
     inline constexpr std::uint32_t grid_n_levels = active_profile.grid.n_levels;
     inline constexpr std::uint32_t grid_features_per_level = active_profile.grid.features_per_level;
@@ -200,7 +455,7 @@ namespace ngp::train::config {
     inline constexpr NetworkParameterLayout network_parameter_layout = make_network_parameter_layout();
 
     inline constexpr std::uint32_t network_batch_size = active_profile.batch.network_batch_size;
-    inline constexpr std::uint32_t network_batch_granularity = active_profile.batch.network_batch_granularity;
+    inline constexpr std::uint32_t network_batch_granularity = 16u * active_profile.kernel.mlp_forward_iters;
     inline constexpr std::uint32_t initial_rays_per_batch = active_profile.batch.initial_rays_per_batch;
     inline constexpr std::uint32_t max_samples = network_batch_size * active_profile.batch.max_sample_multiplier;
 
@@ -255,12 +510,22 @@ namespace ngp::train::config {
     inline constexpr std::uint64_t pcg32_mult = active_profile.random.pcg32_mult;
 
     static_assert(grid_n_levels == 8u, "The handwritten grid kernels currently pass exactly eight hash-grid levels.");
+    static_assert(grid_features_per_level == 4u, "The handwritten grid kernels currently accumulate exactly four features per level.");
     static_assert(grid_output_width % grid_features_per_level == 0u);
     static_assert(grid_output_width == rgb_input_width);
+    static_assert(mlp_width == 64u, "The handwritten MLP kernels currently support exactly width 64.");
     static_assert(density_hidden_layers == 1u, "The handwritten density MLP path currently supports exactly one hidden layer.");
     static_assert(rgb_hidden_layers == 2u, "The handwritten RGB MLP path currently supports exactly two hidden layers.");
+    static_assert(density_output_width == 16u);
+    static_assert(direction_output_width == 16u);
     static_assert(density_output_width == network_output_width);
+    static_assert(network_output_width == 16u);
     static_assert(mlp_width % 16u == 0u);
+    static_assert(nerf_grid_size != 0u);
+    static_assert((nerf_grid_size & (nerf_grid_size - 1u)) == 0u, "The occupancy grid expects a power-of-two resolution.");
+    static_assert(nerf_grid_cells % 8u == 0u);
+    static_assert(sample_coord_floats == 7u);
+    static_assert(ray_floats == 6u);
     static_assert(network_batch_size != 0u);
     static_assert(network_batch_granularity != 0u);
     static_assert(network_batch_size % network_batch_granularity == 0u);
@@ -271,6 +536,7 @@ namespace ngp::train::config {
     static_assert(density_grid_warmup_samples <= max_samples);
     static_assert(density_grid_steady_uniform_samples <= max_samples);
     static_assert(density_grid_steady_nonuniform_samples <= max_samples);
+    static_assert(grid_backward_features == 2u, "The handwritten grid backward kernel accumulates feature pairs with half2.");
     static_assert(network_parameter_layout.grid_offsets[0u] == 0u);
     static_assert(network_parameter_layout.density_param_offset == 0u);
     static_assert(network_parameter_layout.rgb_param_offset == network_parameter_layout.density_param_offset + network_parameter_layout.density_param_count);

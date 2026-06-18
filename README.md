@@ -29,5 +29,5 @@ The default build only produces the core `ngp-train` library. Dataset loading, C
 ```
 cmake -B build-benchmarks -S . -G Ninja -DNGP_BUILD_BENCHMARKS=ON
 cmake --build build-benchmarks -j 30
-build-benchmarks\instant-ngp-benchmark.exe --help
+build-benchmarks\instant-ngp-benchmark-baseline.exe --help
 ```

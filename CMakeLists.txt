@@ -38,8 +38,47 @@ endif ()
 find_package(CUDAToolkit 13.2 REQUIRED)
 
 set(NGP_TRAIN_PROFILE "baseline" CACHE STRING "Compile-time Instant NGP train profile")
-set_property(CACHE NGP_TRAIN_PROFILE PROPERTY STRINGS baseline)
-set(NGP_TRAIN_PROFILES baseline)
+set(NGP_TRAIN_PROFILES
+        baseline
+        batch_network_2e17
+        batch_network_2e19
+        batch_samples_x8
+        batch_samples_x24
+        batch_rays_2e11
+        batch_rays_2e13
+        density_skip_8
+        density_skip_32
+        density_uniform_div2
+        density_uniform_div8
+        density_nonuniform_div2
+        density_nonuniform_div8
+        density_decay_090
+        density_decay_099
+        raymarch_steps_512
+        raymarch_steps_2048
+        raymarch_random_samples_8
+        raymarch_random_samples_32
+        raymarch_transmittance_1em3
+        raymarch_transmittance_1em5
+        raymarch_thickness_0p005
+        raymarch_thickness_0p02
+        hash_log2_18
+        hash_log2_20
+        hash_base_8
+        hash_base_32
+        optimizer_lr_5em3
+        optimizer_lr_2em2
+        optimizer_l2_0
+        optimizer_l2_1em5
+        optimizer_loss_scale_64
+        optimizer_loss_scale_256
+        kernel_threads_256
+        kernel_grid_forward_256
+        kernel_grid_backward_128
+        kernel_grid_backward_512
+        kernel_mlp_forward_iters_4
+)
+set_property(CACHE NGP_TRAIN_PROFILE PROPERTY STRINGS ${NGP_TRAIN_PROFILES})
 if (NOT NGP_TRAIN_PROFILE IN_LIST NGP_TRAIN_PROFILES)
     message(FATAL_ERROR "Unknown NGP_TRAIN_PROFILE='${NGP_TRAIN_PROFILE}'. Supported profiles: ${NGP_TRAIN_PROFILES}")
 endif ()
@@ -132,7 +171,31 @@ if (NGP_BUILD_BENCHMARKS)
     target_include_directories(benchmark-ngp-dataset PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
     set_property(TARGET benchmark-ngp-dataset PROPERTY CXX_MODULE_STD ON)
 
-    add_executable(instant-ngp-benchmark benchmarks/main.cpp)
-    target_link_libraries(instant-ngp-benchmark PRIVATE benchmark-xcli benchmark-ngp-dataset ngp-train)
-    set_property(TARGET instant-ngp-benchmark PROPERTY CXX_MODULE_STD ON)
+    foreach (profile IN LISTS NGP_TRAIN_PROFILES)
+        string(MAKE_C_IDENTIFIER "${profile}" profile_definition_suffix)
+        string(TOUPPER "${profile_definition_suffix}" profile_definition_suffix)
+
+        add_library(ngp-train-${profile})
+        target_sources(
+                ngp-train-${profile}
+                PRIVATE
+                ngp.train.cpp
+                ngp.train.cu
+                ngp.train.config.h
+                ngp.train.h
+                PUBLIC
+                FILE_SET cxx_modules TYPE CXX_MODULES FILES
+                ngp.train.ixx
+        )
+        target_include_directories(ngp-train-${profile} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+        target_compile_definitions(ngp-train-${profile} PRIVATE "NGP_TRAIN_PROFILE_${profile_definition_suffix}=1")
+        target_link_libraries(ngp-train-${profile} PRIVATE CUDA::cublas CUDA::cublasLt)
+        set_property(TARGET ngp-train-${profile} PROPERTY CXX_MODULE_STD ON)
+
+        add_executable(instant-ngp-benchmark-${profile} benchmarks/main.cpp)
+        target_include_directories(instant-ngp-benchmark-${profile} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+        target_compile_definitions(instant-ngp-benchmark-${profile} PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${profile}\"")
+        target_link_libraries(instant-ngp-benchmark-${profile} PRIVATE benchmark-xcli benchmark-ngp-dataset ngp-train-${profile} CUDA::cudart)
+        set_property(TARGET instant-ngp-benchmark-${profile} PROPERTY CXX_MODULE_STD ON)
+    endforeach ()
 endif ()

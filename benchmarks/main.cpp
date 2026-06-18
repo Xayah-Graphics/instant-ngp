@@ -1,10 +1,17 @@
+#include <cuda_runtime_api.h>
+#include "json/json.hpp"
 import std;
 import xcli;
 import ngp.dataset;
 import ngp.train;
 
+#ifndef NGP_TRAIN_PROFILE_NAME
+#error "NGP_TRAIN_PROFILE_NAME must be provided by the benchmark target."
+#endif
+
 int main(const int argc, const char* const* const argv) {
     const std::span<const char* const> arguments{argv, static_cast<std::size_t>(argc)};
+    constexpr std::string_view active_train_profile_name = NGP_TRAIN_PROFILE_NAME;
     constexpr std::string_view ansi_reset = "\x1b[0m";
     constexpr std::string_view ansi_dim = "\x1b[2m";
     constexpr std::string_view ansi_bold = "\x1b[1m";
@@ -30,6 +37,7 @@ int main(const int argc, const char* const* const argv) {
     std::optional<std::filesystem::path> load_weights_path;
     std::optional<std::filesystem::path> save_weights_path;
     std::optional<std::filesystem::path> comparison_output_dir;
+    std::optional<std::filesystem::path> benchmark_output_path;
     std::string_view dataset_format;
 
     xcli::Command command =
@@ -49,8 +57,10 @@ int main(const int argc, const char* const* const argv) {
         | xcli::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before optimization or evaluation"}, load_weights_path, {.requirement = xcli::PathRequirement::existing_file})
         | xcli::option({.long_name = "save-weights", .value_name = "path", .description = "save final safetensors weights after optimization"}, save_weights_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
         | xcli::option({.long_name = "comparison-output", .value_name = "dir", .description = "save final evaluation comparison images"}, comparison_output_dir, {.requirement = xcli::PathRequirement::existing_parent_directory})
+        | xcli::option({.long_name = "benchmark-output", .value_name = "path", .description = "append one benchmark result row to .jsonl or .csv"}, benchmark_output_path, {.requirement = xcli::PathRequirement::existing_parent_directory})
         | xcli::example("../data/nerf-synthetic/lego --steps 30000")
         | xcli::example("../data/nerf-synthetic/lego --no-evaluation --save-weights build-benchmarks/model.safetensors")
+        | xcli::example("../data/nerf-synthetic/lego --steps 1000 --evaluate validation --benchmark-output build-benchmarks/results.jsonl")
         | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate validation --load-weights build-benchmarks/model.safetensors")
         | xcli::example("../data/nerf-synthetic/lego --no-optimize --evaluate test --load-weights build-benchmarks/model.safetensors --comparison-output build-benchmarks/test-lego")
         | xcli::example("../data/nerf-synthetic/lego --evaluate validation --evaluate test --steps 1");
@@ -107,6 +117,7 @@ int main(const int argc, const char* const* const argv) {
     else if (!cli_error && no_evaluation && command.option_provided("evaluate-every")) cli_error = "--evaluate-every is not valid with --no-evaluation.";
     else if (!cli_error && no_evaluation && command.option_provided("early-stop-patience")) cli_error = "--early-stop-patience is not valid with --no-evaluation.";
     else if (!cli_error && no_evaluation && command.option_provided("early-stop-min-delta")) cli_error = "--early-stop-min-delta is not valid with --no-evaluation.";
+    else if (!cli_error && benchmark_output_path.has_value() && benchmark_output_path->extension() != ".jsonl" && benchmark_output_path->extension() != ".csv") cli_error = "--benchmark-output must use a .jsonl or .csv extension.";
     if (cli_error.has_value()) {
         std::println("{}error:{} {}", ansi_red, ansi_reset, *cli_error);
         return 2;
@@ -169,10 +180,11 @@ int main(const int argc, const char* const* const argv) {
     const std::string optimize_stage = optimization_enabled ? optimize_frame_set : "off";
     const std::string early_stop_stage = early_stop_enabled ? std::format("frame_set:{},patience:{},min_delta:{:.6g}", evaluation_frame_sets.front(), early_stop_patience, static_cast<double>(early_stop_min_delta_mse)) : std::string{"off"};
     const std::string comparison_stage = comparison_output_dir.has_value() ? std::format("comparison_output={}", comparison_output_dir->string()) : std::string{"comparison_output=off"};
+    const std::string benchmark_output_stage = benchmark_output_path.has_value() ? std::format("benchmark_output={}", benchmark_output_path->string()) : std::string{"benchmark_output=off"};
 
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    if (optimization_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} dataset={} format={} scene_scale={} frame_sets={} optimize={} steps={} log_every={} evaluation={} early_stop={} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, optimize_stage, steps, log_every_steps, evaluation_stage, early_stop_stage, comparison_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
-    else std::println("{}[{:%F %T}]{} {}{:<8}{} dataset={} format={} scene_scale={} frame_sets={} optimize=off evaluation={} {} load_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, evaluation_stage, comparison_stage, load_weights_path.has_value() ? load_weights_path->string() : "none");
+    if (optimization_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize={} steps={} log_every={} evaluation={} early_stop={} {} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, optimize_stage, steps, log_every_steps, evaluation_stage, early_stop_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
+    else std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize=off evaluation={} {} {} load_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, evaluation_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     std::println("{}[{:%F %T}]{} {}{:<8}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
@@ -180,6 +192,24 @@ int main(const int argc, const char* const* const argv) {
     std::optional<std::string> pipeline_error;
     std::unique_ptr<ngp::train::InstantNGP> ngp;
     const ngp::dataset::DatasetLoadPlan dataset_load_plan{.frame_sets = requested_frame_sets};
+    const bool benchmark_output_enabled = benchmark_output_path.has_value();
+    const auto benchmark_start = std::chrono::steady_clock::now();
+    std::uint64_t benchmark_peak_vram_bytes = 0u;
+    std::uint32_t benchmark_final_step = 0u;
+    float benchmark_optimization_elapsed_ms = 0.0f;
+    float benchmark_sample_efficiency_ratio = std::numeric_limits<float>::quiet_NaN();
+    float benchmark_density_grid_occupancy_ratio = std::numeric_limits<float>::quiet_NaN();
+    std::optional<ngp::train::EvaluationStats> benchmark_primary_evaluation;
+    const auto query_used_device_memory = [] -> std::expected<std::uint64_t, std::string> {
+        try {
+            std::size_t free_bytes = 0uz;
+            std::size_t total_bytes = 0uz;
+            if (const cudaError_t status = cudaMemGetInfo(&free_bytes, &total_bytes); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemGetInfo failed: "} + cudaGetErrorString(status)};
+            return static_cast<std::uint64_t>(total_bytes - free_bytes);
+        } catch (const std::exception& error) {
+            return std::unexpected{std::string{error.what()}};
+        }
+    };
 
     const auto dataset = dataset_format == "nerf-synthetic" ? ngp::dataset::load_nerf_synthetic(dataset_path, scene_scale, dataset_load_plan) : ngp::dataset::load_dd_nerf_dataset(dataset_path, scene_scale, dataset_load_plan);
     if (!dataset) {
@@ -191,13 +221,25 @@ int main(const int argc, const char* const* const argv) {
             pipeline_error = std::string{error.what()};
         }
     }
+    if (!pipeline_error && benchmark_output_enabled) {
+        const auto memory = query_used_device_memory();
+        if (!memory) pipeline_error = memory.error();
+        else benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+    }
 
     if (!pipeline_error && load_weights_path.has_value()) {
         const auto loaded_weights = ngp->load_weights(*load_weights_path);
         if (!loaded_weights) pipeline_error = loaded_weights.error();
         else {
-            const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-            std::println("{}[{:%F %T}]{} {}{:<8}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, load_weights_path->string());
+            if (benchmark_output_enabled) {
+                const auto memory = query_used_device_memory();
+                if (!memory) pipeline_error = memory.error();
+                else benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+            }
+            if (!pipeline_error) {
+                const auto weights_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+                std::println("{}[{:%F %T}]{} {}{:<8}{} loaded={}", ansi_dim, weights_timestamp, ansi_reset, ansi_yellow, "WEIGHT", ansi_reset, load_weights_path->string());
+            }
         }
     }
 
@@ -225,6 +267,18 @@ int main(const int argc, const char* const* const argv) {
             last_loss = stats->loss;
             optimize_ms += stats->elapsed_ms;
             final_step = stats->step;
+            if (benchmark_output_enabled) {
+                benchmark_final_step = stats->step;
+                benchmark_optimization_elapsed_ms = optimize_ms;
+                benchmark_sample_efficiency_ratio = stats->sample_efficiency_ratio;
+                benchmark_density_grid_occupancy_ratio = stats->density_grid_occupancy_ratio;
+                const auto memory = query_used_device_memory();
+                if (!memory) {
+                    pipeline_error = memory.error();
+                    break;
+                }
+                benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+            }
             optimized_steps += requested_steps;
             const auto optimize_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
             std::println("{}[{:%F %T}]{} {}{:<8}{} frame_set={} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms rate={:>7.2f} step/s next_rays={:>6} samples={:>7}/{:<7} sample_eff={:>6.2f}% occupied={:>7} occupancy={:>6.2f}%", ansi_dim, optimize_timestamp, ansi_reset, ansi_green, "OPTIMIZE", ansi_reset, optimize_frame_set, stats->step, steps, stats->loss, stats->elapsed_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->next_rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->sample_efficiency_ratio * 100.0f, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
@@ -237,9 +291,18 @@ int main(const int argc, const char* const* const argv) {
                         pipeline_error = evaluation.error();
                         break;
                     }
+                    if (benchmark_output_enabled) {
+                        const auto memory = query_used_device_memory();
+                        if (!memory) {
+                            pipeline_error = memory.error();
+                            break;
+                        }
+                        benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+                    }
 
                     const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
                     if (evaluation_index == 0uz) {
+                        if (benchmark_output_enabled) benchmark_primary_evaluation = *evaluation;
                         first_evaluation_improved = evaluation->mse < best_evaluation_mse - early_stop_min_delta_mse;
                         if (first_evaluation_improved) {
                             best_evaluation_mse = evaluation->mse;
@@ -281,12 +344,22 @@ int main(const int argc, const char* const* const argv) {
         }
 
         if (!pipeline_error && comparison_output_dir.has_value()) {
-            for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+            for (std::size_t evaluation_index = 0uz; evaluation_index < evaluation_frame_sets.size(); ++evaluation_index) {
+                const std::string& evaluation_frame_set = evaluation_frame_sets[evaluation_index];
                 const std::filesystem::path output_dir = evaluation_frame_sets.size() == 1uz ? *comparison_output_dir : *comparison_output_dir / evaluation_frame_set;
                 const auto evaluation = ngp->evaluate({.frame_set = evaluation_frame_set, .comparison_output_dir = output_dir});
                 if (!evaluation) {
                     pipeline_error = evaluation.error();
                     break;
+                }
+                if (benchmark_output_enabled) {
+                    const auto memory = query_used_device_memory();
+                    if (!memory) {
+                        pipeline_error = memory.error();
+                        break;
+                    }
+                    benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+                    if (evaluation_index == 0uz) benchmark_primary_evaluation = *evaluation;
                 }
                 const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
                 std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}saved{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->comparison_image_count, evaluation->pixel_count, evaluation->output_dir.string(), evaluation->elapsed_ms);
@@ -295,16 +368,78 @@ int main(const int argc, const char* const* const argv) {
     }
 
     if (!pipeline_error && !optimization_enabled) {
-        for (const std::string& evaluation_frame_set : evaluation_frame_sets) {
+        for (std::size_t evaluation_index = 0uz; evaluation_index < evaluation_frame_sets.size(); ++evaluation_index) {
+            const std::string& evaluation_frame_set = evaluation_frame_sets[evaluation_index];
             const std::optional<std::filesystem::path> output_dir = comparison_output_dir.has_value() ? std::optional<std::filesystem::path>{evaluation_frame_sets.size() == 1uz ? *comparison_output_dir : *comparison_output_dir / evaluation_frame_set} : std::nullopt;
             const auto evaluation = ngp->evaluate({.frame_set = evaluation_frame_set, .comparison_output_dir = output_dir});
             if (!evaluation) {
                 pipeline_error = evaluation.error();
                 break;
             }
+            if (benchmark_output_enabled) {
+                const auto memory = query_used_device_memory();
+                if (!memory) {
+                    pipeline_error = memory.error();
+                    break;
+                }
+                benchmark_peak_vram_bytes = std::max(benchmark_peak_vram_bytes, *memory);
+                benchmark_final_step = evaluation->step;
+                if (evaluation_index == 0uz) benchmark_primary_evaluation = *evaluation;
+            }
             const auto evaluation_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
             if (output_dir.has_value()) std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}saved{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} saved={} pixels={} output={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->comparison_image_count, evaluation->pixel_count, evaluation->output_dir.string(), evaluation->elapsed_ms);
             else std::println("{}[{:%F %T}]{} {} {:<8} {} frame_set={} step={:>6} status={}evaluated{} | {}MSE={:.8f}{} {}PSNR={:>5.2f}{} | images={:>3} pixels={} eval={:>8.3f}ms", ansi_dim, evaluation_timestamp, ansi_reset, ansi_evaluation_badge, "EVAL", ansi_reset, evaluation->frame_set, evaluation->step, ansi_green, ansi_reset, ansi_evaluation_metric, evaluation->mse, ansi_reset, ansi_cyan, evaluation->psnr, ansi_reset, evaluation->image_count, evaluation->pixel_count, evaluation->elapsed_ms);
+        }
+    }
+
+    if (!pipeline_error && benchmark_output_enabled) {
+        try {
+            const float benchmark_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - benchmark_start).count();
+            const float benchmark_step_rate = benchmark_optimization_elapsed_ms > 0.0f ? static_cast<float>(benchmark_final_step) * 1000.0f / benchmark_optimization_elapsed_ms : 0.0f;
+            const bool has_optimization_metrics = std::isfinite(benchmark_sample_efficiency_ratio) && std::isfinite(benchmark_density_grid_occupancy_ratio);
+            const bool has_evaluation_metrics = benchmark_primary_evaluation.has_value();
+            const bool has_json_mse = has_evaluation_metrics && std::isfinite(benchmark_primary_evaluation->mse);
+            const bool has_json_psnr = has_evaluation_metrics && std::isfinite(benchmark_primary_evaluation->psnr);
+            if (benchmark_output_path->extension() == ".jsonl") {
+                nlohmann::json row = nlohmann::json::object();
+                row["profile"] = std::string{active_train_profile_name};
+                row["dataset"] = dataset_path.string();
+                row["steps"] = benchmark_final_step;
+                row["elapsed_ms"] = benchmark_elapsed_ms;
+                row["step_per_second"] = benchmark_step_rate;
+                row["sample_eff"] = nullptr;
+                row["occupancy"] = nullptr;
+                row["mse"] = nullptr;
+                row["psnr"] = nullptr;
+                if (has_optimization_metrics) row["sample_eff"] = benchmark_sample_efficiency_ratio;
+                if (has_optimization_metrics) row["occupancy"] = benchmark_density_grid_occupancy_ratio;
+                if (has_json_mse) row["mse"] = benchmark_primary_evaluation->mse;
+                if (has_json_psnr) row["psnr"] = benchmark_primary_evaluation->psnr;
+                row["peak_vram_bytes"] = benchmark_peak_vram_bytes;
+                row["peak_vram_mib"] = static_cast<double>(benchmark_peak_vram_bytes) / (1024.0 * 1024.0);
+
+                std::ofstream output{*benchmark_output_path, std::ios::app};
+                if (!output) throw std::runtime_error{std::format("failed to open benchmark output '{}'.", benchmark_output_path->string())};
+                output << row.dump() << '\n';
+                if (!output) throw std::runtime_error{std::format("failed to write benchmark output '{}'.", benchmark_output_path->string())};
+            } else {
+                const bool write_header = !std::filesystem::exists(*benchmark_output_path) || std::filesystem::file_size(*benchmark_output_path) == 0u;
+                std::ofstream output{*benchmark_output_path, std::ios::app};
+                if (!output) throw std::runtime_error{std::format("failed to open benchmark output '{}'.", benchmark_output_path->string())};
+                if (write_header) output << "profile,dataset,steps,elapsed_ms,step_per_second,sample_eff,occupancy,mse,psnr,peak_vram_bytes\n";
+                output << std::quoted(std::string{active_train_profile_name}) << ',' << std::quoted(dataset_path.string()) << ',' << benchmark_final_step << ',' << std::setprecision(9) << benchmark_elapsed_ms << ',' << benchmark_step_rate << ',';
+                if (has_optimization_metrics) output << benchmark_sample_efficiency_ratio;
+                output << ',';
+                if (has_optimization_metrics) output << benchmark_density_grid_occupancy_ratio;
+                output << ',';
+                if (has_evaluation_metrics) output << benchmark_primary_evaluation->mse;
+                output << ',';
+                if (has_evaluation_metrics) output << benchmark_primary_evaluation->psnr;
+                output << ',' << benchmark_peak_vram_bytes << '\n';
+                if (!output) throw std::runtime_error{std::format("failed to write benchmark output '{}'.", benchmark_output_path->string())};
+            }
+        } catch (const std::exception& error) {
+            pipeline_error = std::string{error.what()};
         }
     }
 
