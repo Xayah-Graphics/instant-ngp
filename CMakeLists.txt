@@ -3,6 +3,7 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 project(InstantNGP VERSION 1.0.0 LANGUAGES CXX CUDA)
 
 option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
+option(NGP_BUILD_SPECTRA_PROJECT_PLUGIN "Build the Spectra dynamic project plugin" OFF)
 
 # ============================================================================
 # C++ Configuration
@@ -140,13 +141,11 @@ set_property(TARGET libngp PROPERTY CXX_MODULE_STD ON)
 
 
 # ============================================================================
-# Optional App
+# Optional Dataset Loading
 # ============================================================================
-if (NGP_BUILD_APP)
+if (NGP_BUILD_APP OR NGP_BUILD_SPECTRA_PROJECT_PLUGIN)
     set(NGP_DATASET_COMMIT "bc636fbfc7507e8173156393f71c0b569f5fe95b")
     set(NGP_DATASET_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/${NGP_DATASET_COMMIT}")
-    set(NGP_UTIL_COMMIT "bb261075e7c8a4722b23f42c3be01aa24024731a")
-    set(NGP_UTIL_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/util/${NGP_UTIL_COMMIT}")
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.ixx"
             "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.ixx"
@@ -167,6 +166,29 @@ if (NGP_BUILD_APP)
             "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
             "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
     )
+
+    add_library(dataset-loader)
+    target_sources(
+            dataset-loader
+            PRIVATE
+            "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.cpp"
+            "${NGP_DATASET_VENDOR_DIR}/dd_nerf.cpp"
+            PUBLIC
+            FILE_SET cxx_modules TYPE CXX_MODULES FILES
+            "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.ixx"
+            "${NGP_DATASET_VENDOR_DIR}/dd_nerf.ixx"
+    )
+    target_include_directories(dataset-loader PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    set_property(TARGET dataset-loader PROPERTY CXX_MODULE_STD ON)
+endif ()
+
+
+# ============================================================================
+# Optional App
+# ============================================================================
+if (NGP_BUILD_APP)
+    set(NGP_UTIL_COMMIT "bb261075e7c8a4722b23f42c3be01aa24024731a")
+    set(NGP_UTIL_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/util/${NGP_UTIL_COMMIT}")
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/util/${NGP_UTIL_COMMIT}/xcli.ixx"
             "${NGP_UTIL_VENDOR_DIR}/xcli.ixx"
@@ -187,23 +209,30 @@ if (NGP_BUILD_APP)
     )
     set_property(TARGET xayah-util-xcli PROPERTY CXX_MODULE_STD ON)
 
-    add_library(dataset-loader)
-    target_sources(
-            dataset-loader
-            PRIVATE
-            "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.cpp"
-            "${NGP_DATASET_VENDOR_DIR}/dd_nerf.cpp"
-            PUBLIC
-            FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.ixx"
-            "${NGP_DATASET_VENDOR_DIR}/dd_nerf.ixx"
-    )
-    target_include_directories(dataset-loader PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-    set_property(TARGET dataset-loader PROPERTY CXX_MODULE_STD ON)
-
     add_executable(instant_ngp main.cpp)
     target_include_directories(instant_ngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
     target_compile_definitions(instant_ngp PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
     target_link_libraries(instant_ngp PRIVATE xayah-util-xcli dataset-loader libngp CUDA::cudart)
     set_property(TARGET instant_ngp PROPERTY CXX_MODULE_STD ON)
+endif ()
+
+
+# ============================================================================
+# Optional Spectra Project Plugin
+# ============================================================================
+if (NGP_BUILD_SPECTRA_PROJECT_PLUGIN)
+    add_library(instant_ngp_spectra_project_plugin SHARED)
+    target_sources(
+            instant_ngp_spectra_project_plugin
+            PRIVATE
+            instant_ngp_spectra_project.cpp
+            instant_ngp_spectra_project_plugin.cpp
+            PRIVATE
+            FILE_SET cxx_modules TYPE CXX_MODULES FILES
+            instant_ngp_spectra_project.ixx
+    )
+    target_include_directories(instant_ngp_spectra_project_plugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    target_compile_definitions(instant_ngp_spectra_project_plugin PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
+    target_link_libraries(instant_ngp_spectra_project_plugin PRIVATE dataset-loader libngp CUDA::cudart)
+    set_property(TARGET instant_ngp_spectra_project_plugin PROPERTY CXX_MODULE_STD ON)
 endif ()

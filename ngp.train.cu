@@ -248,7 +248,7 @@ namespace ngp::cuda {
             out_v                       = (static_cast<float>(pixel_y) + 0.5f) / static_cast<float>(height);
         }
 
-        __global__ void initialize_density_grid_visibility_kernel(float* __restrict__ density_grid_values, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera) {
+        __global__ void seed_density_grid_visibility_kernel(float* __restrict__ density_grid_values, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= train::config::nerf_grid_cells) return;
 
@@ -1464,9 +1464,9 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step) {
+    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, const bool reset_density_grid) {
         const std::uint32_t density_grid_skip = std::clamp(current_step / train::config::density_grid_skip_interval, 1u, train::config::density_grid_max_skip);
-        if (current_step % density_grid_skip != 0u) return;
+        if (!reset_density_grid && current_step % density_grid_skip != 0u) return;
 
         if (frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || camera == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr || density_grid_mean == nullptr || density_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid density grid update input."};
 
@@ -1475,10 +1475,10 @@ namespace ngp::cuda {
         const std::uint32_t sample_count            = uniform_sample_count + nonuniform_sample_count;
         if (sample_count == 0u || sample_count > train::config::max_samples || sample_count % (16u * train::config::mlp_forward_iters) != 0u) throw std::runtime_error{"invalid density grid sample count."};
 
-        if (current_step == 0u) {
+        if (reset_density_grid) {
             density_grid_ema_step = 0u;
-            initialize_density_grid_visibility_kernel<<<(train::config::nerf_grid_cells + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(density_grid_values, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera);
-            if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"initialize_density_grid_visibility_kernel failed: "} + cudaGetErrorString(status)};
+            seed_density_grid_visibility_kernel<<<(train::config::nerf_grid_cells + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(density_grid_values, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera);
+            if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"seed_density_grid_visibility_kernel failed: "} + cudaGetErrorString(status)};
         }
 
         if (const cudaError_t status = cudaMemset(density_grid_scratch, 0, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid scratch failed: "} + cudaGetErrorString(status)};

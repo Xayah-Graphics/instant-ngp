@@ -87,6 +87,16 @@ namespace ngp::train {
             this->host.density_grid_ema_step = 0u;
             this->host.density_grid_occupied_cells = 0u;
 
+            // ====================================================================================================
+            // 3. INITIALIZE DIRECT DENSITY GRID
+            // ====================================================================================================
+            {
+                const HostFrameSet& host_frame_set = this->host.frame_sets.front();
+                const DeviceFrameSet& device_frame_set = this->device.frame_sets.front();
+                cuda::update_density_grid(device_frame_set.camera, host_frame_set.frame_count, host_frame_set.width, host_frame_set.height, host_frame_set.focal_x, host_frame_set.focal_y, host_frame_set.principal_x, host_frame_set.principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, true);
+                cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
+            }
+
         } catch (...) {
             for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
             cuda::destroy_cublaslt(this->device.cublaslt_handle);
@@ -122,7 +132,8 @@ namespace ngp::train {
             std::uint32_t loss_value_count    = this->host.rays_per_batch;
             for (std::int32_t i = 0; i < request.iterations; ++i) {
                 loss_value_count = this->host.rays_per_batch;
-                cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
+                const bool reset_density_grid = this->host.density_grid_ema_step == 0u;
+                cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, reset_density_grid);
                 cuda::sample_training_batch(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                 cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.network_output);
                 cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, device_frame_set->pixels, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
@@ -162,6 +173,32 @@ namespace ngp::train {
         }
     }
 
+    DensityGridDeviceView InstantNGP::density_grid_device_view() const {
+        return DensityGridDeviceView{
+            .dimensions = {ngp::train::config::nerf_grid_size, ngp::train::config::nerf_grid_size, ngp::train::config::nerf_grid_size},
+            .cell_count = ngp::train::config::nerf_grid_cells,
+            .values = this->device.density_grid_values,
+            .byte_size = static_cast<std::uint64_t>(ngp::train::config::nerf_grid_cells) * sizeof(float),
+            .revision = this->host.density_grid_ema_step,
+            .optical_thickness_step = ngp::train::config::min_cone_stepsize,
+            .encoding = DensityGridEncoding::MortonFloat32,
+            .initialized = this->host.density_grid_ema_step > 0u,
+        };
+    }
+
+    OccupancyGridDeviceView InstantNGP::occupancy_grid_device_view() const {
+        return OccupancyGridDeviceView{
+            .dimensions = {ngp::train::config::nerf_grid_size, ngp::train::config::nerf_grid_size, ngp::train::config::nerf_grid_size},
+            .cell_count = ngp::train::config::nerf_grid_cells,
+            .bitfield = this->device.occupancy,
+            .bitfield_bytes = ngp::train::config::nerf_grid_cells / 8u,
+            .occupied_cells = this->host.density_grid_occupied_cells,
+            .revision = this->host.density_grid_ema_step,
+            .encoding = OccupancyGridEncoding::MortonBitfield,
+            .initialized = this->host.density_grid_ema_step > 0u,
+        };
+    }
+
     std::expected<EvaluationStats, std::string> InstantNGP::evaluate(const EvaluationRequest request) const {
         try {
             if (request.frame_set.empty()) throw std::runtime_error{"evaluation frame set must not be empty."};
@@ -176,7 +213,7 @@ namespace ngp::train {
             }
             if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("evaluation frame set '{}' is not loaded.", request.frame_set)};
             if (request.refresh_acceleration) this->host.density_grid_ema_step = 0u;
-            if (this->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step);
+            if (this->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, true);
 
             const bool writes_comparison = request.comparison_output_dir.has_value();
             if (writes_comparison) {
@@ -226,6 +263,74 @@ namespace ngp::train {
                 .elapsed_ms             = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - evaluation_start).count(),
                 .output_dir             = request.comparison_output_dir.value_or(std::filesystem::path{}),
             };
+        } catch (const std::exception& error) {
+            return std::unexpected{std::string{error.what()}};
+        }
+    }
+
+    std::expected<EvaluationPreviewResult, std::string> InstantNGP::evaluate_preview(const EvaluationPreviewRequest request) const {
+        try {
+            if (request.frame_set.empty()) throw std::runtime_error{"evaluation preview frame set must not be empty."};
+            const HostFrameSet* host_frame_set = nullptr;
+            const DeviceFrameSet* device_frame_set = nullptr;
+            for (std::size_t frame_set_index = 0uz; frame_set_index < this->host.frame_sets.size(); ++frame_set_index) {
+                if (this->host.frame_sets[frame_set_index].name == request.frame_set) {
+                    host_frame_set = std::addressof(this->host.frame_sets[frame_set_index]);
+                    device_frame_set = std::addressof(this->device.frame_sets[frame_set_index]);
+                    break;
+                }
+            }
+            if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("evaluation preview frame set '{}' is not loaded.", request.frame_set)};
+            if (request.image_index >= host_frame_set->frame_count) throw std::runtime_error{std::format("evaluation preview image_index {} is out of range for frame set '{}' with {} frames.", request.image_index, request.frame_set, host_frame_set->frame_count)};
+            if (request.refresh_acceleration) this->host.density_grid_ema_step = 0u;
+            if (this->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, true);
+            if (this->device.comparison_pixels == nullptr) throw std::runtime_error{"evaluation preview comparison image buffer is not initialized."};
+
+            const auto evaluation_start = std::chrono::steady_clock::now();
+            const std::uint64_t pixel_count_64 = static_cast<std::uint64_t>(host_frame_set->width) * host_frame_set->height;
+            if (pixel_count_64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 4u)) throw std::runtime_error{"evaluation preview image is too large."};
+            const std::size_t pixel_count = static_cast<std::size_t>(pixel_count_64);
+            std::vector<std::uint8_t> comparison_image(pixel_count * 2uz * 3uz);
+            double image_loss_sum = 0.0;
+            cuda::run_evaluation(device_frame_set->pixels, device_frame_set->camera, host_frame_set->frame_count, request.image_index, 1u, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->device.occupancy, this->device.params, this->device.sample_coords, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, comparison_image.data(), image_loss_sum);
+
+            EvaluationPreviewResult result{
+                .frame_set = host_frame_set->name,
+                .image_index = request.image_index,
+                .step = this->host.current_step,
+                .width = host_frame_set->width,
+                .height = host_frame_set->height,
+                .elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - evaluation_start).count(),
+                .ground_truth_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
+                .prediction_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
+                .error_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
+            };
+
+            const double mse = image_loss_sum / (static_cast<double>(pixel_count) * 3.0);
+            if (!std::isfinite(mse)) throw std::runtime_error{"evaluation preview produced non-finite MSE."};
+            result.mse = static_cast<float>(mse);
+            result.psnr = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity();
+
+            for (std::uint32_t y = 0u; y < host_frame_set->height; ++y) {
+                for (std::uint32_t x = 0u; x < host_frame_set->width; ++x) {
+                    const std::size_t pixel_index = static_cast<std::size_t>(y) * host_frame_set->width + x;
+                    const std::size_t source_row = static_cast<std::size_t>(y) * host_frame_set->width * 2uz * 3uz;
+                    const std::size_t target_base = source_row + static_cast<std::size_t>(x) * 3uz;
+                    const std::size_t prediction_base = source_row + (static_cast<std::size_t>(host_frame_set->width) + x) * 3uz;
+                    const std::size_t destination_base = pixel_index * 4uz;
+                    for (std::size_t channel = 0uz; channel < 3uz; ++channel) {
+                        const std::uint8_t target_value = comparison_image[target_base + channel];
+                        const std::uint8_t prediction_value = comparison_image[prediction_base + channel];
+                        result.ground_truth_rgba8[destination_base + channel] = target_value;
+                        result.prediction_rgba8[destination_base + channel] = prediction_value;
+                        result.error_rgba8[destination_base + channel] = static_cast<std::uint8_t>(std::abs(static_cast<int>(prediction_value) - static_cast<int>(target_value)));
+                    }
+                    result.ground_truth_rgba8[destination_base + 3uz] = 255u;
+                    result.prediction_rgba8[destination_base + 3uz] = 255u;
+                    result.error_rgba8[destination_base + 3uz] = 255u;
+                }
+            }
+            return result;
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
         }
