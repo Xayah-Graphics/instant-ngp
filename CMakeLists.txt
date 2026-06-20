@@ -127,12 +127,16 @@ target_sources(
         libngp
         PRIVATE
         ngp.train.cpp
+        ngp.inspector.cpp
         ngp.train.cu
+        ngp.inspector.cu
         ngp.train.config.h
         ngp.train.h
+        ngp.inspector.h
         PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
         ngp.train.ixx
+        ngp.inspector.ixx
 )
 target_include_directories(libngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
 target_compile_definitions(libngp PRIVATE "NGP_TRAIN_PROFILE_${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}=1")

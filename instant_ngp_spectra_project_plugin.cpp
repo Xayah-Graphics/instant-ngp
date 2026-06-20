@@ -6,7 +6,7 @@
 #define SPECTRA_DYNAMIC_SCENE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 23u
+#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 24u
 
 typedef struct SpectraDynamicSceneString {
     const char* data;
@@ -409,6 +409,7 @@ typedef struct SpectraDynamicSceneVolumeChannel {
     SpectraDynamicSceneString name;
     uint32_t dimensions[3];
     SpectraDynamicSceneFloatSpan values;
+    uint32_t format;
     uint32_t source_kind;
     uint32_t index_encoding;
     uint64_t buffer_id;
@@ -977,6 +978,7 @@ namespace {
                 SpectraDynamicSceneVolumeChannel channel_view{
                     .name = abi_text(channel.name),
                     .values = SpectraDynamicSceneFloatSpan{.data = channel.values.empty() ? nullptr : channel.values.data(), .count = static_cast<std::uint64_t>(channel.values.size())},
+                    .format = static_cast<std::uint32_t>(channel.format),
                     .source_kind = static_cast<std::uint32_t>(channel.source_kind),
                     .index_encoding = static_cast<std::uint32_t>(channel.index_encoding),
                     .buffer_id = channel.buffer_id,

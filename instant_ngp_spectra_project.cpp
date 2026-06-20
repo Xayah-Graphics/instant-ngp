@@ -17,6 +17,7 @@ import std;
 import dataset.nerf_synthetic;
 import dataset.dd_nerf;
 import ngp.train;
+import ngp.inspector;
 
 namespace instant_ngp::spectra_project {
     namespace {
@@ -359,6 +360,25 @@ namespace instant_ngp::spectra_project {
             }
             return text;
         }
+
+        template <typename Dataset>
+        [[nodiscard]] std::array<float, 3u> average_camera_forward(const Dataset& dataset) {
+            std::array<double, 3u> sum{};
+            std::uint64_t count = 0u;
+            for (const auto& frame_set : dataset.frame_sets) {
+                for (const auto& frame : frame_set.frames) {
+                    if (frame.camera.size() != 12uz) throw std::runtime_error("dataset camera record must contain 12 values");
+                    sum[0] += static_cast<double>(frame.camera[6]);
+                    sum[1] += static_cast<double>(frame.camera[7]);
+                    sum[2] += static_cast<double>(frame.camera[8]);
+                    ++count;
+                }
+            }
+            if (count == 0u) throw std::runtime_error("dataset has no frames for color reference direction");
+            const double length = std::sqrt(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]);
+            if (!std::isfinite(length) || length <= 0.0) throw std::runtime_error("dataset average camera forward is degenerate");
+            return {static_cast<float>(sum[0] / length), static_cast<float>(sum[1] / length), static_cast<float>(sum[2] / length)};
+        }
     }
 
     struct InstantNgpSpectraProject::State {
@@ -378,6 +398,12 @@ namespace instant_ngp::spectra_project {
         cudaExternalMemory_t density_external_memory{};
         float* density_values{};
         std::uint64_t density_buffer_byte_size{};
+        VolumeBufferAllocation color_allocation{};
+        cudaExternalMemory_t color_external_memory{};
+        float* color_values{};
+        std::uint64_t color_buffer_byte_size{};
+        std::uint64_t exported_color_revision{};
+        std::array<float, 3u> color_reference_direction{};
         std::uint64_t exported_density_revision{};
         std::array<std::uint32_t, 3u> exported_density_dimensions{};
         float exported_density_optical_thickness_step{};
@@ -509,6 +535,23 @@ namespace instant_ngp::spectra_project {
             state.density_volume.reset();
         }
 
+        void release_color_buffer(InstantNgpSpectraProject::State& state) noexcept {
+            state.color_values = nullptr;
+            if (state.color_external_memory != nullptr) {
+                static_cast<void>(cudaDestroyExternalMemory(state.color_external_memory));
+                state.color_external_memory = nullptr;
+            }
+            if (state.color_allocation.resource_id != 0u && state.host_services != nullptr) {
+                try {
+                    state.host_services->release_volume_buffer(state.color_allocation.resource_id);
+                } catch (...) {
+                }
+            }
+            state.color_allocation = VolumeBufferAllocation{};
+            state.color_buffer_byte_size = 0u;
+            state.exported_color_revision = 0u;
+        }
+
         void release_occupancy_buffer(InstantNgpSpectraProject::State& state) noexcept {
             state.occupancy_bitfield = nullptr;
             if (state.occupancy_external_memory != nullptr) {
@@ -615,7 +658,71 @@ namespace instant_ngp::spectra_project {
             }
         }
 
-        void ensure_occupancy_buffer(InstantNgpSpectraProject::State& state, const ngp::train::OccupancyGridDeviceView& view) {
+        void ensure_color_buffer(InstantNgpSpectraProject::State& state, const std::uint64_t byte_size) {
+            if (state.color_allocation.resource_id != 0u && state.color_buffer_byte_size >= byte_size) return;
+            if (state.color_allocation.resource_id != 0u) release_color_buffer(state);
+            if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for color volume visualization."};
+            if (byte_size == 0u) throw std::runtime_error{"color grid volume byte size is invalid."};
+            VolumeBufferAllocation allocation = state.host_services->request_volume_buffer(byte_size, "instant-ngp color grid volume");
+            if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid color volume resource id."};
+            if (allocation.byte_size < byte_size) {
+                close_imported_handle(allocation);
+                state.host_services->release_volume_buffer(allocation.resource_id);
+                throw std::runtime_error{"Spectra returned a color volume buffer smaller than requested."};
+            }
+            if (allocation.handle == 0u) {
+                state.host_services->release_volume_buffer(allocation.resource_id);
+                throw std::runtime_error{"Spectra returned an empty color volume external memory handle."};
+            }
+
+            try {
+                validate_cuda_device_identity(allocation.device_identity);
+                cudaExternalMemoryHandleDesc memory_desc{};
+                memory_desc.size = allocation.byte_size;
+                switch (allocation.handle_kind) {
+#if defined(_WIN32)
+                    case GpuResourceHandleKind::OpaqueWin32:
+                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
+                        memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
+                        break;
+#else
+                    case GpuResourceHandleKind::OpaqueFileDescriptor:
+                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
+                        memory_desc.handle.fd = static_cast<int>(allocation.handle);
+                        break;
+#endif
+                    default:
+                        throw std::runtime_error{"Spectra returned an unsupported color volume external memory handle kind."};
+                }
+
+                cudaExternalMemory_t imported_memory{};
+                const cudaError_t import_status = cudaImportExternalMemory(&imported_memory, &memory_desc);
+                close_imported_handle(allocation);
+                if (import_status != cudaSuccess) throw std::runtime_error{std::string{"cudaImportExternalMemory for color volume failed: "} + cudaGetErrorString(import_status)};
+
+                cudaExternalMemoryBufferDesc buffer_desc{};
+                buffer_desc.size = allocation.byte_size;
+                void* mapped_buffer = nullptr;
+                if (const cudaError_t status = cudaExternalMemoryGetMappedBuffer(&mapped_buffer, imported_memory, &buffer_desc); status != cudaSuccess) {
+                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
+                    throw std::runtime_error{std::string{"cudaExternalMemoryGetMappedBuffer for color volume failed: "} + cudaGetErrorString(status)};
+                }
+                if (mapped_buffer == nullptr) {
+                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
+                    throw std::runtime_error{"cudaExternalMemoryGetMappedBuffer returned null for color volume."};
+                }
+                state.color_allocation = allocation;
+                state.color_external_memory = imported_memory;
+                state.color_values = static_cast<float*>(mapped_buffer);
+                state.color_buffer_byte_size = byte_size;
+            } catch (...) {
+                if (allocation.handle != 0u) close_imported_handle(allocation);
+                state.host_services->release_volume_buffer(allocation.resource_id);
+                throw;
+            }
+        }
+
+        void ensure_occupancy_buffer(InstantNgpSpectraProject::State& state, const ngp::inspector::OccupancyGridDeviceView& view) {
             if (state.occupancy_allocation.resource_id != 0u && state.occupancy_buffer_byte_size >= view.bitfield_bytes) return;
             if (state.occupancy_allocation.resource_id != 0u) release_occupancy_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for occupancy grid visualization."};
@@ -684,12 +791,13 @@ namespace instant_ngp::spectra_project {
                 state.occupancy_grid.reset();
                 return;
             }
-            const ngp::train::OccupancyGridDeviceView view = state.ngp->occupancy_grid_device_view();
+            const ngp::inspector::Inspector inspector{*state.ngp};
+            const ngp::inspector::OccupancyGridDeviceView view = inspector.occupancy_grid_device_view();
             if (!view.initialized) {
                 state.occupancy_grid.reset();
                 return;
             }
-            if (view.encoding != ngp::train::OccupancyGridEncoding::MortonBitfield) throw std::runtime_error{"Unsupported Instant NGP occupancy grid encoding."};
+            if (view.encoding != ngp::inspector::OccupancyGridEncoding::MortonBitfield) throw std::runtime_error{"Unsupported Instant NGP occupancy grid encoding."};
             if (view.bitfield == nullptr || view.bitfield_bytes == 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield view is empty."};
             if (view.bitfield_bytes % sizeof(std::uint32_t) != 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield byte size must be uint32 aligned for Spectra visualization."};
             if (state.exported_occupancy_revision == view.revision && state.occupancy_grid.has_value()) {
@@ -741,9 +849,10 @@ namespace instant_ngp::spectra_project {
 
         void publish_density_grid_volume(InstantNgpSpectraProject::State& state) {
             create_trainer_if_needed(state);
-            const ngp::train::DensityGridDeviceView view = state.ngp->density_grid_device_view();
+            const ngp::inspector::Inspector inspector{*state.ngp};
+            const ngp::inspector::DensityGridDeviceView view = inspector.density_grid_device_view();
             if (!view.initialized) throw std::runtime_error("Instant NGP density grid has not been initialized");
-            if (view.encoding != ngp::train::DensityGridEncoding::MortonFloat32) throw std::runtime_error("Unsupported Instant NGP density grid encoding");
+            if (view.encoding != ngp::inspector::DensityGridEncoding::MortonFloat32) throw std::runtime_error("Unsupported Instant NGP density grid encoding");
             if (view.values == nullptr || view.byte_size == 0u) throw std::runtime_error("Instant NGP density grid values view is empty");
             if (view.dimensions[0] == 0u || view.dimensions[1] == 0u || view.dimensions[2] == 0u) throw std::runtime_error("Instant NGP density grid dimensions must be non-zero");
             if (static_cast<std::uint64_t>(view.dimensions[0]) > std::numeric_limits<std::uint64_t>::max() / view.dimensions[1] / view.dimensions[2]) throw std::runtime_error("Instant NGP density grid dimensions overflow cell count");
@@ -754,9 +863,25 @@ namespace instant_ngp::spectra_project {
             if (view.byte_size < byte_size) throw std::runtime_error("Instant NGP density grid byte size is smaller than dimensions");
             if (byte_size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error("Instant NGP density grid byte size exceeds host addressable size");
             if (!std::isfinite(view.optical_thickness_step) || view.optical_thickness_step <= 0.0f) throw std::runtime_error("Instant NGP density grid optical thickness step must be finite and positive");
+            if (value_count > std::numeric_limits<std::uint64_t>::max() / (3u * sizeof(float))) throw std::runtime_error("Instant NGP color grid byte size overflows uint64");
+            const std::uint64_t color_byte_size = value_count * 3u * sizeof(float);
+            if (color_byte_size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error("Instant NGP color grid byte size exceeds host addressable size");
             ensure_density_buffer(state, byte_size);
+            ensure_color_buffer(state, color_byte_size);
             if (state.density_values == nullptr) throw std::runtime_error("Density volume external buffer was not mapped");
+            if (state.color_values == nullptr) throw std::runtime_error("Color volume external buffer was not mapped");
             if (const cudaError_t status = cudaMemcpy(state.density_values, view.values, static_cast<std::size_t>(byte_size), cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy direct density grid failed: "} + cudaGetErrorString(status)};
+            const std::expected<ngp::inspector::ColorGridSampleStats, std::string> color_stats = inspector.sample_color_grid(ngp::inspector::ColorGridSampleRequest{
+                .dimensions = view.dimensions,
+                .output_rgb = state.color_values,
+                .byte_size = color_byte_size,
+                .reference_direction = state.color_reference_direction,
+                .encoding = ngp::inspector::ColorGridEncoding::MortonFloat32x3,
+            });
+            if (!color_stats) throw std::runtime_error(color_stats.error());
+            if (color_stats->dimensions != view.dimensions) throw std::runtime_error("Instant NGP color grid sample dimensions do not match density grid dimensions");
+            if (color_stats->byte_size < color_byte_size) throw std::runtime_error("Instant NGP color grid sample byte size is smaller than expected");
+            if (color_stats->encoding != ngp::inspector::ColorGridEncoding::MortonFloat32x3) throw std::runtime_error("Instant NGP color grid sample returned unsupported encoding");
             if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"cudaDeviceSynchronize after direct density grid export failed: "} + cudaGetErrorString(status)};
             const float volume_density_scale = 1.0f / view.optical_thickness_step;
 
@@ -765,7 +890,7 @@ namespace instant_ngp::spectra_project {
                     .name = density_material_name,
                     .model = "volume",
                     .alpha_mode = "blend",
-                    .base_color = {0.32f, 0.72f, 1.0f, 1.0f},
+                    .base_color = {1.0f, 1.0f, 1.0f, 1.0f},
                     .roughness = 0.35f,
                     .volume_density_scale = volume_density_scale,
                     .volume_temperature_scale = 1.0f,
@@ -792,6 +917,7 @@ namespace instant_ngp::spectra_project {
                     VolumeChannel{
                         .name = "density",
                         .dimensions = view.dimensions,
+                        .format = VolumeChannelFormat::Float32,
                         .source_kind = VolumeChannelSourceKind::ExternalGpuBuffer,
                         .index_encoding = VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.density_allocation.resource_id,
@@ -799,16 +925,28 @@ namespace instant_ngp::spectra_project {
                         .source_byte_size = byte_size,
                         .revision = view.revision,
                     },
+                    VolumeChannel{
+                        .name = "color",
+                        .dimensions = view.dimensions,
+                        .format = VolumeChannelFormat::Float32x3,
+                        .source_kind = VolumeChannelSourceKind::ExternalGpuBuffer,
+                        .index_encoding = VolumeChannelIndexEncoding::Morton3D,
+                        .buffer_id = state.color_allocation.resource_id,
+                        .external_device_pointer = reinterpret_cast<std::uintptr_t>(state.color_values),
+                        .source_byte_size = color_byte_size,
+                        .revision = view.revision,
+                    },
                 },
                 .material_name = density_material_name,
             };
             state.exported_density_revision = view.revision;
+            state.exported_color_revision = view.revision;
             state.exported_density_dimensions = view.dimensions;
             state.exported_density_optical_thickness_step = view.optical_thickness_step;
             state.exported_volume_density_scale = volume_density_scale;
             refresh_debug_attachments(state);
             ++state.scene_revision;
-            push_log(state, "DENSITY_GRID", std::format("volume='{}' revision={} dimensions={}x{}x{} encoding=Morton3D optical_thickness_step={} volume_density_scale={}", density_volume_name, view.revision, view.dimensions[0], view.dimensions[1], view.dimensions[2], view.optical_thickness_step, volume_density_scale));
+            push_log(state, "DENSITY_GRID", std::format("volume='{}' revision={} color_revision={} dimensions={}x{}x{} encoding=Morton3D density_format=Float32 color_format=Float32x3 optical_thickness_step={} volume_density_scale={}", density_volume_name, view.revision, state.exported_color_revision, view.dimensions[0], view.dimensions[1], view.dimensions[2], view.optical_thickness_step, volume_density_scale));
         }
 
         void initialize_density_volume(InstantNgpSpectraProject::State& state) {
@@ -913,6 +1051,7 @@ namespace instant_ngp::spectra_project {
     }
 
     InstantNgpSpectraProject::State::~State() noexcept {
+        release_color_buffer(*this);
         release_density_buffer(*this);
         release_occupancy_buffer(*this);
     }
@@ -952,6 +1091,14 @@ namespace instant_ngp::spectra_project {
             if (!loaded) throw std::runtime_error(loaded.error());
             created->dataset = std::move(*loaded);
         }
+
+        std::visit([&](const auto& dataset) {
+            if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
+                throw std::runtime_error("dataset must be loaded before computing color reference direction");
+            } else {
+                created->color_reference_direction = average_camera_forward(dataset);
+            }
+        }, created->dataset);
 
         std::uint64_t selected_camera_count{};
         std::visit([&](const auto& dataset) {
@@ -1061,7 +1208,7 @@ namespace instant_ngp::spectra_project {
         }, created->dataset);
 
         initialize_density_volume(*created);
-        push_log(*created, "CONFIG", std::format("profile={} dataset={} format={} scene_scale={} frame_sets={} visualized_cameras={} density_grid_revision={} volume_density_scale={}", NGP_TRAIN_PROFILE_NAME, created->options.dataset_path.string(), created->options.format, created->options.scene_scale, joined_frame_sets(created->options.frame_sets), created->cameras.size() - 1u, created->exported_density_revision, created->exported_volume_density_scale));
+        push_log(*created, "CONFIG", std::format("profile={} dataset={} format={} scene_scale={} frame_sets={} visualized_cameras={} density_grid_revision={} color_grid_revision={} volume_density_scale={}", NGP_TRAIN_PROFILE_NAME, created->options.dataset_path.string(), created->options.format, created->options.scene_scale, joined_frame_sets(created->options.frame_sets), created->cameras.size() - 1u, created->exported_density_revision, created->exported_color_revision, created->exported_volume_density_scale));
         return InstantNgpSpectraProject{std::move(created)};
     }
 
@@ -1097,7 +1244,8 @@ namespace instant_ngp::spectra_project {
             }
             state.latest_stats = *stats;
             const bool reached_target = stats->step >= state.training.target_steps;
-            const ngp::train::DensityGridDeviceView density_view = state.ngp->density_grid_device_view();
+            const ngp::inspector::Inspector inspector{*state.ngp};
+            const ngp::inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
             if (density_view.initialized && density_view.revision != state.exported_density_revision) {
                 publish_density_grid_volume(state);
             } else {
@@ -1147,7 +1295,8 @@ namespace instant_ngp::spectra_project {
             if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
             const PreviewOptions parsed = parse_preview_options(state, options);
             create_trainer_if_needed(state);
-            std::expected<ngp::train::EvaluationPreviewResult, std::string> preview = state.ngp->evaluate_preview(ngp::train::EvaluationPreviewRequest{
+            const ngp::inspector::Inspector inspector{*state.ngp};
+            std::expected<ngp::inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(ngp::inspector::EvaluationPreviewRequest{
                 .frame_set = parsed.frame_set,
                 .image_index = parsed.image_index,
                 .refresh_acceleration = parsed.refresh_acceleration,
@@ -1174,6 +1323,7 @@ namespace instant_ngp::spectra_project {
             state.project_error.clear();
             push_log(state, "PREVIEW", std::format("frame_set={} image={} step={} mse={:.8f} psnr={:.2f} elapsed={:.3f}ms", preview->frame_set, preview->image_index, preview->step, preview->mse, preview->psnr, preview->elapsed_ms));
         } else if (action_id == action_reset_training_id) {
+            release_color_buffer(state);
             release_density_buffer(state);
             release_occupancy_buffer(state);
             state.ngp.reset();
@@ -1304,7 +1454,9 @@ namespace instant_ngp::spectra_project {
         add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps), ControlPlacementPanelDetail, 20);
         add_metric(status, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden", ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20);
         add_metric(status, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30);
+        add_metric(status, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 35);
         add_metric(status, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
+        add_metric(status, "color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None");
         if (state.density_volume.has_value()) add_metric(status, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
         if (state.exported_density_optical_thickness_step > 0.0f) add_metric(status, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
         if (state.exported_volume_density_scale > 0.0f) add_metric(status, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));

@@ -60,12 +60,6 @@ namespace ngp::train {
         bool refresh_acceleration = false;
     };
 
-    export struct EvaluationPreviewRequest final {
-        std::string_view frame_set;
-        std::uint32_t image_index = 0u;
-        bool refresh_acceleration = false;
-    };
-
     export struct OptimizationStats final {
         std::uint32_t step                                    = 0u;
         std::uint32_t next_rays_per_batch                     = 0u;
@@ -90,52 +84,7 @@ namespace ngp::train {
         std::filesystem::path output_dir;
     };
 
-    export struct EvaluationPreviewResult final {
-        std::string frame_set;
-        std::uint32_t image_index = 0u;
-        std::uint32_t step = 0u;
-        std::uint32_t width = 0u;
-        std::uint32_t height = 0u;
-        float mse = 0.0f;
-        float psnr = 0.0f;
-        float elapsed_ms = 0.0f;
-        std::vector<std::uint8_t> ground_truth_rgba8;
-        std::vector<std::uint8_t> prediction_rgba8;
-        std::vector<std::uint8_t> error_rgba8;
-    };
-
-    export enum class DensityGridEncoding : std::uint32_t {
-        MortonFloat32 = 0u,
-    };
-
-    export struct DensityGridDeviceView final {
-        std::array<std::uint32_t, 3u> dimensions{};
-        std::uint64_t cell_count = 0u;
-        const float* values = nullptr;
-        std::uint64_t byte_size = 0u;
-        std::uint64_t revision = 0u;
-        float optical_thickness_step = 0.0f;
-        DensityGridEncoding encoding{DensityGridEncoding::MortonFloat32};
-        bool initialized = false;
-    };
-
-    export enum class OccupancyGridEncoding : std::uint32_t {
-        MortonBitfield = 0u,
-    };
-
-    export struct OccupancyGridDeviceView final {
-        std::array<std::uint32_t, 3u> dimensions{};
-        std::uint64_t cell_count = 0u;
-        const std::uint8_t* bitfield = nullptr;
-        std::uint64_t bitfield_bytes = 0u;
-        std::uint32_t occupied_cells = 0u;
-        std::uint64_t revision = 0u;
-        OccupancyGridEncoding encoding{OccupancyGridEncoding::MortonBitfield};
-        bool initialized = false;
-    };
-
-    export class InstantNGP final {
-    public:
+    export struct InstantNGP final {
         template <DatasetLike Dataset>
         explicit InstantNGP(const Dataset& dataset) {
             std::vector<std::string_view> frame_set_names;
@@ -176,13 +125,9 @@ namespace ngp::train {
 
         std::expected<OptimizationStats, std::string> optimize(OptimizationRequest request);
         std::expected<EvaluationStats, std::string> evaluate(EvaluationRequest request) const;
-        std::expected<EvaluationPreviewResult, std::string> evaluate_preview(EvaluationPreviewRequest request) const;
-        [[nodiscard]] DensityGridDeviceView density_grid_device_view() const;
-        [[nodiscard]] OccupancyGridDeviceView occupancy_grid_device_view() const;
         std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
         std::expected<void, std::string> load_weights(const std::filesystem::path& path);
 
-    private:
         void initialize(std::span<const FrameSetView> frame_sets, float scene_scale);
 
         struct HostFrameSet final {
