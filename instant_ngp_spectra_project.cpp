@@ -29,16 +29,15 @@ namespace instant_ngp::spectra_project {
         constexpr char action_pause_training_id[] = "pause_training";
         constexpr char action_reset_training_id[] = "reset_training";
         constexpr char action_render_preview_id[] = "render_preview";
-        constexpr char action_apply_occupancy_debug_id[] = "apply_occupancy_debug";
         constexpr char action_option_frame_set_key[] = "frame_set";
         constexpr char action_option_target_steps_key[] = "target_steps";
         constexpr char action_option_steps_per_update_key[] = "steps_per_update";
         constexpr char action_option_log_every_key[] = "log_every";
         constexpr char action_option_image_index_key[] = "image_index";
         constexpr char action_option_refresh_acceleration_key[] = "refresh_acceleration";
-        constexpr char action_option_show_occupancy_key[] = "show_occupancy";
-        constexpr char action_option_occupancy_alpha_key[] = "occupancy_alpha";
-        constexpr char action_option_occupancy_cell_scale_key[] = "occupancy_cell_scale";
+        constexpr char setting_show_occupancy_key[] = "show_occupancy";
+        constexpr char setting_occupancy_alpha_key[] = "occupancy_alpha";
+        constexpr char setting_occupancy_cell_scale_key[] = "occupancy_cell_scale";
         constexpr char density_volume_name[] = "Reconstructed Density";
         constexpr char density_material_name[] = "Reconstructed Density Material";
         constexpr char density_light_name[] = "Reconstructed Density Key Light";
@@ -84,12 +83,6 @@ namespace instant_ngp::spectra_project {
             bool refresh_acceleration{};
         };
 
-        struct OccupancyDebugOptions {
-            bool show_occupancy{true};
-            float occupancy_alpha{0.18f};
-            float occupancy_cell_scale{0.75f};
-        };
-
         struct PreviewState {
             std::string frame_set{};
             std::uint32_t image_index{};
@@ -106,6 +99,8 @@ namespace instant_ngp::spectra_project {
             std::string description{};
             std::string unit{};
             std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
+            std::uint32_t group{ControlActionGroupRun};
+            std::int32_t priority{};
             std::uint64_t revision{1u};
             std::vector<ProjectScalarSample> samples{};
         };
@@ -116,7 +111,7 @@ namespace instant_ngp::spectra_project {
             return OptionChoice{.value = value, .label = std::move(value)};
         }
 
-        [[nodiscard]] OptionSchema option(std::string key, std::string label, std::string description, const OptionKind kind, const bool required, std::string default_value = {}, std::vector<OptionChoice> choices = {}) {
+        [[nodiscard]] OptionSchema option(std::string key, std::string label, std::string description, const OptionKind kind, const bool required, std::string default_value = {}, std::vector<OptionChoice> choices = {}, std::string group = {}, const bool advanced = false, const std::int32_t priority = 0) {
             return OptionSchema{
                 .key = std::move(key),
                 .label = std::move(label),
@@ -124,26 +119,34 @@ namespace instant_ngp::spectra_project {
                 .kind = kind,
                 .required = required,
                 .default_value = std::move(default_value),
+                .group = std::move(group),
+                .advanced = advanced,
+                .priority = priority,
                 .choices = std::move(choices),
             };
         }
 
-        [[nodiscard]] ProjectAction action(std::string id, std::string label, std::string description, std::vector<OptionSchema> options = {}) {
+        [[nodiscard]] ProjectAction action(std::string id, std::string label, std::string description, std::vector<OptionSchema> options = {}, const std::uint32_t group = ControlActionGroupUtility, const std::int32_t priority = 0, const std::uint32_t style = ControlActionStyleSecondary) {
             return ProjectAction{
                 .id = std::move(id),
                 .label = std::move(label),
                 .description = std::move(description),
+                .group = group,
+                .priority = priority,
+                .style = style,
                 .options = std::move(options),
             };
         }
 
-        [[nodiscard]] ScalarHistory make_scalar_history(std::string id, std::string label, std::string description, std::string unit, const std::array<float, 4u> color) {
+        [[nodiscard]] ScalarHistory make_scalar_history(std::string id, std::string label, std::string description, std::string unit, const std::array<float, 4u> color, const std::uint32_t group, const std::int32_t priority) {
             return ScalarHistory{
                 .id = std::move(id),
                 .label = std::move(label),
                 .description = std::move(description),
                 .unit = std::move(unit),
                 .color = color,
+                .group = group,
+                .priority = priority,
             };
         }
 
@@ -156,18 +159,15 @@ namespace instant_ngp::spectra_project {
                 .open_action_description = "Load the configured dataset and publish dynamic scene entities to Spectra.",
                 .frames_per_second = 60.0,
                 .open_options = {
-                    option("dataset", "Dataset", "Dataset root directory.", OptionKind::DirectoryPath, true),
-                    option("format", "Format", "Dataset provider.", OptionKind::Choice, false, "auto", {choice("auto"), choice("nerf-synthetic"), choice("dd-nerf-dataset")}),
-                    option("frame_sets", "Frame Sets", "Comma-separated frame sets: train, validation, test.", OptionKind::Text, false, "train"),
-                    option("scene_scale", "Scene Scale", "Dataset scene scale passed to the dataset loader.", OptionKind::Float, false, "0.33"),
-                    option("frame_stride", "Frame Stride", "Only every Nth frame is visualized.", OptionKind::UnsignedInteger, false, "1"),
-                    option("max_frames", "Max Frames", "0 means no frame count limit.", OptionKind::UnsignedInteger, false, "0"),
-                    option("visual_far", "Visual Far", "Camera frustum visualization far plane.", OptionKind::Float, false, "0.25"),
-                    option("image_alpha", "Image Alpha", "Camera image plane opacity in [0, 1].", OptionKind::Float, false, "0.35"),
-                    option("frustum_width", "Frustum Width", "Screen-space frustum line width.", OptionKind::Float, false, "1.5"),
-                    option("show_occupancy", "Show Occupancy", "Show trained occupancy as a viewport voxel grid attached to the published density volume.", OptionKind::Bool, false, "true"),
-                    option("occupancy_alpha", "Occupancy Alpha", "Viewport occupancy voxel opacity in [0, 1].", OptionKind::Float, false, "0.18"),
-                    option("occupancy_cell_scale", "Occupancy Cell Scale", "Viewport occupancy voxel cube scale in (0, 1].", OptionKind::Float, false, "0.75"),
+                    option("dataset", "Dataset", "Dataset root directory.", OptionKind::DirectoryPath, true, {}, {}, "Dataset", false, 0),
+                    option("format", "Format", "Dataset provider.", OptionKind::Choice, false, "auto", {choice("auto"), choice("nerf-synthetic"), choice("dd-nerf-dataset")}, "Dataset", false, 10),
+                    option("frame_sets", "Frame Sets", "Comma-separated frame sets: train, validation, test.", OptionKind::Text, false, "train", {}, "Dataset", false, 20),
+                    option("scene_scale", "Scene Scale", "Dataset scene scale passed to the dataset loader.", OptionKind::Float, false, "0.33", {}, "Advanced", true, 30),
+                    option("frame_stride", "Frame Stride", "Only every Nth frame is visualized.", OptionKind::UnsignedInteger, false, "1", {}, "Advanced", true, 40),
+                    option("max_frames", "Max Frames", "0 means no frame count limit.", OptionKind::UnsignedInteger, false, "0", {}, "Advanced", true, 50),
+                    option("visual_far", "Visual Far", "Camera frustum visualization far plane.", OptionKind::Float, false, "0.25", {}, "Camera Visuals", true, 60),
+                    option("image_alpha", "Image Alpha", "Camera image plane opacity in [0, 1].", OptionKind::Float, false, "0.35", {}, "Camera Visuals", true, 70),
+                    option("frustum_width", "Frustum Width", "Screen-space frustum line width.", OptionKind::Float, false, "1.5", {}, "Camera Visuals", true, 80),
                 },
                 .control_actions = {
                     action(
@@ -175,31 +175,28 @@ namespace instant_ngp::spectra_project {
                         "Start Training",
                         "Start or resume optimization on the selected frame set.",
                         {
-                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for optimization.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}),
-                            option(action_option_target_steps_key, "Target Steps", "Optimization stops when this global step is reached.", OptionKind::UnsignedInteger, false, "200000"),
-                            option(action_option_steps_per_update_key, "Steps Per Update", "Optimization iterations executed during each GUI project update.", OptionKind::UnsignedInteger, false, "1"),
-                            option(action_option_log_every_key, "Log Every", "Optimization step interval for progress log entries.", OptionKind::UnsignedInteger, false, "100"),
-                        }),
-                    action(action_pause_training_id, "Pause", "Pause optimization after the current GUI update."),
+                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for optimization.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}, "Run", false, 0),
+                            option(action_option_target_steps_key, "Target Steps", "Optimization stops when this global step is reached.", OptionKind::UnsignedInteger, false, "200000", {}, "Run", false, 10),
+                            option(action_option_steps_per_update_key, "Steps Per Update", "Optimization iterations executed during each GUI project update.", OptionKind::UnsignedInteger, false, "1", {}, "Run", false, 20),
+                            option(action_option_log_every_key, "Log Every", "Optimization step interval for progress log entries.", OptionKind::UnsignedInteger, false, "100", {}, "Run", true, 30),
+                        },
+                        ControlActionGroupRun,
+                        0,
+                        ControlActionStylePrimary),
+                    action(action_pause_training_id, "Pause", "Pause optimization after the current GUI update.", {}, ControlActionGroupRun, 10, ControlActionStyleSecondary),
                     action(
                         action_render_preview_id,
                         "Render Preview",
                         "Render one loaded frame through the current model and publish GT, prediction, and error images.",
                         {
-                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for preview rendering.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}),
-                            option(action_option_image_index_key, "Image Index", "Zero-based image index in the selected frame set.", OptionKind::UnsignedInteger, false, "0"),
-                            option(action_option_refresh_acceleration_key, "Refresh Acceleration", "Rebuild the density-grid acceleration before rendering.", OptionKind::Bool, false, "false"),
-                        }),
-                    action(
-                        action_apply_occupancy_debug_id,
-                        "Apply Occupancy Debug",
-                        "Update the viewport-only occupancy debug attachment for the reconstructed density volume.",
-                        {
-                            option(action_option_show_occupancy_key, "Show Occupancy", "Show the occupancy voxel grid attached to the reconstructed density volume.", OptionKind::Bool, false, "true"),
-                            option(action_option_occupancy_alpha_key, "Occupancy Alpha", "Viewport occupancy voxel opacity in [0, 1].", OptionKind::Float, false, "0.18"),
-                            option(action_option_occupancy_cell_scale_key, "Cell Scale", "Viewport occupancy voxel cube scale in (0, 1].", OptionKind::Float, false, "0.75"),
-                        }),
-                    action(action_reset_training_id, "Reset", "Destroy the current optimizer state and keep the loaded dataset visualization."),
+                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for preview rendering.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}, "Preview", false, 0),
+                            option(action_option_image_index_key, "Image Index", "Zero-based image index in the selected frame set.", OptionKind::UnsignedInteger, false, "0", {}, "Preview", false, 10),
+                            option(action_option_refresh_acceleration_key, "Refresh Acceleration", "Rebuild the density-grid acceleration before rendering.", OptionKind::Bool, false, "false", {}, "Preview", true, 20),
+                        },
+                        ControlActionGroupPreview,
+                        0,
+                        ControlActionStylePrimary),
+                    action(action_reset_training_id, "Reset", "Destroy the current optimizer state and keep the loaded dataset visualization.", {}, ControlActionGroupRun, 90, ControlActionStyleDanger),
                 },
             };
         }
@@ -261,9 +258,6 @@ namespace instant_ngp::spectra_project {
                 else if (option.key == "visual_far") parsed.visual_far = parse_float(option.value, "visual_far");
                 else if (option.key == "image_alpha") parsed.image_alpha = parse_float(option.value, "image_alpha");
                 else if (option.key == "frustum_width") parsed.frustum_width = parse_float(option.value, "frustum_width");
-                else if (option.key == "show_occupancy") parsed.show_occupancy = parse_bool(option.value, "show_occupancy");
-                else if (option.key == "occupancy_alpha") parsed.occupancy_alpha = parse_float(option.value, "occupancy_alpha");
-                else if (option.key == "occupancy_cell_scale") parsed.occupancy_cell_scale = parse_float(option.value, "occupancy_cell_scale");
                 else throw std::runtime_error(std::format("unknown dynamic scene open option '{}'", option.key));
             }
 
@@ -276,8 +270,6 @@ namespace instant_ngp::spectra_project {
             if (!std::isfinite(parsed.visual_far) || parsed.visual_far <= 0.02f) throw std::runtime_error("visual_far must be finite and greater than visual_near");
             if (!std::isfinite(parsed.image_alpha) || parsed.image_alpha < 0.0f || parsed.image_alpha > 1.0f) throw std::runtime_error("image_alpha must be in [0, 1]");
             if (!std::isfinite(parsed.frustum_width) || parsed.frustum_width <= 0.0f) throw std::runtime_error("frustum_width must be finite and positive");
-            if (!std::isfinite(parsed.occupancy_alpha) || parsed.occupancy_alpha < 0.0f || parsed.occupancy_alpha > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
-            if (!std::isfinite(parsed.occupancy_cell_scale) || parsed.occupancy_cell_scale <= 0.0f || parsed.occupancy_cell_scale > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
             return parsed;
         }
 
@@ -402,6 +394,8 @@ namespace instant_ngp::spectra_project {
         DebugAttachmentSet debug_attachments{};
         bool training_running{};
         bool training_complete{};
+        bool host_timeline_playing{true};
+        std::uint32_t host_timeline_mode{ControlTimelineModeLive};
         std::string project_error{};
         std::uint32_t last_logged_step{};
         std::uint64_t next_log_sequence{};
@@ -430,6 +424,10 @@ namespace instant_ngp::spectra_project {
         [[nodiscard]] std::uint32_t current_training_step(const InstantNgpSpectraProject::State& state) {
             if (!state.latest_stats.has_value()) return 0u;
             return state.latest_stats->step;
+        }
+
+        [[nodiscard]] bool host_timeline_advances_scene(const InstantNgpSpectraProject::State& state) {
+            return state.host_timeline_playing && state.host_timeline_mode != ControlTimelineModePlayback;
         }
 
         void push_log(InstantNgpSpectraProject::State& state, std::string level, std::string message) {
@@ -873,25 +871,6 @@ namespace instant_ngp::spectra_project {
             return parsed;
         }
 
-        [[nodiscard]] OccupancyDebugOptions parse_occupancy_debug_options(const InstantNgpSpectraProject::State& state, const std::span<const Option> options) {
-            OccupancyDebugOptions parsed{
-                .show_occupancy = state.options.show_occupancy,
-                .occupancy_alpha = state.options.occupancy_alpha,
-                .occupancy_cell_scale = state.options.occupancy_cell_scale,
-            };
-            std::set<std::string> seen_options{};
-            for (const Option& option : options) {
-                if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
-                if (option.key == action_option_show_occupancy_key) parsed.show_occupancy = parse_bool(option.value, action_option_show_occupancy_key);
-                else if (option.key == action_option_occupancy_alpha_key) parsed.occupancy_alpha = parse_float(option.value, action_option_occupancy_alpha_key);
-                else if (option.key == action_option_occupancy_cell_scale_key) parsed.occupancy_cell_scale = parse_float(option.value, action_option_occupancy_cell_scale_key);
-                else throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
-            }
-            if (parsed.occupancy_alpha < 0.0f || parsed.occupancy_alpha > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
-            if (!(parsed.occupancy_cell_scale > 0.0f) || parsed.occupancy_cell_scale > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
-            return parsed;
-        }
-
         [[nodiscard]] ProjectImage make_project_image(std::string id, std::string label, std::string description, const std::uint32_t width, const std::uint32_t height, const std::uint64_t revision, std::vector<std::uint8_t> rgba8) {
             if (id.empty()) throw std::runtime_error("project image id must not be empty");
             if (label.empty()) throw std::runtime_error(std::format("project image '{}' label must not be empty", id));
@@ -913,8 +892,19 @@ namespace instant_ngp::spectra_project {
             };
         }
 
-        void add_metric(ProjectStatus& status, std::string key, std::string label, std::string value) {
-            status.metrics.push_back(ProjectMetric{.key = std::move(key), .label = std::move(label), .value = std::move(value)});
+        void add_metric(ProjectStatus& status, std::string key, std::string label, std::string value, const std::uint32_t placement_flags = ControlPlacementPanelDetail, const std::int32_t priority = 0, const std::optional<std::array<float, 4u>> color = {}) {
+            ProjectMetric metric{
+                .key = std::move(key),
+                .label = std::move(label),
+                .value = std::move(value),
+                .placement_flags = placement_flags,
+                .priority = priority,
+            };
+            if (color.has_value()) {
+                metric.has_color = true;
+                metric.color = *color;
+            }
+            status.metrics.push_back(std::move(metric));
         }
 
         void add_disabled_action(ProjectStatus& status, std::string action_id, std::string reason) {
@@ -933,13 +923,13 @@ namespace instant_ngp::spectra_project {
         created->host_services = std::move(host_services);
         created->options = parse_scene_options(options);
         created->scalar_histories = {
-            make_scalar_history("training_loss", "Training Loss", "Training loss reported by optimizer updates.", "", {1.0f, 0.38f, 0.25f, 1.0f}),
-            make_scalar_history("sample_efficiency_percent", "Sample Efficiency", "Useful sample ratio reported by optimization.", "%", {0.25f, 0.75f, 1.0f, 1.0f}),
-            make_scalar_history("occupancy_percent", "Occupancy", "Density-grid occupied cell ratio.", "%", {0.16f, 0.86f, 0.55f, 1.0f}),
-            make_scalar_history("step_time_ms", "Step Time", "Wall-clock optimizer update duration.", "ms", {1.0f, 0.75f, 0.25f, 1.0f}),
-            make_scalar_history("step_rate", "Step Rate", "Optimizer throughput for the last update.", "step/s", {0.65f, 0.5f, 1.0f, 1.0f}),
-            make_scalar_history("preview_mse", "Preview MSE", "Mean squared error from the most recent preview render.", "", {1.0f, 0.52f, 0.52f, 1.0f}),
-            make_scalar_history("preview_psnr", "Preview PSNR", "Peak signal-to-noise ratio from the most recent preview render.", "dB", {0.55f, 0.85f, 1.0f, 1.0f}),
+            make_scalar_history("training_loss", "Training Loss", "Training loss reported by optimizer updates.", "", {1.0f, 0.38f, 0.25f, 1.0f}, ControlActionGroupRun, 0),
+            make_scalar_history("sample_efficiency_percent", "Sample Efficiency", "Useful sample ratio reported by optimization.", "%", {0.25f, 0.75f, 1.0f, 1.0f}, ControlActionGroupRun, 10),
+            make_scalar_history("occupancy_percent", "Occupancy", "Density-grid occupied cell ratio.", "%", {0.16f, 0.86f, 0.55f, 1.0f}, ControlActionGroupRun, 20),
+            make_scalar_history("step_time_ms", "Step Time", "Wall-clock optimizer update duration.", "ms", {1.0f, 0.75f, 0.25f, 1.0f}, ControlActionGroupRun, 30),
+            make_scalar_history("step_rate", "Step Rate", "Optimizer throughput for the last update.", "step/s", {0.65f, 0.5f, 1.0f, 1.0f}, ControlActionGroupRun, 40),
+            make_scalar_history("preview_mse", "Preview MSE", "Mean squared error from the most recent preview render.", "", {1.0f, 0.52f, 0.52f, 1.0f}, ControlActionGroupPreview, 0),
+            make_scalar_history("preview_psnr", "Preview PSNR", "Peak signal-to-noise ratio from the most recent preview render.", "dB", {0.55f, 0.85f, 1.0f, 1.0f}, ControlActionGroupPreview, 10),
         };
 
         const bool is_nerf_synthetic = dataset::nerf_synthetic::is_dataset(created->options.dataset_path);
@@ -1075,11 +1065,17 @@ namespace instant_ngp::spectra_project {
         return InstantNgpSpectraProject{std::move(created)};
     }
 
-    void InstantNgpSpectraProject::update(const float delta_seconds) {
-        static_cast<void>(delta_seconds);
+    void InstantNgpSpectraProject::update(const ProjectUpdateInfo& update) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
+        if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
+        if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
+        if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
+        if (update.timeline_mode > ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
+        state.host_timeline_playing = update.timeline_playing;
+        state.host_timeline_mode = update.timeline_mode;
         if (!state.training_running) return;
+        if (update.scene_delta_seconds == 0.0) return;
         try {
             create_trainer_if_needed(state);
             const std::uint32_t current_step = current_training_step(state);
@@ -1148,7 +1144,7 @@ namespace instant_ngp::spectra_project {
             state.training_running = false;
             push_log(state, "PAUSE", std::format("step={}", current_training_step(state)));
         } else if (action_id == action_render_preview_id) {
-            if (state.training_running) throw std::runtime_error("pause training before rendering a preview");
+            if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
             const PreviewOptions parsed = parse_preview_options(state, options);
             create_trainer_if_needed(state);
             std::expected<ngp::train::EvaluationPreviewResult, std::string> preview = state.ngp->evaluate_preview(ngp::train::EvaluationPreviewRequest{
@@ -1177,16 +1173,6 @@ namespace instant_ngp::spectra_project {
             state.latest_preview = std::move(next_preview);
             state.project_error.clear();
             push_log(state, "PREVIEW", std::format("frame_set={} image={} step={} mse={:.8f} psnr={:.2f} elapsed={:.3f}ms", preview->frame_set, preview->image_index, preview->step, preview->mse, preview->psnr, preview->elapsed_ms));
-        } else if (action_id == action_apply_occupancy_debug_id) {
-            const OccupancyDebugOptions parsed = parse_occupancy_debug_options(state, options);
-            state.options.show_occupancy = parsed.show_occupancy;
-            state.options.occupancy_alpha = parsed.occupancy_alpha;
-            state.options.occupancy_cell_scale = parsed.occupancy_cell_scale;
-            if (!state.options.show_occupancy) release_occupancy_buffer(state);
-            refresh_debug_attachments(state);
-            ++state.scene_revision;
-            state.project_error.clear();
-            push_log(state, "DEBUG", std::format("show_occupancy={} occupancy_alpha={} occupancy_cell_scale={}", state.options.show_occupancy ? "true" : "false", state.options.occupancy_alpha, state.options.occupancy_cell_scale));
         } else if (action_id == action_reset_training_id) {
             release_density_buffer(state);
             release_occupancy_buffer(state);
@@ -1210,6 +1196,72 @@ namespace instant_ngp::spectra_project {
         }
     }
 
+    std::vector<ProjectSetting> InstantNgpSpectraProject::settings() const {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        const State& state = *this->state;
+        return {
+            ProjectSetting{
+                .key = setting_show_occupancy_key,
+                .label = "Show Occupancy",
+                .description = "Show the occupancy voxel grid attached to the reconstructed density volume.",
+                .kind = OptionKind::Bool,
+                .value = state.options.show_occupancy ? "true" : "false",
+                .group = "Debug",
+                .advanced = false,
+                .priority = 0,
+            },
+            ProjectSetting{
+                .key = setting_occupancy_alpha_key,
+                .label = "Occupancy Alpha",
+                .description = "Viewport occupancy voxel opacity in [0, 1].",
+                .kind = OptionKind::Float,
+                .value = std::format("{:.9g}", state.options.occupancy_alpha),
+                .group = "Debug",
+                .advanced = false,
+                .priority = 10,
+            },
+            ProjectSetting{
+                .key = setting_occupancy_cell_scale_key,
+                .label = "Cell Scale",
+                .description = "Viewport occupancy voxel cube scale in (0, 1].",
+                .kind = OptionKind::Float,
+                .value = std::format("{:.9g}", state.options.occupancy_cell_scale),
+                .group = "Debug",
+                .advanced = false,
+                .priority = 20,
+            },
+        };
+    }
+
+    void InstantNgpSpectraProject::update_setting(const std::string_view key, const std::string_view value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        bool changed{};
+        if (key == setting_show_occupancy_key) {
+            const bool parsed = parse_bool(std::string{value}, setting_show_occupancy_key);
+            changed = state.options.show_occupancy != parsed;
+            state.options.show_occupancy = parsed;
+            if (!state.options.show_occupancy) release_occupancy_buffer(state);
+        } else if (key == setting_occupancy_alpha_key) {
+            const float parsed = parse_float(std::string{value}, setting_occupancy_alpha_key);
+            if (parsed < 0.0f || parsed > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
+            changed = state.options.occupancy_alpha != parsed;
+            state.options.occupancy_alpha = parsed;
+        } else if (key == setting_occupancy_cell_scale_key) {
+            const float parsed = parse_float(std::string{value}, setting_occupancy_cell_scale_key);
+            if (!(parsed > 0.0f) || parsed > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
+            changed = state.options.occupancy_cell_scale != parsed;
+            state.options.occupancy_cell_scale = parsed;
+        } else {
+            throw std::runtime_error(std::format("unknown project setting '{}'", key));
+        }
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+        push_log(state, "DEBUG", std::format("{}={}", key, value));
+    }
+
     std::uint64_t InstantNgpSpectraProject::scene_revision() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         return this->state->scene_revision;
@@ -1223,10 +1275,14 @@ namespace instant_ngp::spectra_project {
             status.phase = "Error";
             status.headline = "Project error";
             status.detail = state.project_error;
-        } else if (state.training_running) {
+        } else if (state.training_running && host_timeline_advances_scene(state)) {
             status.phase = "Running";
             status.headline = "Training running";
             status.detail = std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set);
+        } else if (state.training_running) {
+            status.phase = "Paused";
+            status.headline = "Timeline paused";
+            status.detail = std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set);
         } else if (state.training_complete) {
             status.phase = "Complete";
             status.headline = "Training complete";
@@ -1238,25 +1294,25 @@ namespace instant_ngp::spectra_project {
         } else {
             status.phase = "Ready";
             status.headline = "Dataset loaded";
-            status.detail = "Start training from the Project actions.";
+            status.detail = "Start training from the Scene controls.";
         }
 
-        add_metric(status, "dataset", "Dataset", state.options.dataset_path.string());
-        add_metric(status, "format", "Format", state.options.format);
-        add_metric(status, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets));
-        add_metric(status, "step", "Step", std::format("{}", current_training_step(state)));
-        add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps));
-        add_metric(status, "density_visible", "Density Visible", state.density_volume.has_value() ? "true" : "false");
-        add_metric(status, "density_grid_revision", "Density Grid Revision", std::format("{}", state.exported_density_revision));
+        add_metric(status, "dataset", "Dataset", state.options.dataset_path.filename().string(), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 0);
+        add_metric(status, "format", "Format", state.options.format, ControlPlacementPanelDetail, 10);
+        add_metric(status, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 10);
+        add_metric(status, "step", "Step", std::format("{}", current_training_step(state)), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 0, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+        add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps), ControlPlacementPanelDetail, 20);
+        add_metric(status, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden", ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20);
+        add_metric(status, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30);
         add_metric(status, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
         if (state.density_volume.has_value()) add_metric(status, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
         if (state.exported_density_optical_thickness_step > 0.0f) add_metric(status, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
         if (state.exported_volume_density_scale > 0.0f) add_metric(status, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));
-        add_metric(status, "occupancy_visible", "Occupancy Visible", state.occupancy_grid.has_value() ? "true" : "false");
+        add_metric(status, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden", ControlPlacementPanelSummary | ControlPlacementPanelDetail, 40);
         if (state.latest_stats.has_value()) {
-            add_metric(status, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss));
-            add_metric(status, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f));
-            add_metric(status, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f));
+            add_metric(status, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 10, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
+            add_metric(status, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
+            add_metric(status, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
             add_metric(status, "occupancy_revision", "Occupancy Revision", std::format("{}", state.exported_occupancy_revision));
         }
         if (state.latest_preview.has_value()) {
@@ -1264,7 +1320,7 @@ namespace instant_ngp::spectra_project {
             add_metric(status, "preview_image", "Preview Image", std::format("{}", state.latest_preview->image_index));
             add_metric(status, "preview_step", "Preview Step", std::format("{}", state.latest_preview->step));
             add_metric(status, "preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse));
-            add_metric(status, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f}", state.latest_preview->psnr) : "inf");
+            add_metric(status, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 50, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
@@ -1272,17 +1328,19 @@ namespace instant_ngp::spectra_project {
             add_disabled_action(status, action_start_training_id, "Resolve or reset the project error before starting training.");
             add_disabled_action(status, action_pause_training_id, "Training is not running.");
             add_disabled_action(status, action_render_preview_id, "Resolve or reset the project error before rendering a preview.");
-            add_disabled_action(status, action_apply_occupancy_debug_id, "Resolve or reset the project error before changing occupancy debug settings.");
-        } else if (state.training_running) {
+        } else if (state.training_running && host_timeline_advances_scene(state)) {
             status.enabled_action_ids.push_back(action_pause_training_id);
-            status.enabled_action_ids.push_back(action_apply_occupancy_debug_id);
             status.enabled_action_ids.push_back(action_reset_training_id);
             add_disabled_action(status, action_start_training_id, "Training is already running.");
-            add_disabled_action(status, action_render_preview_id, "Pause training before rendering a preview.");
+            add_disabled_action(status, action_render_preview_id, "Pause the host timeline before rendering a preview.");
+        } else if (state.training_running) {
+            status.enabled_action_ids.push_back(action_pause_training_id);
+            status.enabled_action_ids.push_back(action_render_preview_id);
+            status.enabled_action_ids.push_back(action_reset_training_id);
+            add_disabled_action(status, action_start_training_id, "Training is already running; resume with Space or stop it with Pause.");
         } else {
             status.enabled_action_ids.push_back(action_start_training_id);
             status.enabled_action_ids.push_back(action_render_preview_id);
-            status.enabled_action_ids.push_back(action_apply_occupancy_debug_id);
             status.enabled_action_ids.push_back(action_reset_training_id);
             add_disabled_action(status, action_pause_training_id, "Training is not running.");
         }
@@ -1311,6 +1369,8 @@ namespace instant_ngp::spectra_project {
                 .description = history.description,
                 .unit = history.unit,
                 .color = history.color,
+                .group = history.group,
+                .priority = history.priority,
                 .revision = history.revision,
                 .samples = history.samples,
             });

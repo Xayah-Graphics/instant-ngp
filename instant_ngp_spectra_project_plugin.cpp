@@ -6,7 +6,7 @@
 #define SPECTRA_DYNAMIC_SCENE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 21u
+#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 23u
 
 typedef struct SpectraDynamicSceneString {
     const char* data;
@@ -50,6 +50,9 @@ typedef struct SpectraDynamicSceneOpenOptionSchema {
     uint32_t kind;
     uint32_t required;
     SpectraDynamicSceneString default_value;
+    SpectraDynamicSceneString group;
+    uint32_t advanced;
+    int32_t priority;
     SpectraDynamicSceneOpenOptionChoiceSpan choices;
 } SpectraDynamicSceneOpenOptionSchema;
 
@@ -67,6 +70,9 @@ typedef struct SpectraDynamicSceneControlAction {
     SpectraDynamicSceneString id;
     SpectraDynamicSceneString label;
     SpectraDynamicSceneString description;
+    uint32_t group;
+    int32_t priority;
+    uint32_t style;
     SpectraDynamicSceneOpenOptionSchemaSpan options;
 } SpectraDynamicSceneControlAction;
 
@@ -75,10 +81,36 @@ typedef struct SpectraDynamicSceneControlActionSpan {
     uint64_t count;
 } SpectraDynamicSceneControlActionSpan;
 
+typedef struct SpectraDynamicSceneControlSetting {
+    SpectraDynamicSceneString key;
+    SpectraDynamicSceneString label;
+    SpectraDynamicSceneString description;
+    uint32_t kind;
+    SpectraDynamicSceneString value;
+    SpectraDynamicSceneString group;
+    uint32_t advanced;
+    int32_t priority;
+    SpectraDynamicSceneOpenOptionChoiceSpan choices;
+} SpectraDynamicSceneControlSetting;
+
+typedef struct SpectraDynamicSceneControlSettingSpan {
+    const SpectraDynamicSceneControlSetting* data;
+    uint64_t count;
+} SpectraDynamicSceneControlSettingSpan;
+
+typedef struct SpectraDynamicSceneControlSettingView {
+    uint64_t struct_size;
+    SpectraDynamicSceneControlSettingSpan settings;
+} SpectraDynamicSceneControlSettingView;
+
 typedef struct SpectraDynamicSceneControlMetric {
     SpectraDynamicSceneString key;
     SpectraDynamicSceneString label;
     SpectraDynamicSceneString value;
+    uint32_t placement_flags;
+    int32_t priority;
+    uint32_t has_color;
+    float color[4];
 } SpectraDynamicSceneControlMetric;
 
 typedef struct SpectraDynamicSceneControlMetricSpan {
@@ -160,6 +192,8 @@ typedef struct SpectraDynamicSceneControlScalarSeries {
     SpectraDynamicSceneString description;
     SpectraDynamicSceneString unit;
     float color[4];
+    uint32_t group;
+    int32_t priority;
     uint64_t revision;
     SpectraDynamicSceneControlScalarSampleSpan samples;
 } SpectraDynamicSceneControlScalarSeries;
@@ -529,6 +563,16 @@ typedef struct SpectraDynamicSceneFrameView {
     SpectraDynamicSceneDebugAttachmentSet debug_attachments;
 } SpectraDynamicSceneFrameView;
 
+typedef struct SpectraDynamicSceneControlUpdateInfo {
+    uint64_t struct_size;
+    double wall_delta_seconds;
+    double scene_delta_seconds;
+    double time_seconds;
+    uint64_t frame_index;
+    uint32_t timeline_mode;
+    uint32_t timeline_playing;
+} SpectraDynamicSceneControlUpdateInfo;
+
 typedef void SpectraDynamicSceneInstance;
 
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneCreateFn)(const SpectraDynamicSceneOpenInfo* open_info, SpectraDynamicSceneInstance** instance);
@@ -537,9 +581,11 @@ typedef SpectraDynamicSceneResult (*SpectraDynamicSceneResetFn)(SpectraDynamicSc
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneStepFn)(SpectraDynamicSceneInstance* instance, float delta_seconds);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneDocumentFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneDocumentView* document);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneFrameFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneFrameInfo frame, SpectraDynamicSceneFrameView* snapshot);
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlUpdateFn)(SpectraDynamicSceneInstance* instance, float delta_seconds);
+typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlUpdateFn)(SpectraDynamicSceneInstance* instance, const SpectraDynamicSceneControlUpdateInfo* update_info);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlSceneRevisionFn)(SpectraDynamicSceneInstance* instance, uint64_t* revision);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlActionFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneString action_id, SpectraDynamicSceneOptionSpan options);
+typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlSettingsFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlSettingView* settings);
+typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlSettingUpdateFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneString key, SpectraDynamicSceneString value);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlStatusFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlStatusView* status);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlLogsFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlLogView* logs);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlImagesFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlImageView* images);
@@ -566,6 +612,8 @@ typedef struct SpectraDynamicSceneControlsApi {
     SpectraDynamicSceneControlUpdateFn controls_update;
     SpectraDynamicSceneControlSceneRevisionFn scene_revision;
     SpectraDynamicSceneControlActionFn control_action;
+    SpectraDynamicSceneControlSettingsFn control_settings;
+    SpectraDynamicSceneControlSettingUpdateFn control_setting_update;
     SpectraDynamicSceneControlStatusFn control_status;
     SpectraDynamicSceneControlLogsFn control_logs;
     SpectraDynamicSceneControlImagesFn control_images;
@@ -626,6 +674,12 @@ namespace {
         std::vector<SpectraDynamicSceneControlDisabledAction> disabled_action_views{};
     };
 
+    struct ProjectSettingCache {
+        std::vector<instant_ngp::spectra_project::ProjectSetting> settings{};
+        std::vector<std::vector<SpectraDynamicSceneOpenOptionChoice>> choice_views{};
+        std::vector<SpectraDynamicSceneControlSetting> setting_views{};
+    };
+
     struct ProjectLogCache {
         std::vector<instant_ngp::spectra_project::ProjectLogEntry> logs{};
         std::vector<SpectraDynamicSceneControlLogEntry> log_views{};
@@ -647,6 +701,7 @@ namespace {
         std::string last_error{};
         SceneViewCache scene_cache{};
         ProjectStatusCache status_cache{};
+        ProjectSettingCache setting_cache{};
         ProjectLogCache log_cache{};
         ProjectImageCache image_cache{};
         ProjectScalarSeriesCache scalar_series_cache{};
@@ -805,6 +860,9 @@ namespace {
                 .kind = static_cast<std::uint32_t>(schema.kind),
                 .required = schema.required ? 1u : 0u,
                 .default_value = abi_text(schema.default_value),
+                .group = abi_text(schema.group),
+                .advanced = schema.advanced ? 1u : 0u,
+                .priority = schema.priority,
                 .choices = SpectraDynamicSceneOpenOptionChoiceSpan{.data = views.choices[index].empty() ? nullptr : views.choices[index].data(), .count = static_cast<std::uint64_t>(views.choices[index].size())},
             });
         }
@@ -824,6 +882,9 @@ namespace {
                 .id = abi_text(action.id),
                 .label = abi_text(action.label),
                 .description = abi_text(action.description),
+                .group = action.group,
+                .priority = action.priority,
+                .style = action.style,
                 .options = SpectraDynamicSceneOpenOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
             });
         }
@@ -1118,7 +1179,12 @@ namespace {
                 .key = abi_text(metric.key),
                 .label = abi_text(metric.label),
                 .value = abi_text(metric.value),
+                .placement_flags = metric.placement_flags,
+                .priority = metric.priority,
+                .has_color = metric.has_color ? 1u : 0u,
+                .color = {},
             });
+            copy4(cache.metric_views.back().color, metric.color);
         }
         for (const std::string& action_id : cache.status.enabled_action_ids) cache.enabled_action_views.push_back(abi_text(action_id));
         for (const instant_ngp::spectra_project::ProjectDisabledAction& disabled_action : cache.status.disabled_actions) {
@@ -1135,6 +1201,34 @@ namespace {
             .metrics = SpectraDynamicSceneControlMetricSpan{.data = cache.metric_views.empty() ? nullptr : cache.metric_views.data(), .count = static_cast<std::uint64_t>(cache.metric_views.size())},
             .enabled_action_ids = SpectraDynamicSceneStringSpan{.data = cache.enabled_action_views.empty() ? nullptr : cache.enabled_action_views.data(), .count = static_cast<std::uint64_t>(cache.enabled_action_views.size())},
             .disabled_actions = SpectraDynamicSceneControlDisabledActionSpan{.data = cache.disabled_action_views.empty() ? nullptr : cache.disabled_action_views.data(), .count = static_cast<std::uint64_t>(cache.disabled_action_views.size())},
+        };
+    }
+
+    [[nodiscard]] SpectraDynamicSceneControlSettingView make_setting_view(ProjectSettingCache& cache) {
+        cache.choice_views.clear();
+        cache.setting_views.clear();
+        cache.choice_views.resize(cache.settings.size());
+        cache.setting_views.reserve(cache.settings.size());
+        for (std::size_t setting_index = 0u; setting_index < cache.settings.size(); ++setting_index) {
+            const instant_ngp::spectra_project::ProjectSetting& setting = cache.settings[setting_index];
+            std::vector<SpectraDynamicSceneOpenOptionChoice>& choices = cache.choice_views[setting_index];
+            choices.reserve(setting.choices.size());
+            for (const instant_ngp::spectra_project::OptionChoice& choice : setting.choices) choices.push_back(make_choice_view(choice));
+            cache.setting_views.push_back(SpectraDynamicSceneControlSetting{
+                .key = abi_text(setting.key),
+                .label = abi_text(setting.label),
+                .description = abi_text(setting.description),
+                .kind = static_cast<std::uint32_t>(setting.kind),
+                .value = abi_text(setting.value),
+                .group = abi_text(setting.group),
+                .advanced = setting.advanced ? 1u : 0u,
+                .priority = setting.priority,
+                .choices = SpectraDynamicSceneOpenOptionChoiceSpan{.data = choices.empty() ? nullptr : choices.data(), .count = static_cast<std::uint64_t>(choices.size())},
+            });
+        }
+        return SpectraDynamicSceneControlSettingView{
+            .struct_size = sizeof(SpectraDynamicSceneControlSettingView),
+            .settings = SpectraDynamicSceneControlSettingSpan{.data = cache.setting_views.empty() ? nullptr : cache.setting_views.data(), .count = static_cast<std::uint64_t>(cache.setting_views.size())},
         };
     }
 
@@ -1197,6 +1291,8 @@ namespace {
                 .description = abi_text(series.description),
                 .unit = abi_text(series.unit),
                 .color = {},
+                .group = series.group,
+                .priority = series.priority,
                 .revision = series.revision,
                 .samples = SpectraDynamicSceneControlScalarSampleSpan{.data = samples.empty() ? nullptr : samples.data(), .count = static_cast<std::uint64_t>(samples.size())},
             };
@@ -1306,11 +1402,20 @@ namespace {
         return abi_text(reinterpret_cast<PluginInstance*>(instance)->last_error);
     }
 
-    [[nodiscard]] SpectraDynamicSceneResult controls_update(SpectraDynamicSceneInstance* instance, const float delta_seconds) noexcept {
+    [[nodiscard]] SpectraDynamicSceneResult controls_update(SpectraDynamicSceneInstance* instance, const SpectraDynamicSceneControlUpdateInfo* update_info) noexcept {
         try {
             PluginInstance& plugin_instance = checked_instance(instance, "controls_update");
+            if (update_info == nullptr) throw std::runtime_error("controls_update info pointer is null");
+            if (update_info->struct_size != sizeof(SpectraDynamicSceneControlUpdateInfo)) throw std::runtime_error("controls_update info ABI size mismatch");
             plugin_instance.last_error.clear();
-            plugin_instance.project.update(delta_seconds);
+            plugin_instance.project.update(instant_ngp::spectra_project::ProjectUpdateInfo{
+                .wall_delta_seconds = update_info->wall_delta_seconds,
+                .scene_delta_seconds = update_info->scene_delta_seconds,
+                .time_seconds = update_info->time_seconds,
+                .frame_index = update_info->frame_index,
+                .timeline_mode = update_info->timeline_mode,
+                .timeline_playing = update_info->timeline_playing != 0u,
+            });
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1340,6 +1445,34 @@ namespace {
             const std::string action = string_from_abi(action_id, "project action id", false);
             const std::vector<instant_ngp::spectra_project::Option> converted_options = options_from_abi(options, "project action options");
             plugin_instance.project.execute_action(action, converted_options);
+            return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
+        } catch (const std::exception& error) {
+            if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
+            else global_error = error.what();
+            return SPECTRA_DYNAMIC_SCENE_RESULT_ERROR;
+        }
+    }
+
+    [[nodiscard]] SpectraDynamicSceneResult control_settings(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlSettingView* settings) noexcept {
+        try {
+            PluginInstance& plugin_instance = checked_instance(instance, "control_settings");
+            if (settings == nullptr) throw std::runtime_error("control_settings output pointer is null");
+            plugin_instance.last_error.clear();
+            plugin_instance.setting_cache.settings = plugin_instance.project.settings();
+            *settings = make_setting_view(plugin_instance.setting_cache);
+            return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
+        } catch (const std::exception& error) {
+            if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
+            else global_error = error.what();
+            return SPECTRA_DYNAMIC_SCENE_RESULT_ERROR;
+        }
+    }
+
+    [[nodiscard]] SpectraDynamicSceneResult control_setting_update(SpectraDynamicSceneInstance* instance, const SpectraDynamicSceneString key, const SpectraDynamicSceneString value) noexcept {
+        try {
+            PluginInstance& plugin_instance = checked_instance(instance, "control_setting_update");
+            plugin_instance.last_error.clear();
+            plugin_instance.project.update_setting(string_view_from_abi(key, "project setting key"), string_view_from_abi(value, "project setting value"));
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1432,6 +1565,8 @@ namespace {
             .controls_update = controls_update,
             .scene_revision = scene_revision,
             .control_action = control_action,
+            .control_settings = control_settings,
+            .control_setting_update = control_setting_update,
             .control_status = control_status,
             .control_logs = control_logs,
             .control_images = control_images,

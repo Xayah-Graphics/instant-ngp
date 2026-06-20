@@ -25,6 +25,9 @@ export namespace instant_ngp::spectra_project {
         OptionKind kind{OptionKind::Text};
         bool required{};
         std::string default_value{};
+        std::string group{};
+        bool advanced{};
+        std::int32_t priority{};
         std::vector<OptionChoice> choices{};
     };
 
@@ -77,17 +80,50 @@ export namespace instant_ngp::spectra_project {
         virtual void release_volume_buffer(std::uint64_t resource_id) = 0;
     };
 
+    inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
+    inline constexpr std::uint32_t ControlPlacementPanelSummary = 1u << 1u;
+    inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
+    inline constexpr std::uint32_t ControlActionGroupRun = 0u;
+    inline constexpr std::uint32_t ControlActionGroupPreview = 1u;
+    inline constexpr std::uint32_t ControlActionGroupDebug = 2u;
+    inline constexpr std::uint32_t ControlActionGroupUtility = 3u;
+    inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
+    inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
+    inline constexpr std::uint32_t ControlActionStyleDanger = 2u;
+    inline constexpr std::uint32_t ControlTimelineModeLive = 0u;
+    inline constexpr std::uint32_t ControlTimelineModeRecord = 1u;
+    inline constexpr std::uint32_t ControlTimelineModePlayback = 2u;
+
     struct ProjectAction {
         std::string id{};
         std::string label{};
         std::string description{};
+        std::uint32_t group{ControlActionGroupUtility};
+        std::int32_t priority{};
+        std::uint32_t style{ControlActionStyleSecondary};
         std::vector<OptionSchema> options{};
+    };
+
+    struct ProjectSetting {
+        std::string key{};
+        std::string label{};
+        std::string description{};
+        OptionKind kind{OptionKind::Bool};
+        std::string value{};
+        std::string group{};
+        bool advanced{};
+        std::int32_t priority{};
+        std::vector<OptionChoice> choices{};
     };
 
     struct ProjectMetric {
         std::string key{};
         std::string label{};
         std::string value{};
+        std::uint32_t placement_flags{ControlPlacementPanelDetail};
+        std::int32_t priority{};
+        bool has_color{};
+        std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
 
     struct ProjectDisabledAction {
@@ -102,6 +138,15 @@ export namespace instant_ngp::spectra_project {
         std::vector<ProjectMetric> metrics{};
         std::vector<std::string> enabled_action_ids{};
         std::vector<ProjectDisabledAction> disabled_actions{};
+    };
+
+    struct ProjectUpdateInfo {
+        double wall_delta_seconds{};
+        double scene_delta_seconds{};
+        double time_seconds{};
+        std::uint64_t frame_index{};
+        std::uint32_t timeline_mode{ControlTimelineModeLive};
+        bool timeline_playing{};
     };
 
     struct ProjectLogEntry {
@@ -132,6 +177,8 @@ export namespace instant_ngp::spectra_project {
         std::string description{};
         std::string unit{};
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
+        std::uint32_t group{ControlActionGroupRun};
+        std::int32_t priority{};
         std::uint64_t revision{};
         std::span<const ProjectScalarSample> samples{};
     };
@@ -353,8 +400,10 @@ export namespace instant_ngp::spectra_project {
         [[nodiscard]] static const Descriptor& descriptor();
         [[nodiscard]] static InstantNgpSpectraProject open(std::span<const Option> options, std::shared_ptr<HostServices> host_services);
 
-        void update(float delta_seconds);
+        void update(const ProjectUpdateInfo& update);
         void execute_action(std::string_view action_id, std::span<const Option> options);
+        [[nodiscard]] std::vector<ProjectSetting> settings() const;
+        void update_setting(std::string_view key, std::string_view value);
 
         [[nodiscard]] std::uint64_t scene_revision() const;
         [[nodiscard]] ProjectStatus status() const;
