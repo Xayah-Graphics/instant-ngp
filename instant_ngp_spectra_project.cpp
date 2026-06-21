@@ -199,6 +199,11 @@ namespace instant_ngp::spectra_project {
                         ControlActionStylePrimary),
                     action(action_reset_training_id, "Reset", "Destroy the current optimizer state and keep the loaded dataset visualization.", {}, ControlActionGroupRun, 90, ControlActionStyleDanger),
                 },
+                .control_settings = {
+                    option(setting_show_occupancy_key, "Show Occupancy", "Show the occupancy voxel grid attached to the reconstructed density volume.", OptionKind::Bool, false, "true", {}, "Debug", false, 0),
+                    option(setting_occupancy_alpha_key, "Occupancy Alpha", "Viewport occupancy voxel opacity in [0, 1].", OptionKind::Float, false, "0.18", {}, "Debug", false, 10),
+                    option(setting_occupancy_cell_scale_key, "Cell Scale", "Viewport occupancy voxel cube scale in (0, 1].", OptionKind::Float, false, "0.75", {}, "Debug", false, 20),
+                },
             };
         }
 
@@ -394,11 +399,11 @@ namespace instant_ngp::spectra_project {
         std::uint64_t next_preview_revision{1u};
         double scalar_time_seconds{};
         std::vector<ScalarHistory> scalar_histories{};
-        VolumeBufferAllocation density_allocation{};
+        GpuBufferAllocation density_allocation{};
         cudaExternalMemory_t density_external_memory{};
         float* density_values{};
         std::uint64_t density_buffer_byte_size{};
-        VolumeBufferAllocation color_allocation{};
+        GpuBufferAllocation color_allocation{};
         cudaExternalMemory_t color_external_memory{};
         float* color_values{};
         std::uint64_t color_buffer_byte_size{};
@@ -408,7 +413,7 @@ namespace instant_ngp::spectra_project {
         std::array<std::uint32_t, 3u> exported_density_dimensions{};
         float exported_density_optical_thickness_step{};
         float exported_volume_density_scale{};
-        ViewportVoxelBufferAllocation occupancy_allocation{};
+        GpuBufferAllocation occupancy_allocation{};
         cudaExternalMemory_t occupancy_external_memory{};
         std::uint8_t* occupancy_bitfield{};
         std::uint64_t occupancy_buffer_byte_size{};
@@ -496,16 +501,7 @@ namespace instant_ngp::spectra_project {
             return std::ranges::any_of(bytes, [](const std::uint8_t value) { return value != 0u; });
         }
 
-        void close_imported_handle(ViewportVoxelBufferAllocation& allocation) noexcept {
-#if defined(_WIN32)
-            if (allocation.handle_kind == GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
-#else
-            if (allocation.handle_kind == GpuResourceHandleKind::OpaqueFileDescriptor && allocation.handle != 0u) static_cast<void>(close(static_cast<int>(allocation.handle)));
-#endif
-            allocation.handle = 0u;
-        }
-
-        void close_imported_handle(VolumeBufferAllocation& allocation) noexcept {
+        void close_imported_handle(GpuBufferAllocation& allocation) noexcept {
 #if defined(_WIN32)
             if (allocation.handle_kind == GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
 #else
@@ -522,11 +518,11 @@ namespace instant_ngp::spectra_project {
             }
             if (state.density_allocation.resource_id != 0u && state.host_services != nullptr) {
                 try {
-                    state.host_services->release_volume_buffer(state.density_allocation.resource_id);
+                    state.host_services->release_gpu_buffer(state.density_allocation.resource_id);
                 } catch (...) {
                 }
             }
-            state.density_allocation = VolumeBufferAllocation{};
+            state.density_allocation = GpuBufferAllocation{};
             state.density_buffer_byte_size = 0u;
             state.exported_density_revision = 0u;
             state.exported_density_dimensions = {};
@@ -543,11 +539,11 @@ namespace instant_ngp::spectra_project {
             }
             if (state.color_allocation.resource_id != 0u && state.host_services != nullptr) {
                 try {
-                    state.host_services->release_volume_buffer(state.color_allocation.resource_id);
+                    state.host_services->release_gpu_buffer(state.color_allocation.resource_id);
                 } catch (...) {
                 }
             }
-            state.color_allocation = VolumeBufferAllocation{};
+            state.color_allocation = GpuBufferAllocation{};
             state.color_buffer_byte_size = 0u;
             state.exported_color_revision = 0u;
         }
@@ -560,11 +556,11 @@ namespace instant_ngp::spectra_project {
             }
             if (state.occupancy_allocation.resource_id != 0u && state.host_services != nullptr) {
                 try {
-                    state.host_services->release_viewport_voxel_buffer(state.occupancy_allocation.resource_id);
+                    state.host_services->release_gpu_buffer(state.occupancy_allocation.resource_id);
                 } catch (...) {
                 }
             }
-            state.occupancy_allocation = ViewportVoxelBufferAllocation{};
+            state.occupancy_allocation = GpuBufferAllocation{};
             state.occupancy_buffer_byte_size = 0u;
             state.exported_occupancy_revision = 0u;
             state.occupancy_grid.reset();
@@ -599,15 +595,18 @@ namespace instant_ngp::spectra_project {
             if (state.density_allocation.resource_id != 0u) release_density_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for density volume visualization."};
             if (byte_size == 0u) throw std::runtime_error{"density grid volume byte size is invalid."};
-            VolumeBufferAllocation allocation = state.host_services->request_volume_buffer(byte_size, "instant-ngp direct density grid volume");
+            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
+            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
+            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid density volume resource id."};
+            if (allocation.kind != GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume density GPU buffer."};
             if (allocation.byte_size < byte_size) {
                 close_imported_handle(allocation);
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned a density volume buffer smaller than requested."};
             }
             if (allocation.handle == 0u) {
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned an empty density volume external memory handle."};
             }
 
@@ -653,7 +652,7 @@ namespace instant_ngp::spectra_project {
                 state.density_buffer_byte_size = byte_size;
             } catch (...) {
                 if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw;
             }
         }
@@ -663,15 +662,18 @@ namespace instant_ngp::spectra_project {
             if (state.color_allocation.resource_id != 0u) release_color_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for color volume visualization."};
             if (byte_size == 0u) throw std::runtime_error{"color grid volume byte size is invalid."};
-            VolumeBufferAllocation allocation = state.host_services->request_volume_buffer(byte_size, "instant-ngp color grid volume");
+            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
+            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
+            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindVolumeChannel, byte_size, "instant-ngp color grid volume");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid color volume resource id."};
+            if (allocation.kind != GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume color GPU buffer."};
             if (allocation.byte_size < byte_size) {
                 close_imported_handle(allocation);
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned a color volume buffer smaller than requested."};
             }
             if (allocation.handle == 0u) {
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned an empty color volume external memory handle."};
             }
 
@@ -717,7 +719,7 @@ namespace instant_ngp::spectra_project {
                 state.color_buffer_byte_size = byte_size;
             } catch (...) {
                 if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_volume_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw;
             }
         }
@@ -727,15 +729,18 @@ namespace instant_ngp::spectra_project {
             if (state.occupancy_allocation.resource_id != 0u) release_occupancy_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for occupancy grid visualization."};
             if (view.bitfield_bytes == 0u) throw std::runtime_error{"occupancy grid bitfield byte size is invalid."};
-            ViewportVoxelBufferAllocation allocation = state.host_services->request_viewport_voxel_buffer(view.bitfield_bytes, "instant-ngp occupancy grid bitfield");
+            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
+            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
+            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid occupancy grid resource id."};
+            if (allocation.kind != GpuBufferKindViewportVoxelGrid) throw std::runtime_error{"Spectra returned a non-viewport-voxel occupancy GPU buffer."};
             if (allocation.byte_size < view.bitfield_bytes) {
                 close_imported_handle(allocation);
-                state.host_services->release_viewport_voxel_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned an occupancy grid buffer smaller than requested."};
             }
             if (allocation.handle == 0u) {
-                state.host_services->release_viewport_voxel_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw std::runtime_error{"Spectra returned an empty occupancy grid external memory handle."};
             }
 
@@ -781,7 +786,7 @@ namespace instant_ngp::spectra_project {
                 state.occupancy_buffer_byte_size = view.bitfield_bytes;
             } catch (...) {
                 if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_viewport_voxel_buffer(allocation.resource_id);
+                state.host_services->release_gpu_buffer(allocation.resource_id);
                 throw;
             }
         }
@@ -1045,8 +1050,8 @@ namespace instant_ngp::spectra_project {
             status.metrics.push_back(std::move(metric));
         }
 
-        void add_disabled_action(ProjectStatus& status, std::string action_id, std::string reason) {
-            status.disabled_actions.push_back(ProjectDisabledAction{.action_id = std::move(action_id), .reason = std::move(reason)});
+        void add_action_state(ProjectStatus& status, std::string action_id, const bool enabled, std::string disabled_reason = {}) {
+            status.action_states.push_back(ProjectActionState{.action_id = std::move(action_id), .enabled = enabled, .disabled_reason = std::move(disabled_reason)});
         }
     }
 
@@ -1345,39 +1350,21 @@ namespace instant_ngp::spectra_project {
         }
     }
 
-    std::vector<ProjectSetting> InstantNgpSpectraProject::settings() const {
+    std::vector<ProjectSettingValue> InstantNgpSpectraProject::settings() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
         return {
-            ProjectSetting{
+            ProjectSettingValue{
                 .key = setting_show_occupancy_key,
-                .label = "Show Occupancy",
-                .description = "Show the occupancy voxel grid attached to the reconstructed density volume.",
-                .kind = OptionKind::Bool,
                 .value = state.options.show_occupancy ? "true" : "false",
-                .group = "Debug",
-                .advanced = false,
-                .priority = 0,
             },
-            ProjectSetting{
+            ProjectSettingValue{
                 .key = setting_occupancy_alpha_key,
-                .label = "Occupancy Alpha",
-                .description = "Viewport occupancy voxel opacity in [0, 1].",
-                .kind = OptionKind::Float,
                 .value = std::format("{:.9g}", state.options.occupancy_alpha),
-                .group = "Debug",
-                .advanced = false,
-                .priority = 10,
             },
-            ProjectSetting{
+            ProjectSettingValue{
                 .key = setting_occupancy_cell_scale_key,
-                .label = "Cell Scale",
-                .description = "Viewport occupancy voxel cube scale in (0, 1].",
-                .kind = OptionKind::Float,
                 .value = std::format("{:.9g}", state.options.occupancy_cell_scale),
-                .group = "Debug",
-                .advanced = false,
-                .priority = 20,
             },
         };
     }
@@ -1475,25 +1462,25 @@ namespace instant_ngp::spectra_project {
         }
 
         if (!state.project_error.empty()) {
-            status.enabled_action_ids.push_back(action_reset_training_id);
-            add_disabled_action(status, action_start_training_id, "Resolve or reset the project error before starting training.");
-            add_disabled_action(status, action_pause_training_id, "Training is not running.");
-            add_disabled_action(status, action_render_preview_id, "Resolve or reset the project error before rendering a preview.");
+            add_action_state(status, action_start_training_id, false, "Resolve or reset the project error before starting training.");
+            add_action_state(status, action_pause_training_id, false, "Training is not running.");
+            add_action_state(status, action_render_preview_id, false, "Resolve or reset the project error before rendering a preview.");
+            add_action_state(status, action_reset_training_id, true);
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            status.enabled_action_ids.push_back(action_pause_training_id);
-            status.enabled_action_ids.push_back(action_reset_training_id);
-            add_disabled_action(status, action_start_training_id, "Training is already running.");
-            add_disabled_action(status, action_render_preview_id, "Pause the host timeline before rendering a preview.");
+            add_action_state(status, action_start_training_id, false, "Training is already running.");
+            add_action_state(status, action_pause_training_id, true);
+            add_action_state(status, action_render_preview_id, false, "Pause the host timeline before rendering a preview.");
+            add_action_state(status, action_reset_training_id, true);
         } else if (state.training_running) {
-            status.enabled_action_ids.push_back(action_pause_training_id);
-            status.enabled_action_ids.push_back(action_render_preview_id);
-            status.enabled_action_ids.push_back(action_reset_training_id);
-            add_disabled_action(status, action_start_training_id, "Training is already running; resume with Space or stop it with Pause.");
+            add_action_state(status, action_start_training_id, false, "Training is already running; resume with Space or stop it with Pause.");
+            add_action_state(status, action_pause_training_id, true);
+            add_action_state(status, action_render_preview_id, true);
+            add_action_state(status, action_reset_training_id, true);
         } else {
-            status.enabled_action_ids.push_back(action_start_training_id);
-            status.enabled_action_ids.push_back(action_render_preview_id);
-            status.enabled_action_ids.push_back(action_reset_training_id);
-            add_disabled_action(status, action_pause_training_id, "Training is not running.");
+            add_action_state(status, action_start_training_id, true);
+            add_action_state(status, action_pause_training_id, false, "Training is not running.");
+            add_action_state(status, action_render_preview_id, true);
+            add_action_state(status, action_reset_training_id, true);
         }
         return status;
     }

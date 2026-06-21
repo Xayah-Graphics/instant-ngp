@@ -11,7 +11,7 @@ import std;
 #define SPECTRA_DYNAMIC_SCENE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 27u
+#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 28u
 
 typedef struct SpectraDynamicSceneOption {
     const char* key;
@@ -30,6 +30,8 @@ static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_CHOICE = 3u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_BOOL = 4u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_FLOAT = 5u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_UNSIGNED_INTEGER = 6u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VOLUME_CHANNEL = 0u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID = 1u;
 
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_MATERIAL = 0u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_LIGHT = 1u;
@@ -81,27 +83,15 @@ typedef struct SpectraDynamicSceneControlActionSpan {
     uint64_t count;
 } SpectraDynamicSceneControlActionSpan;
 
-typedef struct SpectraDynamicSceneControlSetting {
+typedef struct SpectraDynamicSceneControlSettingValue {
     const char* key;
-    const char* label;
-    const char* description;
-    uint32_t kind;
     const char* value;
-    const char* group;
-    uint32_t advanced;
-    int32_t priority;
-    SpectraDynamicSceneOptionChoiceSpan choices;
-} SpectraDynamicSceneControlSetting;
+} SpectraDynamicSceneControlSettingValue;
 
-typedef struct SpectraDynamicSceneControlSettingSpan {
-    const SpectraDynamicSceneControlSetting* data;
+typedef struct SpectraDynamicSceneControlSettingValueSpan {
+    const SpectraDynamicSceneControlSettingValue* data;
     uint64_t count;
-} SpectraDynamicSceneControlSettingSpan;
-
-typedef struct SpectraDynamicSceneControlSettingView {
-    uint64_t struct_size;
-    SpectraDynamicSceneControlSettingSpan settings;
-} SpectraDynamicSceneControlSettingView;
+} SpectraDynamicSceneControlSettingValueSpan;
 
 typedef struct SpectraDynamicSceneControlMetric {
     const char* key;
@@ -118,15 +108,16 @@ typedef struct SpectraDynamicSceneControlMetricSpan {
     uint64_t count;
 } SpectraDynamicSceneControlMetricSpan;
 
-typedef struct SpectraDynamicSceneControlDisabledAction {
+typedef struct SpectraDynamicSceneControlActionState {
     const char* action_id;
-    const char* reason;
-} SpectraDynamicSceneControlDisabledAction;
+    uint32_t enabled;
+    const char* disabled_reason;
+} SpectraDynamicSceneControlActionState;
 
-typedef struct SpectraDynamicSceneControlDisabledActionSpan {
-    const SpectraDynamicSceneControlDisabledAction* data;
+typedef struct SpectraDynamicSceneControlActionStateSpan {
+    const SpectraDynamicSceneControlActionState* data;
     uint64_t count;
-} SpectraDynamicSceneControlDisabledActionSpan;
+} SpectraDynamicSceneControlActionStateSpan;
 
 typedef struct SpectraDynamicSceneControlStatusView {
     uint64_t struct_size;
@@ -134,9 +125,7 @@ typedef struct SpectraDynamicSceneControlStatusView {
     const char* headline;
     const char* detail;
     SpectraDynamicSceneControlMetricSpan metrics;
-    const char* const* enabled_action_ids;
-    uint64_t enabled_action_id_count;
-    SpectraDynamicSceneControlDisabledActionSpan disabled_actions;
+    SpectraDynamicSceneControlActionStateSpan action_states;
 } SpectraDynamicSceneControlStatusView;
 
 typedef struct SpectraDynamicSceneControlLogEntry {
@@ -149,11 +138,6 @@ typedef struct SpectraDynamicSceneControlLogEntrySpan {
     const SpectraDynamicSceneControlLogEntry* data;
     uint64_t count;
 } SpectraDynamicSceneControlLogEntrySpan;
-
-typedef struct SpectraDynamicSceneControlLogView {
-    uint64_t struct_size;
-    SpectraDynamicSceneControlLogEntrySpan entries;
-} SpectraDynamicSceneControlLogView;
 
 typedef struct SpectraDynamicSceneControlImage {
     const char* id;
@@ -170,11 +154,6 @@ typedef struct SpectraDynamicSceneControlImageSpan {
     const SpectraDynamicSceneControlImage* data;
     uint64_t count;
 } SpectraDynamicSceneControlImageSpan;
-
-typedef struct SpectraDynamicSceneControlImageView {
-    uint64_t struct_size;
-    SpectraDynamicSceneControlImageSpan images;
-} SpectraDynamicSceneControlImageView;
 
 typedef struct SpectraDynamicSceneControlScalarSample {
     uint64_t step;
@@ -204,18 +183,23 @@ typedef struct SpectraDynamicSceneControlScalarSeriesSpan {
     uint64_t count;
 } SpectraDynamicSceneControlScalarSeriesSpan;
 
-typedef struct SpectraDynamicSceneControlScalarSeriesView {
-    uint64_t struct_size;
-    SpectraDynamicSceneControlScalarSeriesSpan series;
-} SpectraDynamicSceneControlScalarSeriesView;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SETTINGS = 0u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_STATUS = 1u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_LOG = 2u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_IMAGE = 3u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SCALAR_SERIES = 4u;
+
+typedef struct SpectraDynamicSceneControlTypedSpan {
+    uint32_t kind;
+    uint32_t item_size;
+    const void* data;
+    uint64_t count;
+} SpectraDynamicSceneControlTypedSpan;
 
 typedef struct SpectraDynamicSceneControlSnapshotView {
     uint64_t struct_size;
-    SpectraDynamicSceneControlSettingView settings;
-    SpectraDynamicSceneControlStatusView status;
-    SpectraDynamicSceneControlLogView logs;
-    SpectraDynamicSceneControlImageView images;
-    SpectraDynamicSceneControlScalarSeriesView scalar_series;
+    const SpectraDynamicSceneControlTypedSpan* items;
+    uint64_t item_count;
 } SpectraDynamicSceneControlSnapshotView;
 
 typedef uint32_t SpectraDynamicSceneResult;
@@ -230,49 +214,32 @@ typedef struct SpectraDynamicSceneGpuDeviceIdentity {
     uint32_t device_node_mask;
 } SpectraDynamicSceneGpuDeviceIdentity;
 
-typedef struct SpectraDynamicSceneViewportVoxelBufferRequest {
+typedef struct SpectraDynamicSceneGpuBufferRequest {
     uint64_t struct_size;
+    uint32_t kind;
     uint64_t byte_size;
     const char* debug_name;
-} SpectraDynamicSceneViewportVoxelBufferRequest;
+} SpectraDynamicSceneGpuBufferRequest;
 
-typedef struct SpectraDynamicSceneViewportVoxelBufferAllocation {
+typedef struct SpectraDynamicSceneGpuBufferAllocation {
     uint64_t struct_size;
     uint64_t resource_id;
     uint64_t byte_size;
+    uint32_t kind;
     uint32_t handle_kind;
     uintptr_t handle;
     SpectraDynamicSceneGpuDeviceIdentity device_identity;
-} SpectraDynamicSceneViewportVoxelBufferAllocation;
+} SpectraDynamicSceneGpuBufferAllocation;
 
-typedef struct SpectraDynamicSceneVolumeBufferRequest {
-    uint64_t struct_size;
-    uint64_t byte_size;
-    const char* debug_name;
-} SpectraDynamicSceneVolumeBufferRequest;
-
-typedef struct SpectraDynamicSceneVolumeBufferAllocation {
-    uint64_t struct_size;
-    uint64_t resource_id;
-    uint64_t byte_size;
-    uint32_t handle_kind;
-    uintptr_t handle;
-    SpectraDynamicSceneGpuDeviceIdentity device_identity;
-} SpectraDynamicSceneVolumeBufferAllocation;
-
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneRequestViewportVoxelBufferFn)(void* user_data, const SpectraDynamicSceneViewportVoxelBufferRequest* request, SpectraDynamicSceneViewportVoxelBufferAllocation* allocation);
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneReleaseViewportVoxelBufferFn)(void* user_data, uint64_t resource_id);
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneRequestVolumeBufferFn)(void* user_data, const SpectraDynamicSceneVolumeBufferRequest* request, SpectraDynamicSceneVolumeBufferAllocation* allocation);
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneReleaseVolumeBufferFn)(void* user_data, uint64_t resource_id);
+typedef SpectraDynamicSceneResult (*SpectraDynamicSceneRequestGpuBufferFn)(void* user_data, const SpectraDynamicSceneGpuBufferRequest* request, SpectraDynamicSceneGpuBufferAllocation* allocation);
+typedef SpectraDynamicSceneResult (*SpectraDynamicSceneReleaseGpuBufferFn)(void* user_data, uint64_t resource_id);
 typedef const char* (*SpectraDynamicSceneHostLastErrorFn)(void* user_data);
 
 typedef struct SpectraDynamicSceneHostServices {
     uint64_t struct_size;
     void* user_data;
-    SpectraDynamicSceneRequestViewportVoxelBufferFn request_viewport_voxel_buffer;
-    SpectraDynamicSceneReleaseViewportVoxelBufferFn release_viewport_voxel_buffer;
-    SpectraDynamicSceneRequestVolumeBufferFn request_volume_buffer;
-    SpectraDynamicSceneReleaseVolumeBufferFn release_volume_buffer;
+    SpectraDynamicSceneRequestGpuBufferFn request_gpu_buffer;
+    SpectraDynamicSceneReleaseGpuBufferFn release_gpu_buffer;
     SpectraDynamicSceneHostLastErrorFn last_error;
 } SpectraDynamicSceneHostServices;
 
@@ -457,29 +424,6 @@ typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlActionFn)(SpectraD
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlSettingUpdateFn)(SpectraDynamicSceneInstance* instance, const char* key, const char* value);
 typedef SpectraDynamicSceneResult (*SpectraDynamicSceneControlSnapshotFn)(SpectraDynamicSceneInstance* instance, SpectraDynamicSceneControlSnapshotView* snapshot);
 typedef const char* (*SpectraDynamicSceneLastErrorFn)(SpectraDynamicSceneInstance* instance);
-typedef SpectraDynamicSceneResult (*SpectraDynamicSceneGetApiFn)(const char* api_name, uint32_t api_version, const void** api);
-
-typedef struct SpectraDynamicSceneSceneApi {
-    uint64_t struct_size;
-    const char* base_pbrt_path;
-    double frames_per_second;
-    SpectraDynamicSceneCreateFn create;
-    SpectraDynamicSceneDestroyFn destroy;
-    SpectraDynamicSceneResetFn reset;
-    SpectraDynamicSceneUpdateFn update;
-    SpectraDynamicSceneDocumentFn document;
-    SpectraDynamicSceneFrameFn frame;
-    SpectraDynamicSceneLastErrorFn last_error;
-} SpectraDynamicSceneSceneApi;
-
-typedef struct SpectraDynamicSceneControlsApi {
-    uint64_t struct_size;
-    SpectraDynamicSceneControlActionSpan control_actions;
-    SpectraDynamicSceneControlSceneRevisionFn scene_revision;
-    SpectraDynamicSceneControlActionFn control_action;
-    SpectraDynamicSceneControlSettingUpdateFn control_setting_update;
-    SpectraDynamicSceneControlSnapshotFn control_snapshot;
-} SpectraDynamicSceneControlsApi;
 
 typedef struct SpectraDynamicScenePlugin {
     uint32_t abi_version;
@@ -489,17 +433,26 @@ typedef struct SpectraDynamicScenePlugin {
     const char* controls_panel_title;
     const char* open_action_label;
     const char* open_action_description;
+    const char* base_pbrt_path;
+    double frames_per_second;
     SpectraDynamicSceneOptionSchemaSpan open_options;
-    SpectraDynamicSceneGetApiFn get_api;
+    SpectraDynamicSceneControlActionSpan control_actions;
+    SpectraDynamicSceneOptionSchemaSpan control_settings;
+    SpectraDynamicSceneCreateFn create;
+    SpectraDynamicSceneDestroyFn destroy;
+    SpectraDynamicSceneResetFn reset;
+    SpectraDynamicSceneUpdateFn update;
+    SpectraDynamicSceneDocumentFn document;
+    SpectraDynamicSceneFrameFn frame;
+    SpectraDynamicSceneControlSceneRevisionFn scene_revision;
+    SpectraDynamicSceneControlActionFn control_action;
+    SpectraDynamicSceneControlSettingUpdateFn control_setting_update;
+    SpectraDynamicSceneControlSnapshotFn control_snapshot;
+    SpectraDynamicSceneLastErrorFn last_error;
 } SpectraDynamicScenePlugin;
 
 
 namespace {
-    constexpr char scene_api_name[] = "spectra.dynamic_scene.scene";
-    constexpr char controls_api_name[] = "spectra.dynamic_scene.controls";
-    constexpr std::uint32_t scene_api_version = 1u;
-    constexpr std::uint32_t controls_api_version = 1u;
-
     struct OptionSchemaViews {
         std::vector<std::vector<SpectraDynamicSceneOptionChoice>> choices{};
         std::vector<SpectraDynamicSceneOptionSchema> schemas{};
@@ -509,6 +462,7 @@ namespace {
         OptionSchemaViews open_options{};
         std::vector<OptionSchemaViews> action_options{};
         std::vector<SpectraDynamicSceneControlAction> control_actions{};
+        OptionSchemaViews control_settings{};
     };
 
     struct SceneViewCache {
@@ -528,14 +482,13 @@ namespace {
     struct ProjectStatusCache {
         instant_ngp::spectra_project::ProjectStatus status{};
         std::vector<SpectraDynamicSceneControlMetric> metric_views{};
-        std::vector<const char*> enabled_action_views{};
-        std::vector<SpectraDynamicSceneControlDisabledAction> disabled_action_views{};
+        std::vector<SpectraDynamicSceneControlActionState> action_state_views{};
+        SpectraDynamicSceneControlStatusView status_view{};
     };
 
     struct ProjectSettingCache {
-        std::vector<instant_ngp::spectra_project::ProjectSetting> settings{};
-        std::vector<std::vector<SpectraDynamicSceneOptionChoice>> choice_views{};
-        std::vector<SpectraDynamicSceneControlSetting> setting_views{};
+        std::vector<instant_ngp::spectra_project::ProjectSettingValue> settings{};
+        std::vector<SpectraDynamicSceneControlSettingValue> setting_views{};
     };
 
     struct ProjectLogCache {
@@ -563,6 +516,7 @@ namespace {
         ProjectLogCache log_cache{};
         ProjectImageCache image_cache{};
         ProjectScalarSeriesCache scalar_series_cache{};
+        std::vector<SpectraDynamicSceneControlTypedSpan> control_items{};
     };
 
     std::string global_error{};
@@ -614,78 +568,6 @@ namespace {
         return converted;
     }
 
-    class SpectraHostServicesAdapter final : public instant_ngp::spectra_project::HostServices {
-    public:
-        explicit SpectraHostServicesAdapter(const SpectraDynamicSceneHostServices* host_services) : host_services(host_services) {
-            if (this->host_services == nullptr) throw std::runtime_error("dynamic scene open info host services pointer is null");
-            if (this->host_services->struct_size != sizeof(SpectraDynamicSceneHostServices)) throw std::runtime_error("dynamic scene host services ABI size mismatch");
-            if (this->host_services->request_viewport_voxel_buffer == nullptr) throw std::runtime_error("dynamic scene host services request_viewport_voxel_buffer function is null");
-            if (this->host_services->release_viewport_voxel_buffer == nullptr) throw std::runtime_error("dynamic scene host services release_viewport_voxel_buffer function is null");
-            if (this->host_services->request_volume_buffer == nullptr) throw std::runtime_error("dynamic scene host services request_volume_buffer function is null");
-            if (this->host_services->release_volume_buffer == nullptr) throw std::runtime_error("dynamic scene host services release_volume_buffer function is null");
-            if (this->host_services->last_error == nullptr) throw std::runtime_error("dynamic scene host services last_error function is null");
-        }
-
-        SpectraHostServicesAdapter(const SpectraHostServicesAdapter& other) = delete;
-        SpectraHostServicesAdapter(SpectraHostServicesAdapter&& other) = delete;
-        SpectraHostServicesAdapter& operator=(const SpectraHostServicesAdapter& other) = delete;
-        SpectraHostServicesAdapter& operator=(SpectraHostServicesAdapter&& other) = delete;
-        ~SpectraHostServicesAdapter() noexcept override = default;
-
-        [[nodiscard]] instant_ngp::spectra_project::ViewportVoxelBufferAllocation request_viewport_voxel_buffer(const std::uint64_t byte_size, const std::string_view debug_name) override {
-            const std::string debug_name_text{debug_name};
-            SpectraDynamicSceneViewportVoxelBufferRequest request{
-                .struct_size = sizeof(SpectraDynamicSceneViewportVoxelBufferRequest),
-                .byte_size = byte_size,
-                .debug_name = debug_name_text.c_str(),
-            };
-            SpectraDynamicSceneViewportVoxelBufferAllocation allocation{};
-            const SpectraDynamicSceneResult result = this->host_services->request_viewport_voxel_buffer(this->host_services->user_data, &request, &allocation);
-            if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*this->host_services));
-            if (allocation.struct_size != sizeof(SpectraDynamicSceneViewportVoxelBufferAllocation)) throw std::runtime_error("dynamic scene viewport voxel buffer allocation ABI size mismatch");
-            return instant_ngp::spectra_project::ViewportVoxelBufferAllocation{
-                .resource_id = allocation.resource_id,
-                .byte_size = allocation.byte_size,
-                .handle_kind = gpu_handle_kind_from_abi(allocation.handle_kind),
-                .handle = allocation.handle,
-                .device_identity = device_identity_from_abi(allocation.device_identity),
-            };
-        }
-
-        void release_viewport_voxel_buffer(const std::uint64_t resource_id) override {
-            const SpectraDynamicSceneResult result = this->host_services->release_viewport_voxel_buffer(this->host_services->user_data, resource_id);
-            if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*this->host_services));
-        }
-
-        [[nodiscard]] instant_ngp::spectra_project::VolumeBufferAllocation request_volume_buffer(const std::uint64_t byte_size, const std::string_view debug_name) override {
-            const std::string debug_name_text{debug_name};
-            SpectraDynamicSceneVolumeBufferRequest request{
-                .struct_size = sizeof(SpectraDynamicSceneVolumeBufferRequest),
-                .byte_size = byte_size,
-                .debug_name = debug_name_text.c_str(),
-            };
-            SpectraDynamicSceneVolumeBufferAllocation allocation{};
-            const SpectraDynamicSceneResult result = this->host_services->request_volume_buffer(this->host_services->user_data, &request, &allocation);
-            if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*this->host_services));
-            if (allocation.struct_size != sizeof(SpectraDynamicSceneVolumeBufferAllocation)) throw std::runtime_error("dynamic scene volume buffer allocation ABI size mismatch");
-            return instant_ngp::spectra_project::VolumeBufferAllocation{
-                .resource_id = allocation.resource_id,
-                .byte_size = allocation.byte_size,
-                .handle_kind = gpu_handle_kind_from_abi(allocation.handle_kind),
-                .handle = allocation.handle,
-                .device_identity = device_identity_from_abi(allocation.device_identity),
-            };
-        }
-
-        void release_volume_buffer(const std::uint64_t resource_id) override {
-            const SpectraDynamicSceneResult result = this->host_services->release_volume_buffer(this->host_services->user_data, resource_id);
-            if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*this->host_services));
-        }
-
-    private:
-        const SpectraDynamicSceneHostServices* host_services{};
-    };
-
     [[nodiscard]] OptionSchemaViews make_option_schema_views(const std::vector<instant_ngp::spectra_project::OptionSchema>& schemas) {
         OptionSchemaViews views{};
         views.choices.resize(schemas.size());
@@ -729,6 +611,7 @@ namespace {
                 .options = SpectraDynamicSceneOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
             });
         }
+        views.control_settings = make_option_schema_views(descriptor.control_settings);
         return views;
     }
 
@@ -977,11 +860,9 @@ namespace {
 
     [[nodiscard]] SpectraDynamicSceneControlStatusView make_status_view(ProjectStatusCache& cache) {
         cache.metric_views.clear();
-        cache.enabled_action_views.clear();
-        cache.disabled_action_views.clear();
+        cache.action_state_views.clear();
         cache.metric_views.reserve(cache.status.metrics.size());
-        cache.enabled_action_views.reserve(cache.status.enabled_action_ids.size());
-        cache.disabled_action_views.reserve(cache.status.disabled_actions.size());
+        cache.action_state_views.reserve(cache.status.action_states.size());
         for (const instant_ngp::spectra_project::ProjectMetric& metric : cache.status.metrics) {
             cache.metric_views.push_back(SpectraDynamicSceneControlMetric{
                 .key = metric.key.c_str(),
@@ -994,11 +875,11 @@ namespace {
             });
             copy_array(cache.metric_views.back().color, metric.color);
         }
-        for (const std::string& action_id : cache.status.enabled_action_ids) cache.enabled_action_views.push_back(action_id.c_str());
-        for (const instant_ngp::spectra_project::ProjectDisabledAction& disabled_action : cache.status.disabled_actions) {
-            cache.disabled_action_views.push_back(SpectraDynamicSceneControlDisabledAction{
-                .action_id = disabled_action.action_id.c_str(),
-                .reason = disabled_action.reason.c_str(),
+        for (const instant_ngp::spectra_project::ProjectActionState& action_state : cache.status.action_states) {
+            cache.action_state_views.push_back(SpectraDynamicSceneControlActionState{
+                .action_id = action_state.action_id.c_str(),
+                .enabled = action_state.enabled ? 1u : 0u,
+                .disabled_reason = action_state.disabled_reason.c_str(),
             });
         }
         return SpectraDynamicSceneControlStatusView{
@@ -1007,41 +888,23 @@ namespace {
             .headline = cache.status.headline.c_str(),
             .detail = cache.status.detail.c_str(),
             .metrics = SpectraDynamicSceneControlMetricSpan{.data = cache.metric_views.empty() ? nullptr : cache.metric_views.data(), .count = static_cast<std::uint64_t>(cache.metric_views.size())},
-            .enabled_action_ids = cache.enabled_action_views.empty() ? nullptr : cache.enabled_action_views.data(),
-            .enabled_action_id_count = static_cast<std::uint64_t>(cache.enabled_action_views.size()),
-            .disabled_actions = SpectraDynamicSceneControlDisabledActionSpan{.data = cache.disabled_action_views.empty() ? nullptr : cache.disabled_action_views.data(), .count = static_cast<std::uint64_t>(cache.disabled_action_views.size())},
+            .action_states = SpectraDynamicSceneControlActionStateSpan{.data = cache.action_state_views.empty() ? nullptr : cache.action_state_views.data(), .count = static_cast<std::uint64_t>(cache.action_state_views.size())},
         };
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlSettingView make_setting_view(ProjectSettingCache& cache) {
-        cache.choice_views.clear();
+    [[nodiscard]] SpectraDynamicSceneControlSettingValueSpan make_setting_view(ProjectSettingCache& cache) {
         cache.setting_views.clear();
-        cache.choice_views.resize(cache.settings.size());
         cache.setting_views.reserve(cache.settings.size());
-        for (std::size_t setting_index = 0u; setting_index < cache.settings.size(); ++setting_index) {
-            const instant_ngp::spectra_project::ProjectSetting& setting = cache.settings[setting_index];
-            std::vector<SpectraDynamicSceneOptionChoice>& choices = cache.choice_views[setting_index];
-            choices.reserve(setting.choices.size());
-            for (const instant_ngp::spectra_project::OptionChoice& choice : setting.choices) choices.push_back(SpectraDynamicSceneOptionChoice{.value = choice.value.c_str(), .label = choice.label.c_str()});
-            cache.setting_views.push_back(SpectraDynamicSceneControlSetting{
+        for (const instant_ngp::spectra_project::ProjectSettingValue& setting : cache.settings) {
+            cache.setting_views.push_back(SpectraDynamicSceneControlSettingValue{
                 .key = setting.key.c_str(),
-                .label = setting.label.c_str(),
-                .description = setting.description.c_str(),
-                .kind = static_cast<std::uint32_t>(setting.kind),
                 .value = setting.value.c_str(),
-                .group = setting.group.c_str(),
-                .advanced = setting.advanced ? 1u : 0u,
-                .priority = setting.priority,
-                .choices = SpectraDynamicSceneOptionChoiceSpan{.data = choices.empty() ? nullptr : choices.data(), .count = static_cast<std::uint64_t>(choices.size())},
             });
         }
-        return SpectraDynamicSceneControlSettingView{
-            .struct_size = sizeof(SpectraDynamicSceneControlSettingView),
-            .settings = SpectraDynamicSceneControlSettingSpan{.data = cache.setting_views.empty() ? nullptr : cache.setting_views.data(), .count = static_cast<std::uint64_t>(cache.setting_views.size())},
-        };
+        return SpectraDynamicSceneControlSettingValueSpan{.data = cache.setting_views.empty() ? nullptr : cache.setting_views.data(), .count = static_cast<std::uint64_t>(cache.setting_views.size())};
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlLogView make_log_view(ProjectLogCache& cache) {
+    [[nodiscard]] SpectraDynamicSceneControlLogEntrySpan make_log_view(ProjectLogCache& cache) {
         cache.log_views.clear();
         cache.log_views.reserve(cache.logs.size());
         for (const instant_ngp::spectra_project::ProjectLogEntry& log : cache.logs) {
@@ -1051,13 +914,10 @@ namespace {
                 .message = log.message.c_str(),
             });
         }
-        return SpectraDynamicSceneControlLogView{
-            .struct_size = sizeof(SpectraDynamicSceneControlLogView),
-            .entries = SpectraDynamicSceneControlLogEntrySpan{.data = cache.log_views.empty() ? nullptr : cache.log_views.data(), .count = static_cast<std::uint64_t>(cache.log_views.size())},
-        };
+        return SpectraDynamicSceneControlLogEntrySpan{.data = cache.log_views.empty() ? nullptr : cache.log_views.data(), .count = static_cast<std::uint64_t>(cache.log_views.size())};
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlImageView make_image_view(ProjectImageCache& cache) {
+    [[nodiscard]] SpectraDynamicSceneControlImageSpan make_image_view(ProjectImageCache& cache) {
         cache.image_views.clear();
         cache.image_views.reserve(cache.images.size());
         for (const instant_ngp::spectra_project::ProjectImage& image : cache.images) {
@@ -1072,13 +932,10 @@ namespace {
                 .height = image.height,
             });
         }
-        return SpectraDynamicSceneControlImageView{
-            .struct_size = sizeof(SpectraDynamicSceneControlImageView),
-            .images = SpectraDynamicSceneControlImageSpan{.data = cache.image_views.empty() ? nullptr : cache.image_views.data(), .count = static_cast<std::uint64_t>(cache.image_views.size())},
-        };
+        return SpectraDynamicSceneControlImageSpan{.data = cache.image_views.empty() ? nullptr : cache.image_views.data(), .count = static_cast<std::uint64_t>(cache.image_views.size())};
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlScalarSeriesView make_scalar_series_view(ProjectScalarSeriesCache& cache) {
+    [[nodiscard]] SpectraDynamicSceneControlScalarSeriesSpan make_scalar_series_view(ProjectScalarSeriesCache& cache) {
         cache.sample_views.clear();
         cache.series_views.clear();
         cache.sample_views.resize(cache.series.size());
@@ -1108,10 +965,7 @@ namespace {
             copy_array(view.color, series.color);
             cache.series_views.push_back(view);
         }
-        return SpectraDynamicSceneControlScalarSeriesView{
-            .struct_size = sizeof(SpectraDynamicSceneControlScalarSeriesView),
-            .series = SpectraDynamicSceneControlScalarSeriesSpan{.data = cache.series_views.empty() ? nullptr : cache.series_views.data(), .count = static_cast<std::uint64_t>(cache.series_views.size())},
-        };
+        return SpectraDynamicSceneControlScalarSeriesSpan{.data = cache.series_views.empty() ? nullptr : cache.series_views.data(), .count = static_cast<std::uint64_t>(cache.series_views.size())};
     }
 
     [[nodiscard]] PluginInstance& checked_instance(SpectraDynamicSceneInstance* instance, const std::string_view action) {
@@ -1133,8 +987,52 @@ namespace {
             if (open_info->struct_size != sizeof(SpectraDynamicSceneOpenInfo)) throw std::runtime_error("dynamic scene open info ABI size mismatch");
             static_cast<void>(string_from_abi(open_info->plugin_path, "dynamic scene plugin path", false));
             std::vector<instant_ngp::spectra_project::Option> options = options_from_abi(open_info->options, "dynamic scene open options");
+            if (open_info->host_services == nullptr) throw std::runtime_error("dynamic scene open info host services pointer is null");
+            if (open_info->host_services->struct_size != sizeof(SpectraDynamicSceneHostServices)) throw std::runtime_error("dynamic scene host services ABI size mismatch");
+            if (open_info->host_services->request_gpu_buffer == nullptr) throw std::runtime_error("dynamic scene host services request_gpu_buffer function is null");
+            if (open_info->host_services->release_gpu_buffer == nullptr) throw std::runtime_error("dynamic scene host services release_gpu_buffer function is null");
+            if (open_info->host_services->last_error == nullptr) throw std::runtime_error("dynamic scene host services last_error function is null");
+            const SpectraDynamicSceneHostServices* host_services_view = open_info->host_services;
+            std::shared_ptr<instant_ngp::spectra_project::HostServices> host_services = std::make_shared<instant_ngp::spectra_project::HostServices>();
+            host_services->request_gpu_buffer = [host_services_view](const std::uint32_t kind, const std::uint64_t byte_size, const std::string_view debug_name) {
+                const std::string debug_name_text{debug_name};
+                std::uint32_t abi_kind{};
+                switch (kind) {
+                    case instant_ngp::spectra_project::GpuBufferKindVolumeChannel:
+                        abi_kind = SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VOLUME_CHANNEL;
+                        break;
+                    case instant_ngp::spectra_project::GpuBufferKindViewportVoxelGrid:
+                        abi_kind = SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID;
+                        break;
+                    default:
+                        throw std::runtime_error(std::format("unknown dynamic scene GPU buffer kind {}", kind));
+                }
+                SpectraDynamicSceneGpuBufferRequest request{
+                    .struct_size = sizeof(SpectraDynamicSceneGpuBufferRequest),
+                    .kind = abi_kind,
+                    .byte_size = byte_size,
+                    .debug_name = debug_name_text.c_str(),
+                };
+                SpectraDynamicSceneGpuBufferAllocation allocation{};
+                const SpectraDynamicSceneResult result = host_services_view->request_gpu_buffer(host_services_view->user_data, &request, &allocation);
+                if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*host_services_view));
+                if (allocation.struct_size != sizeof(SpectraDynamicSceneGpuBufferAllocation)) throw std::runtime_error("dynamic scene GPU buffer allocation ABI size mismatch");
+                if (allocation.kind != abi_kind) throw std::runtime_error(std::format("dynamic scene GPU buffer allocation kind {} does not match request kind {}", allocation.kind, abi_kind));
+                return instant_ngp::spectra_project::GpuBufferAllocation{
+                    .resource_id = allocation.resource_id,
+                    .byte_size = allocation.byte_size,
+                    .kind = kind,
+                    .handle_kind = gpu_handle_kind_from_abi(allocation.handle_kind),
+                    .handle = allocation.handle,
+                    .device_identity = device_identity_from_abi(allocation.device_identity),
+                };
+            };
+            host_services->release_gpu_buffer = [host_services_view](const std::uint64_t resource_id) {
+                const SpectraDynamicSceneResult result = host_services_view->release_gpu_buffer(host_services_view->user_data, resource_id);
+                if (result != SPECTRA_DYNAMIC_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*host_services_view));
+            };
             std::unique_ptr<PluginInstance> created = std::make_unique<PluginInstance>();
-            created->project = instant_ngp::spectra_project::InstantNgpSpectraProject::open(options, std::make_shared<SpectraHostServicesAdapter>(open_info->host_services));
+            created->project = instant_ngp::spectra_project::InstantNgpSpectraProject::open(options, std::move(host_services));
             *instance = reinterpret_cast<SpectraDynamicSceneInstance*>(created.release());
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -1274,64 +1172,51 @@ namespace {
             plugin_instance.log_cache.logs = plugin_instance.project.logs();
             plugin_instance.image_cache.images = plugin_instance.project.images();
             plugin_instance.scalar_series_cache.series = plugin_instance.project.scalar_series();
+            const SpectraDynamicSceneControlSettingValueSpan settings = make_setting_view(plugin_instance.setting_cache);
+            plugin_instance.status_cache.status_view = make_status_view(plugin_instance.status_cache);
+            const SpectraDynamicSceneControlLogEntrySpan logs = make_log_view(plugin_instance.log_cache);
+            const SpectraDynamicSceneControlImageSpan images = make_image_view(plugin_instance.image_cache);
+            const SpectraDynamicSceneControlScalarSeriesSpan scalar_series = make_scalar_series_view(plugin_instance.scalar_series_cache);
+            plugin_instance.control_items.clear();
+            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+                .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SETTINGS,
+                .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlSettingValue)),
+                .data = settings.data,
+                .count = settings.count,
+            });
+            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+                .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_STATUS,
+                .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlStatusView)),
+                .data = &plugin_instance.status_cache.status_view,
+                .count = 1u,
+            });
+            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+                .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_LOG,
+                .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlLogEntry)),
+                .data = logs.data,
+                .count = logs.count,
+            });
+            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+                .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_IMAGE,
+                .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlImage)),
+                .data = images.data,
+                .count = images.count,
+            });
+            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+                .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SCALAR_SERIES,
+                .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlScalarSeries)),
+                .data = scalar_series.data,
+                .count = scalar_series.count,
+            });
             *snapshot = SpectraDynamicSceneControlSnapshotView{
                 .struct_size = sizeof(SpectraDynamicSceneControlSnapshotView),
-                .settings = make_setting_view(plugin_instance.setting_cache),
-                .status = make_status_view(plugin_instance.status_cache),
-                .logs = make_log_view(plugin_instance.log_cache),
-                .images = make_image_view(plugin_instance.image_cache),
-                .scalar_series = make_scalar_series_view(plugin_instance.scalar_series_cache),
+                .items = plugin_instance.control_items.data(),
+                .item_count = static_cast<std::uint64_t>(plugin_instance.control_items.size()),
             };
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
             else global_error = error.what();
-            return SPECTRA_DYNAMIC_SCENE_RESULT_ERROR;
-        }
-    }
-
-    [[nodiscard]] const SpectraDynamicSceneSceneApi& scene_api() {
-        static const SpectraDynamicSceneSceneApi api{
-            .struct_size = sizeof(SpectraDynamicSceneSceneApi),
-            .base_pbrt_path = instant_ngp::spectra_project::InstantNgpSpectraProject::descriptor().base_pbrt_path.c_str(),
-            .frames_per_second = instant_ngp::spectra_project::InstantNgpSpectraProject::descriptor().frames_per_second,
-            .create = scene_create,
-            .destroy = scene_destroy,
-            .reset = scene_reset,
-            .update = scene_update,
-            .document = scene_document,
-            .frame = scene_frame,
-            .last_error = last_error,
-        };
-        return api;
-    }
-
-    [[nodiscard]] const SpectraDynamicSceneControlsApi& controls_api() {
-        const DescriptorViews& views = descriptor_views();
-        static const SpectraDynamicSceneControlsApi api{
-            .struct_size = sizeof(SpectraDynamicSceneControlsApi),
-            .control_actions = SpectraDynamicSceneControlActionSpan{.data = views.control_actions.empty() ? nullptr : views.control_actions.data(), .count = static_cast<std::uint64_t>(views.control_actions.size())},
-            .scene_revision = scene_revision,
-            .control_action = control_action,
-            .control_setting_update = control_setting_update,
-            .control_snapshot = control_snapshot,
-        };
-        return api;
-    }
-
-    [[nodiscard]] SpectraDynamicSceneResult get_api(const char* api_name, const std::uint32_t api_version, const void** api) noexcept {
-        try {
-            if (api == nullptr) {
-                global_error = "get_api output pointer is null";
-                return SPECTRA_DYNAMIC_SCENE_RESULT_ERROR;
-            }
-            *api = nullptr;
-            const std::string name = string_from_abi(api_name, "api name", false);
-            if (name == scene_api_name && api_version == scene_api_version) *api = &scene_api();
-            else if (name == controls_api_name && api_version == controls_api_version) *api = &controls_api();
-            return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
-        } catch (const std::exception& error) {
-            global_error = error.what();
             return SPECTRA_DYNAMIC_SCENE_RESULT_ERROR;
         }
     }
@@ -1347,8 +1232,22 @@ namespace {
             .controls_panel_title = descriptor.controls_panel_title.c_str(),
             .open_action_label = descriptor.open_action_label.c_str(),
             .open_action_description = descriptor.open_action_description.c_str(),
+            .base_pbrt_path = descriptor.base_pbrt_path.c_str(),
+            .frames_per_second = descriptor.frames_per_second,
             .open_options = SpectraDynamicSceneOptionSchemaSpan{.data = views.open_options.schemas.empty() ? nullptr : views.open_options.schemas.data(), .count = static_cast<std::uint64_t>(views.open_options.schemas.size())},
-            .get_api = get_api,
+            .control_actions = SpectraDynamicSceneControlActionSpan{.data = views.control_actions.empty() ? nullptr : views.control_actions.data(), .count = static_cast<std::uint64_t>(views.control_actions.size())},
+            .control_settings = SpectraDynamicSceneOptionSchemaSpan{.data = views.control_settings.schemas.empty() ? nullptr : views.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(views.control_settings.schemas.size())},
+            .create = scene_create,
+            .destroy = scene_destroy,
+            .reset = scene_reset,
+            .update = scene_update,
+            .document = scene_document,
+            .frame = scene_frame,
+            .scene_revision = scene_revision,
+            .control_action = control_action,
+            .control_setting_update = control_setting_update,
+            .control_snapshot = control_snapshot,
+            .last_error = last_error,
         };
         return value;
     }

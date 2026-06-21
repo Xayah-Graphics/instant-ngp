@@ -49,35 +49,21 @@ namespace instant_ngp::spectra_project {
         std::uint32_t device_node_mask{};
     };
 
-    struct ViewportVoxelBufferAllocation {
+    inline constexpr std::uint32_t GpuBufferKindVolumeChannel = 0u;
+    inline constexpr std::uint32_t GpuBufferKindViewportVoxelGrid = 1u;
+
+    struct GpuBufferAllocation {
         std::uint64_t resource_id{};
         std::uint64_t byte_size{};
+        std::uint32_t kind{};
         GpuResourceHandleKind handle_kind{GpuResourceHandleKind::OpaqueWin32};
         std::uintptr_t handle{};
         GpuDeviceIdentity device_identity{};
     };
 
-    struct VolumeBufferAllocation {
-        std::uint64_t resource_id{};
-        std::uint64_t byte_size{};
-        GpuResourceHandleKind handle_kind{GpuResourceHandleKind::OpaqueWin32};
-        std::uintptr_t handle{};
-        GpuDeviceIdentity device_identity{};
-    };
-
-    class HostServices {
-    public:
-        HostServices() = default;
-        HostServices(const HostServices& other) = delete;
-        HostServices(HostServices&& other) = delete;
-        HostServices& operator=(const HostServices& other) = delete;
-        HostServices& operator=(HostServices&& other) = delete;
-        virtual ~HostServices() noexcept = default;
-
-        [[nodiscard]] virtual ViewportVoxelBufferAllocation request_viewport_voxel_buffer(std::uint64_t byte_size, std::string_view debug_name) = 0;
-        virtual void release_viewport_voxel_buffer(std::uint64_t resource_id) = 0;
-        [[nodiscard]] virtual VolumeBufferAllocation request_volume_buffer(std::uint64_t byte_size, std::string_view debug_name) = 0;
-        virtual void release_volume_buffer(std::uint64_t resource_id) = 0;
+    struct HostServices {
+        std::move_only_function<GpuBufferAllocation(std::uint32_t, std::uint64_t, std::string_view)> request_gpu_buffer{};
+        std::move_only_function<void(std::uint64_t)> release_gpu_buffer{};
     };
 
     inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
@@ -104,16 +90,9 @@ namespace instant_ngp::spectra_project {
         std::vector<OptionSchema> options{};
     };
 
-    struct ProjectSetting {
+    struct ProjectSettingValue {
         std::string key{};
-        std::string label{};
-        std::string description{};
-        OptionKind kind{OptionKind::Bool};
         std::string value{};
-        std::string group{};
-        bool advanced{};
-        std::int32_t priority{};
-        std::vector<OptionChoice> choices{};
     };
 
     struct ProjectMetric {
@@ -126,9 +105,10 @@ namespace instant_ngp::spectra_project {
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
 
-    struct ProjectDisabledAction {
+    struct ProjectActionState {
         std::string action_id{};
-        std::string reason{};
+        bool enabled{};
+        std::string disabled_reason{};
     };
 
     struct ProjectStatus {
@@ -136,8 +116,7 @@ namespace instant_ngp::spectra_project {
         std::string headline{};
         std::string detail{};
         std::vector<ProjectMetric> metrics{};
-        std::vector<std::string> enabled_action_ids{};
-        std::vector<ProjectDisabledAction> disabled_actions{};
+        std::vector<ProjectActionState> action_states{};
     };
 
     struct UpdateInfo {
@@ -372,6 +351,7 @@ namespace instant_ngp::spectra_project {
         double frames_per_second{};
         std::vector<OptionSchema> open_options{};
         std::vector<ProjectAction> control_actions{};
+        std::vector<OptionSchema> control_settings{};
     };
 
     class InstantNgpSpectraProject final {
@@ -390,7 +370,7 @@ namespace instant_ngp::spectra_project {
 
         void update(const UpdateInfo& update);
         void execute_action(std::string_view action_id, std::span<const Option> options);
-        [[nodiscard]] std::vector<ProjectSetting> settings() const;
+        [[nodiscard]] std::vector<ProjectSettingValue> settings() const;
         void update_setting(std::string_view key, std::string_view value);
 
         [[nodiscard]] std::uint64_t scene_revision() const;
