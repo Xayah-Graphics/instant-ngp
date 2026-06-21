@@ -163,12 +163,12 @@ namespace instant_ngp::spectra_project {
                     option("dataset", "Dataset", "Dataset root directory.", OptionKind::DirectoryPath, true, {}, {}, "Dataset", false, 0),
                     option("format", "Format", "Dataset provider.", OptionKind::Choice, false, "auto", {choice("auto"), choice("nerf-synthetic"), choice("dd-nerf-dataset")}, "Dataset", false, 10),
                     option("frame_sets", "Frame Sets", "Comma-separated frame sets: train, validation, test.", OptionKind::Text, false, "train", {}, "Dataset", false, 20),
-                    option("scene_scale", "Scene Scale", "Dataset scene scale passed to the dataset loader.", OptionKind::Float, false, "0.33", {}, "Advanced", true, 30),
-                    option("frame_stride", "Frame Stride", "Only every Nth frame is visualized.", OptionKind::UnsignedInteger, false, "1", {}, "Advanced", true, 40),
-                    option("max_frames", "Max Frames", "0 means no frame count limit.", OptionKind::UnsignedInteger, false, "0", {}, "Advanced", true, 50),
-                    option("visual_far", "Visual Far", "Camera frustum visualization far plane.", OptionKind::Float, false, "0.25", {}, "Camera Visuals", true, 60),
-                    option("image_alpha", "Image Alpha", "Camera image plane opacity in [0, 1].", OptionKind::Float, false, "0.35", {}, "Camera Visuals", true, 70),
-                    option("frustum_width", "Frustum Width", "Screen-space frustum line width.", OptionKind::Float, false, "1.5", {}, "Camera Visuals", true, 80),
+                    option("scene_scale", "Scene Scale", "Dataset scene scale passed to the dataset loader.", OptionKind::Float, false, "0.33", {}, "Dataset", false, 30),
+                    option("frame_stride", "Frame Stride", "Only every Nth frame is visualized.", OptionKind::UnsignedInteger, false, "1", {}, "Dataset", false, 40),
+                    option("max_frames", "Max Frames", "0 means no frame count limit.", OptionKind::UnsignedInteger, false, "0", {}, "Dataset", false, 50),
+                    option("visual_far", "Visual Far", "Camera frustum visualization far plane.", OptionKind::Float, false, "0.25", {}, "Camera Visuals", false, 60),
+                    option("image_alpha", "Image Alpha", "Camera image plane opacity in [0, 1].", OptionKind::Float, false, "0.35", {}, "Camera Visuals", false, 70),
+                    option("frustum_width", "Frustum Width", "Screen-space frustum line width.", OptionKind::Float, false, "1.5", {}, "Camera Visuals", false, 80),
                 },
                 .control_actions = {
                     action(
@@ -179,7 +179,7 @@ namespace instant_ngp::spectra_project {
                             option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for optimization.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}, "Run", false, 0),
                             option(action_option_target_steps_key, "Target Steps", "Optimization stops when this global step is reached.", OptionKind::UnsignedInteger, false, "200000", {}, "Run", false, 10),
                             option(action_option_steps_per_update_key, "Steps Per Update", "Optimization iterations executed during each GUI project update.", OptionKind::UnsignedInteger, false, "1", {}, "Run", false, 20),
-                            option(action_option_log_every_key, "Log Every", "Optimization step interval for progress log entries.", OptionKind::UnsignedInteger, false, "100", {}, "Run", true, 30),
+                            option(action_option_log_every_key, "Log Every", "Optimization step interval for progress log entries.", OptionKind::UnsignedInteger, false, "100", {}, "Run", false, 30),
                         },
                         ControlActionGroupRun,
                         0,
@@ -192,7 +192,7 @@ namespace instant_ngp::spectra_project {
                         {
                             option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for preview rendering.", OptionKind::Choice, false, "train", {choice("train"), choice("validation"), choice("test")}, "Preview", false, 0),
                             option(action_option_image_index_key, "Image Index", "Zero-based image index in the selected frame set.", OptionKind::UnsignedInteger, false, "0", {}, "Preview", false, 10),
-                            option(action_option_refresh_acceleration_key, "Refresh Acceleration", "Rebuild the density-grid acceleration before rendering.", OptionKind::Bool, false, "false", {}, "Preview", true, 20),
+                            option(action_option_refresh_acceleration_key, "Refresh Acceleration", "Rebuild the density-grid acceleration before rendering.", OptionKind::Bool, false, "false", {}, "Preview", false, 20),
                         },
                         ControlActionGroupPreview,
                         0,
@@ -1436,21 +1436,21 @@ namespace instant_ngp::spectra_project {
         add_metric(status, "dataset", "Dataset", state.options.dataset_path.filename().string(), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 0);
         add_metric(status, "format", "Format", state.options.format, ControlPlacementPanelDetail, 10);
         add_metric(status, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 10);
-        add_metric(status, "step", "Step", std::format("{}", current_training_step(state)), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 0, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
-        add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps), ControlPlacementPanelDetail, 20);
-        add_metric(status, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden", ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20);
-        add_metric(status, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30);
-        add_metric(status, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 35);
+        add_metric(status, "step", "Step", std::format("{}", current_training_step(state)), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+        add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps), ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30);
+        add_metric(status, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden", ControlPlacementPanelDetail, 20);
+        add_metric(status, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision), ControlPlacementPanelDetail, 30);
+        add_metric(status, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision), ControlPlacementPanelDetail, 35);
         add_metric(status, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
         add_metric(status, "color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None");
         if (state.density_volume.has_value()) add_metric(status, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
         if (state.exported_density_optical_thickness_step > 0.0f) add_metric(status, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
         if (state.exported_volume_density_scale > 0.0f) add_metric(status, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));
-        add_metric(status, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden", ControlPlacementPanelSummary | ControlPlacementPanelDetail, 40);
+        add_metric(status, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden", ControlPlacementPanelDetail, 40);
         if (state.latest_stats.has_value()) {
-            add_metric(status, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 10, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
-            add_metric(status, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 20, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
-            add_metric(status, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 30, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
+            add_metric(status, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 40, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
+            add_metric(status, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 50, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
+            add_metric(status, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 60, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
             add_metric(status, "occupancy_revision", "Occupancy Revision", std::format("{}", state.exported_occupancy_revision));
         }
         if (state.latest_preview.has_value()) {
@@ -1458,7 +1458,7 @@ namespace instant_ngp::spectra_project {
             add_metric(status, "preview_image", "Preview Image", std::format("{}", state.latest_preview->image_index));
             add_metric(status, "preview_step", "Preview Step", std::format("{}", state.latest_preview->step));
             add_metric(status, "preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse));
-            add_metric(status, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 50, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+            add_metric(status, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, 70, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
