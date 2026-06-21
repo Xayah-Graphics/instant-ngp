@@ -2,7 +2,7 @@ export module instant_ngp.spectra_project;
 
 import std;
 
-namespace instant_ngp::spectra_project {
+export namespace instant_ngp::spectra_project {
     enum class OptionKind : std::uint32_t {
         Text = 0,
         DirectoryPath = 1,
