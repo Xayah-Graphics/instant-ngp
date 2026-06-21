@@ -3,7 +3,7 @@ export module instant_ngp.spectra_project;
 import std;
 
 namespace instant_ngp::spectra_project {
-    export enum class OptionKind : std::uint32_t {
+    enum class OptionKind : std::uint32_t {
         Text = 0,
         DirectoryPath = 1,
         FilePath = 2,
@@ -13,12 +13,12 @@ namespace instant_ngp::spectra_project {
         UnsignedInteger = 6,
     };
 
-    export struct OptionChoice {
+    struct OptionChoice {
         std::string value{};
         std::string label{};
     };
 
-    export struct OptionSchema {
+    struct OptionSchema {
         std::string key{};
         std::string label{};
         std::string description{};
@@ -31,17 +31,17 @@ namespace instant_ngp::spectra_project {
         std::vector<OptionChoice> choices{};
     };
 
-    export struct Option {
+    struct Option {
         std::string key{};
         std::string value{};
     };
 
-    export enum class GpuResourceHandleKind : std::uint32_t {
+    enum class GpuResourceHandleKind : std::uint32_t {
         OpaqueWin32 = 1u,
         OpaqueFileDescriptor = 2u,
     };
 
-    export struct GpuDeviceIdentity {
+    struct GpuDeviceIdentity {
         std::uint32_t vendor_id{};
         std::uint32_t device_id{};
         std::array<std::uint8_t, 16u> device_uuid{};
@@ -49,7 +49,7 @@ namespace instant_ngp::spectra_project {
         std::uint32_t device_node_mask{};
     };
 
-    export struct ViewportVoxelBufferAllocation {
+    struct ViewportVoxelBufferAllocation {
         std::uint64_t resource_id{};
         std::uint64_t byte_size{};
         GpuResourceHandleKind handle_kind{GpuResourceHandleKind::OpaqueWin32};
@@ -57,7 +57,7 @@ namespace instant_ngp::spectra_project {
         GpuDeviceIdentity device_identity{};
     };
 
-    export struct VolumeBufferAllocation {
+    struct VolumeBufferAllocation {
         std::uint64_t resource_id{};
         std::uint64_t byte_size{};
         GpuResourceHandleKind handle_kind{GpuResourceHandleKind::OpaqueWin32};
@@ -65,7 +65,7 @@ namespace instant_ngp::spectra_project {
         GpuDeviceIdentity device_identity{};
     };
 
-    export class HostServices {
+    class HostServices {
     public:
         HostServices() = default;
         HostServices(const HostServices& other) = delete;
@@ -80,21 +80,21 @@ namespace instant_ngp::spectra_project {
         virtual void release_volume_buffer(std::uint64_t resource_id) = 0;
     };
 
-    export inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
-    export inline constexpr std::uint32_t ControlPlacementPanelSummary = 1u << 1u;
-    export inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
-    export inline constexpr std::uint32_t ControlActionGroupRun = 0u;
-    export inline constexpr std::uint32_t ControlActionGroupPreview = 1u;
-    export inline constexpr std::uint32_t ControlActionGroupDebug = 2u;
-    export inline constexpr std::uint32_t ControlActionGroupUtility = 3u;
-    export inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
-    export inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
-    export inline constexpr std::uint32_t ControlActionStyleDanger = 2u;
-    export inline constexpr std::uint32_t ControlTimelineModeLive = 0u;
-    export inline constexpr std::uint32_t ControlTimelineModeRecord = 1u;
-    export inline constexpr std::uint32_t ControlTimelineModePlayback = 2u;
+    inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
+    inline constexpr std::uint32_t ControlPlacementPanelSummary = 1u << 1u;
+    inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
+    inline constexpr std::uint32_t ControlActionGroupRun = 0u;
+    inline constexpr std::uint32_t ControlActionGroupPreview = 1u;
+    inline constexpr std::uint32_t ControlActionGroupDebug = 2u;
+    inline constexpr std::uint32_t ControlActionGroupUtility = 3u;
+    inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
+    inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
+    inline constexpr std::uint32_t ControlActionStyleDanger = 2u;
+    inline constexpr std::uint32_t ControlTimelineModeLive = 0u;
+    inline constexpr std::uint32_t ControlTimelineModeRecord = 1u;
+    inline constexpr std::uint32_t ControlTimelineModePlayback = 2u;
 
-    export struct ProjectAction {
+    struct ProjectAction {
         std::string id{};
         std::string label{};
         std::string description{};
@@ -104,7 +104,7 @@ namespace instant_ngp::spectra_project {
         std::vector<OptionSchema> options{};
     };
 
-    export struct ProjectSetting {
+    struct ProjectSetting {
         std::string key{};
         std::string label{};
         std::string description{};
@@ -116,7 +116,7 @@ namespace instant_ngp::spectra_project {
         std::vector<OptionChoice> choices{};
     };
 
-    export struct ProjectMetric {
+    struct ProjectMetric {
         std::string key{};
         std::string label{};
         std::string value{};
@@ -126,12 +126,12 @@ namespace instant_ngp::spectra_project {
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
 
-    export struct ProjectDisabledAction {
+    struct ProjectDisabledAction {
         std::string action_id{};
         std::string reason{};
     };
 
-    export struct ProjectStatus {
+    struct ProjectStatus {
         std::string phase{};
         std::string headline{};
         std::string detail{};
@@ -140,7 +140,7 @@ namespace instant_ngp::spectra_project {
         std::vector<ProjectDisabledAction> disabled_actions{};
     };
 
-    export struct ProjectUpdateInfo {
+    struct UpdateInfo {
         double wall_delta_seconds{};
         double scene_delta_seconds{};
         double time_seconds{};
@@ -149,13 +149,13 @@ namespace instant_ngp::spectra_project {
         bool timeline_playing{};
     };
 
-    export struct ProjectLogEntry {
+    struct ProjectLogEntry {
         std::uint64_t sequence{};
         std::string level{};
         std::string message{};
     };
 
-    export struct ProjectImage {
+    struct ProjectImage {
         std::string id{};
         std::string label{};
         std::string description{};
@@ -165,13 +165,13 @@ namespace instant_ngp::spectra_project {
         std::vector<std::uint8_t> rgba8{};
     };
 
-    export struct ProjectScalarSample {
+    struct ProjectScalarSample {
         std::uint64_t step{};
         double time_seconds{};
         double value{};
     };
 
-    export struct ProjectScalarSeries {
+    struct ProjectScalarSeries {
         std::string id{};
         std::string label{};
         std::string description{};
@@ -183,13 +183,13 @@ namespace instant_ngp::spectra_project {
         std::span<const ProjectScalarSample> samples{};
     };
 
-    export struct Transform {
+    struct Transform {
         std::array<float, 3u> position{};
         std::array<float, 4u> rotation{0.0f, 0.0f, 0.0f, 1.0f};
         std::array<float, 3u> scale{1.0f, 1.0f, 1.0f};
     };
 
-    export enum class SceneEntityKind : std::uint32_t {
+    enum class SceneEntityKind : std::uint32_t {
         Mesh = 0u,
         Sphere = 1u,
         PointCloud = 2u,
@@ -198,17 +198,17 @@ namespace instant_ngp::spectra_project {
         Light = 5u,
     };
 
-    export struct SceneEntityRef {
+    struct SceneEntityRef {
         SceneEntityKind kind{SceneEntityKind::Mesh};
         std::string name{};
     };
 
-    export enum class CameraProjection : std::uint32_t {
+    enum class CameraProjection : std::uint32_t {
         Perspective = 0,
         Pinhole = 1,
     };
 
-    export struct Camera {
+    struct Camera {
         std::string name{};
         std::string local_coordinate_system{};
         Transform transform{};
@@ -226,7 +226,7 @@ namespace instant_ngp::spectra_project {
         float far_plane{};
     };
 
-    export struct Material {
+    struct Material {
         std::string name{};
         std::string model{"volume"};
         std::string alpha_mode{"blend"};
@@ -240,7 +240,7 @@ namespace instant_ngp::spectra_project {
         float volume_temperature_scale{1.0f};
     };
 
-    export struct Light {
+    struct Light {
         std::string name{};
         std::string kind{"environment"};
         Transform transform{};
@@ -249,22 +249,22 @@ namespace instant_ngp::spectra_project {
         float cone_angle_degrees{30.0f};
     };
 
-    export enum class VolumeChannelSourceKind : std::uint32_t {
+    enum class VolumeChannelSourceKind : std::uint32_t {
         Values = 0u,
         ExternalGpuBuffer = 1u,
     };
 
-    export enum class VolumeChannelIndexEncoding : std::uint32_t {
+    enum class VolumeChannelIndexEncoding : std::uint32_t {
         Linear = 0u,
         Morton3D = 1u,
     };
 
-    export enum class VolumeChannelFormat : std::uint32_t {
+    enum class VolumeChannelFormat : std::uint32_t {
         Float32 = 0u,
         Float32x3 = 1u,
     };
 
-    export struct VolumeChannel {
+    struct VolumeChannel {
         std::string name{};
         std::array<std::uint32_t, 3u> dimensions{};
         std::vector<float> values{};
@@ -277,7 +277,7 @@ namespace instant_ngp::spectra_project {
         std::uint64_t revision{};
     };
 
-    export struct VolumeGrid {
+    struct VolumeGrid {
         std::string name{};
         std::array<std::uint32_t, 3u> dimensions{};
         std::array<float, 3u> origin{};
@@ -286,7 +286,7 @@ namespace instant_ngp::spectra_project {
         std::string material_name{};
     };
 
-    export struct ViewportCameraVisualImage {
+    struct ViewportCameraVisualImage {
         const std::uint8_t* rgba8{};
         std::uint64_t rgba8_size{};
         std::uint64_t revision{};
@@ -295,7 +295,7 @@ namespace instant_ngp::spectra_project {
         std::array<float, 4u> tint{};
     };
 
-    export struct ViewportCameraVisual {
+    struct ViewportCameraVisual {
         std::string name{};
         SceneEntityRef owner{.kind = SceneEntityKind::Camera};
         std::array<float, 4u> color{};
@@ -307,12 +307,12 @@ namespace instant_ngp::spectra_project {
         std::optional<ViewportCameraVisualImage> image{};
     };
 
-    export struct ViewportSegment {
+    struct ViewportSegment {
         std::array<float, 3u> start{};
         std::array<float, 3u> end{};
     };
 
-    export struct ViewportSegmentSet {
+    struct ViewportSegmentSet {
         std::string name{};
         SceneEntityRef owner{};
         std::vector<ViewportSegment> segments{};
@@ -324,17 +324,17 @@ namespace instant_ngp::spectra_project {
         Transform transform{};
     };
 
-    export enum class ViewportVoxelGridSourceKind : std::uint32_t {
+    enum class ViewportVoxelGridSourceKind : std::uint32_t {
         IndexList = 0u,
         Bitfield = 1u,
     };
 
-    export enum class ViewportVoxelGridIndexEncoding : std::uint32_t {
+    enum class ViewportVoxelGridIndexEncoding : std::uint32_t {
         Linear = 0u,
         Morton3D = 1u,
     };
 
-    export struct ViewportVoxelGrid {
+    struct ViewportVoxelGrid {
         std::string name{};
         SceneEntityRef owner{};
         std::array<std::uint32_t, 3u> dimensions{};
@@ -352,13 +352,13 @@ namespace instant_ngp::spectra_project {
         std::uint64_t revision{};
     };
 
-    export struct DebugAttachmentSet {
+    struct DebugAttachmentSet {
         std::vector<ViewportSegmentSet> viewport_segment_sets{};
         std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
         std::vector<ViewportCameraVisual> viewport_camera_visuals{};
     };
 
-    export struct Document {
+    struct Document {
         std::string default_coordinate_system{};
         std::string active_camera_name{};
         std::vector<Camera> cameras{};
@@ -368,19 +368,19 @@ namespace instant_ngp::spectra_project {
         DebugAttachmentSet debug_attachments{};
     };
 
-    export struct FrameInfo {
+    struct FrameInfo {
         double delta_seconds{};
         double time_seconds{};
         std::uint64_t frame_index{};
     };
 
-    export struct Frame {
+    struct Frame {
         std::vector<Camera> cameras{};
         std::vector<VolumeGrid> volumes{};
         DebugAttachmentSet debug_attachments{};
     };
 
-    export struct Descriptor {
+    struct Descriptor {
         std::string id{};
         std::string title{};
         std::string controls_panel_title{};
@@ -392,7 +392,7 @@ namespace instant_ngp::spectra_project {
         std::vector<ProjectAction> control_actions{};
     };
 
-    export class InstantNgpSpectraProject final {
+    class InstantNgpSpectraProject final {
     public:
         struct State;
 
@@ -406,7 +406,7 @@ namespace instant_ngp::spectra_project {
         [[nodiscard]] static const Descriptor& descriptor();
         [[nodiscard]] static InstantNgpSpectraProject open(std::span<const Option> options, std::shared_ptr<HostServices> host_services);
 
-        void update(const ProjectUpdateInfo& update);
+        void update(const UpdateInfo& update);
         void execute_action(std::string_view action_id, std::span<const Option> options);
         [[nodiscard]] std::vector<ProjectSetting> settings() const;
         void update_setting(std::string_view key, std::string_view value);

@@ -1212,7 +1212,7 @@ namespace instant_ngp::spectra_project {
         return InstantNgpSpectraProject{std::move(created)};
     }
 
-    void InstantNgpSpectraProject::update(const ProjectUpdateInfo& update) {
+    void InstantNgpSpectraProject::update(const UpdateInfo& update) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
