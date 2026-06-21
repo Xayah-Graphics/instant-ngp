@@ -23,13 +23,6 @@ typedef struct SpectraDynamicSceneOptionSpan {
     uint64_t count;
 } SpectraDynamicSceneOptionSpan;
 
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_TEXT = 0u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_DIRECTORY_PATH = 1u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_FILE_PATH = 2u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_CHOICE = 3u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_BOOL = 4u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_FLOAT = 5u;
-static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_UNSIGNED_INTEGER = 6u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VOLUME_CHANNEL = 0u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID = 1u;
 
@@ -88,11 +81,6 @@ typedef struct SpectraDynamicSceneControlSettingValue {
     const char* value;
 } SpectraDynamicSceneControlSettingValue;
 
-typedef struct SpectraDynamicSceneControlSettingValueSpan {
-    const SpectraDynamicSceneControlSettingValue* data;
-    uint64_t count;
-} SpectraDynamicSceneControlSettingValueSpan;
-
 typedef struct SpectraDynamicSceneControlMetric {
     const char* key;
     const char* label;
@@ -134,11 +122,6 @@ typedef struct SpectraDynamicSceneControlLogEntry {
     const char* message;
 } SpectraDynamicSceneControlLogEntry;
 
-typedef struct SpectraDynamicSceneControlLogEntrySpan {
-    const SpectraDynamicSceneControlLogEntry* data;
-    uint64_t count;
-} SpectraDynamicSceneControlLogEntrySpan;
-
 typedef struct SpectraDynamicSceneControlImage {
     const char* id;
     const char* label;
@@ -149,11 +132,6 @@ typedef struct SpectraDynamicSceneControlImage {
     uint32_t width;
     uint32_t height;
 } SpectraDynamicSceneControlImage;
-
-typedef struct SpectraDynamicSceneControlImageSpan {
-    const SpectraDynamicSceneControlImage* data;
-    uint64_t count;
-} SpectraDynamicSceneControlImageSpan;
 
 typedef struct SpectraDynamicSceneControlScalarSample {
     uint64_t step;
@@ -177,11 +155,6 @@ typedef struct SpectraDynamicSceneControlScalarSeries {
     uint64_t revision;
     SpectraDynamicSceneControlScalarSampleSpan samples;
 } SpectraDynamicSceneControlScalarSeries;
-
-typedef struct SpectraDynamicSceneControlScalarSeriesSpan {
-    const SpectraDynamicSceneControlScalarSeries* data;
-    uint64_t count;
-} SpectraDynamicSceneControlScalarSeriesSpan;
 
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SETTINGS = 0u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_STATUS = 1u;
@@ -892,7 +865,7 @@ namespace {
         };
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlSettingValueSpan make_setting_view(ProjectSettingCache& cache) {
+    [[nodiscard]] std::span<const SpectraDynamicSceneControlSettingValue> make_setting_view(ProjectSettingCache& cache) {
         cache.setting_views.clear();
         cache.setting_views.reserve(cache.settings.size());
         for (const instant_ngp::spectra_project::ProjectSettingValue& setting : cache.settings) {
@@ -901,10 +874,10 @@ namespace {
                 .value = setting.value.c_str(),
             });
         }
-        return SpectraDynamicSceneControlSettingValueSpan{.data = cache.setting_views.empty() ? nullptr : cache.setting_views.data(), .count = static_cast<std::uint64_t>(cache.setting_views.size())};
+        return cache.setting_views;
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlLogEntrySpan make_log_view(ProjectLogCache& cache) {
+    [[nodiscard]] std::span<const SpectraDynamicSceneControlLogEntry> make_log_view(ProjectLogCache& cache) {
         cache.log_views.clear();
         cache.log_views.reserve(cache.logs.size());
         for (const instant_ngp::spectra_project::ProjectLogEntry& log : cache.logs) {
@@ -914,10 +887,10 @@ namespace {
                 .message = log.message.c_str(),
             });
         }
-        return SpectraDynamicSceneControlLogEntrySpan{.data = cache.log_views.empty() ? nullptr : cache.log_views.data(), .count = static_cast<std::uint64_t>(cache.log_views.size())};
+        return cache.log_views;
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlImageSpan make_image_view(ProjectImageCache& cache) {
+    [[nodiscard]] std::span<const SpectraDynamicSceneControlImage> make_image_view(ProjectImageCache& cache) {
         cache.image_views.clear();
         cache.image_views.reserve(cache.images.size());
         for (const instant_ngp::spectra_project::ProjectImage& image : cache.images) {
@@ -932,10 +905,10 @@ namespace {
                 .height = image.height,
             });
         }
-        return SpectraDynamicSceneControlImageSpan{.data = cache.image_views.empty() ? nullptr : cache.image_views.data(), .count = static_cast<std::uint64_t>(cache.image_views.size())};
+        return cache.image_views;
     }
 
-    [[nodiscard]] SpectraDynamicSceneControlScalarSeriesSpan make_scalar_series_view(ProjectScalarSeriesCache& cache) {
+    [[nodiscard]] std::span<const SpectraDynamicSceneControlScalarSeries> make_scalar_series_view(ProjectScalarSeriesCache& cache) {
         cache.sample_views.clear();
         cache.series_views.clear();
         cache.sample_views.resize(cache.series.size());
@@ -965,7 +938,7 @@ namespace {
             copy_array(view.color, series.color);
             cache.series_views.push_back(view);
         }
-        return SpectraDynamicSceneControlScalarSeriesSpan{.data = cache.series_views.empty() ? nullptr : cache.series_views.data(), .count = static_cast<std::uint64_t>(cache.series_views.size())};
+        return cache.series_views;
     }
 
     [[nodiscard]] PluginInstance& checked_instance(SpectraDynamicSceneInstance* instance, const std::string_view action) {
@@ -1136,8 +1109,8 @@ namespace {
         try {
             PluginInstance& plugin_instance = checked_instance(instance, "control_action");
             plugin_instance.last_error.clear();
-            const std::string action = string_from_abi(action_id, "project action id", false);
-            const std::vector<instant_ngp::spectra_project::Option> converted_options = options_from_abi(options, "project action options");
+            const std::string action = string_from_abi(action_id, "control action id", false);
+            const std::vector<instant_ngp::spectra_project::Option> converted_options = options_from_abi(options, "control action options");
             plugin_instance.project.execute_action(action, converted_options);
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -1151,8 +1124,8 @@ namespace {
         try {
             PluginInstance& plugin_instance = checked_instance(instance, "control_setting_update");
             plugin_instance.last_error.clear();
-            const std::string setting_key = string_from_abi(key, "project setting key", false);
-            const std::string setting_value = string_from_abi(value, "project setting value", true);
+            const std::string setting_key = string_from_abi(key, "control setting key", false);
+            const std::string setting_value = string_from_abi(value, "control setting value", true);
             plugin_instance.project.update_setting(setting_key, setting_value);
             return SPECTRA_DYNAMIC_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -1172,17 +1145,17 @@ namespace {
             plugin_instance.log_cache.logs = plugin_instance.project.logs();
             plugin_instance.image_cache.images = plugin_instance.project.images();
             plugin_instance.scalar_series_cache.series = plugin_instance.project.scalar_series();
-            const SpectraDynamicSceneControlSettingValueSpan settings = make_setting_view(plugin_instance.setting_cache);
+            const std::span<const SpectraDynamicSceneControlSettingValue> settings = make_setting_view(plugin_instance.setting_cache);
             plugin_instance.status_cache.status_view = make_status_view(plugin_instance.status_cache);
-            const SpectraDynamicSceneControlLogEntrySpan logs = make_log_view(plugin_instance.log_cache);
-            const SpectraDynamicSceneControlImageSpan images = make_image_view(plugin_instance.image_cache);
-            const SpectraDynamicSceneControlScalarSeriesSpan scalar_series = make_scalar_series_view(plugin_instance.scalar_series_cache);
+            const std::span<const SpectraDynamicSceneControlLogEntry> logs = make_log_view(plugin_instance.log_cache);
+            const std::span<const SpectraDynamicSceneControlImage> images = make_image_view(plugin_instance.image_cache);
+            const std::span<const SpectraDynamicSceneControlScalarSeries> scalar_series = make_scalar_series_view(plugin_instance.scalar_series_cache);
             plugin_instance.control_items.clear();
             plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
                 .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SETTINGS,
                 .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlSettingValue)),
-                .data = settings.data,
-                .count = settings.count,
+                .data = settings.empty() ? nullptr : settings.data(),
+                .count = static_cast<std::uint64_t>(settings.size()),
             });
             plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
                 .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_STATUS,
@@ -1190,23 +1163,23 @@ namespace {
                 .data = &plugin_instance.status_cache.status_view,
                 .count = 1u,
             });
-            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+            if (!logs.empty()) plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
                 .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_LOG,
                 .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlLogEntry)),
-                .data = logs.data,
-                .count = logs.count,
+                .data = logs.data(),
+                .count = static_cast<std::uint64_t>(logs.size()),
             });
-            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+            if (!images.empty()) plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
                 .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_IMAGE,
                 .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlImage)),
-                .data = images.data,
-                .count = images.count,
+                .data = images.data(),
+                .count = static_cast<std::uint64_t>(images.size()),
             });
-            plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
+            if (!scalar_series.empty()) plugin_instance.control_items.push_back(SpectraDynamicSceneControlTypedSpan{
                 .kind = SPECTRA_DYNAMIC_SCENE_CONTROL_ITEM_SCALAR_SERIES,
                 .item_size = static_cast<std::uint32_t>(sizeof(SpectraDynamicSceneControlScalarSeries)),
-                .data = scalar_series.data,
-                .count = scalar_series.count,
+                .data = scalar_series.data(),
+                .count = static_cast<std::uint64_t>(scalar_series.size()),
             });
             *snapshot = SpectraDynamicSceneControlSnapshotView{
                 .struct_size = sizeof(SpectraDynamicSceneControlSnapshotView),

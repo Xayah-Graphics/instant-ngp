@@ -1,10 +1,10 @@
-#include "ngp.inspector.h"
 #include "ngp.train.h"
 
 #include <cuda/std/algorithm>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -63,7 +63,7 @@ namespace ngp::inspector::kernels {
         }
     }
 
-    void sample_color_grid(const std::uint32_t dim_x, const std::uint32_t dim_y, const std::uint32_t dim_z, const float reference_x, const float reference_y, const float reference_z, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const rgb_input, std::uint16_t* const network_output, float* const output_rgb) {
+    void sample_color_grid(std::uint32_t dim_x, std::uint32_t dim_y, std::uint32_t dim_z, float reference_x, float reference_y, float reference_z, const std::uint16_t* params, float* sample_coords, std::uint16_t* density_input, std::uint16_t* rgb_input, std::uint16_t* network_output, float* output_rgb) {
         if (dim_x == 0u || dim_y == 0u || dim_z == 0u || dim_x > 1024u || dim_y > 1024u || dim_z > 1024u || params == nullptr || sample_coords == nullptr || density_input == nullptr || rgb_input == nullptr || network_output == nullptr || output_rgb == nullptr) throw std::runtime_error{"invalid color grid sample input."};
         const std::uint64_t cell_count_64 = static_cast<std::uint64_t>(dim_x) * static_cast<std::uint64_t>(dim_y) * static_cast<std::uint64_t>(dim_z);
         if (cell_count_64 > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error{"color grid sample cell count exceeds uint32 range."};

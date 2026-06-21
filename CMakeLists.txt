@@ -132,7 +132,6 @@ target_sources(
         ngp.inspector.cu
         ngp.train.config.h
         ngp.train.h
-        ngp.inspector.h
         PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
         ngp.train.ixx
