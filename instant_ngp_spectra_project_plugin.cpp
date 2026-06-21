@@ -11,7 +11,7 @@ import std;
 #define SPECTRA_DYNAMIC_SCENE_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 26u
+#define SPECTRA_DYNAMIC_SCENE_ABI_VERSION 27u
 
 typedef struct SpectraDynamicSceneOption {
     const char* key;
@@ -30,6 +30,13 @@ static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_CHOICE = 3u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_BOOL = 4u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_FLOAT = 5u;
 static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_OPTION_UNSIGNED_INTEGER = 6u;
+
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_MATERIAL = 0u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_LIGHT = 1u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_CAMERA = 2u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_VOLUME = 6u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_VOXEL_GRID = 101u;
+static constexpr uint32_t SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_CAMERA_VISUAL = 102u;
 
 typedef struct SpectraDynamicSceneOptionChoice {
     const char* value;
@@ -296,11 +303,6 @@ typedef struct SpectraDynamicSceneMaterial {
     float volume_temperature_scale;
 } SpectraDynamicSceneMaterial;
 
-typedef struct SpectraDynamicSceneMaterialSpan {
-    const SpectraDynamicSceneMaterial* data;
-    uint64_t count;
-} SpectraDynamicSceneMaterialSpan;
-
 typedef struct SpectraDynamicSceneLight {
     const char* name;
     const char* kind;
@@ -309,11 +311,6 @@ typedef struct SpectraDynamicSceneLight {
     float intensity;
     float cone_angle_degrees;
 } SpectraDynamicSceneLight;
-
-typedef struct SpectraDynamicSceneLightSpan {
-    const SpectraDynamicSceneLight* data;
-    uint64_t count;
-} SpectraDynamicSceneLightSpan;
 
 typedef struct SpectraDynamicSceneCamera {
     const char* name;
@@ -332,75 +329,6 @@ typedef struct SpectraDynamicSceneCamera {
     float near_plane;
     float far_plane;
 } SpectraDynamicSceneCamera;
-
-typedef struct SpectraDynamicSceneCameraSpan {
-    const SpectraDynamicSceneCamera* data;
-    uint64_t count;
-} SpectraDynamicSceneCameraSpan;
-
-typedef struct SpectraDynamicSceneMeshVertex {
-    float position[3];
-    float normal[3];
-} SpectraDynamicSceneMeshVertex;
-
-typedef struct SpectraDynamicSceneMeshVertexSpan {
-    const SpectraDynamicSceneMeshVertex* data;
-    uint64_t count;
-} SpectraDynamicSceneMeshVertexSpan;
-
-typedef struct SpectraDynamicSceneUInt32Span {
-    const uint32_t* data;
-    uint64_t count;
-} SpectraDynamicSceneUInt32Span;
-
-typedef struct SpectraDynamicSceneMesh {
-    const char* name;
-    SpectraDynamicSceneMeshVertexSpan vertices;
-    SpectraDynamicSceneUInt32Span indices;
-    const char* material_name;
-    SpectraDynamicSceneTransform transform;
-} SpectraDynamicSceneMesh;
-
-typedef struct SpectraDynamicSceneMeshSpan {
-    const SpectraDynamicSceneMesh* data;
-    uint64_t count;
-} SpectraDynamicSceneMeshSpan;
-
-typedef struct SpectraDynamicSceneSphere {
-    const char* name;
-    float radius;
-    const char* material_name;
-    SpectraDynamicSceneTransform transform;
-} SpectraDynamicSceneSphere;
-
-typedef struct SpectraDynamicSceneSphereSpan {
-    const SpectraDynamicSceneSphere* data;
-    uint64_t count;
-} SpectraDynamicSceneSphereSpan;
-
-typedef struct SpectraDynamicScenePoint {
-    float position[3];
-    float normal[3];
-    float color[4];
-    float radius;
-} SpectraDynamicScenePoint;
-
-typedef struct SpectraDynamicScenePointSpan {
-    const SpectraDynamicScenePoint* data;
-    uint64_t count;
-} SpectraDynamicScenePointSpan;
-
-typedef struct SpectraDynamicScenePointCloud {
-    const char* name;
-    SpectraDynamicScenePointSpan points;
-    const char* material_name;
-    SpectraDynamicSceneTransform transform;
-} SpectraDynamicScenePointCloud;
-
-typedef struct SpectraDynamicScenePointCloudSpan {
-    const SpectraDynamicScenePointCloud* data;
-    uint64_t count;
-} SpectraDynamicScenePointCloudSpan;
 
 typedef struct SpectraDynamicSceneFloatSpan {
     const float* data;
@@ -434,51 +362,10 @@ typedef struct SpectraDynamicSceneVolume {
     const char* material_name;
 } SpectraDynamicSceneVolume;
 
-typedef struct SpectraDynamicSceneVolumeSpan {
-    const SpectraDynamicSceneVolume* data;
-    uint64_t count;
-} SpectraDynamicSceneVolumeSpan;
-
 typedef struct SpectraDynamicSceneEntityRef {
     uint32_t kind;
     const char* name;
 } SpectraDynamicSceneEntityRef;
-
-typedef struct SpectraDynamicSceneViewportSegment {
-    float start[3];
-    float end[3];
-} SpectraDynamicSceneViewportSegment;
-
-typedef struct SpectraDynamicSceneViewportSegmentSpan {
-    const SpectraDynamicSceneViewportSegment* data;
-    uint64_t count;
-} SpectraDynamicSceneViewportSegmentSpan;
-
-typedef struct SpectraDynamicSceneColor {
-    float value[4];
-} SpectraDynamicSceneColor;
-
-typedef struct SpectraDynamicSceneColorSpan {
-    const SpectraDynamicSceneColor* data;
-    uint64_t count;
-} SpectraDynamicSceneColorSpan;
-
-typedef struct SpectraDynamicSceneViewportSegmentSet {
-    const char* name;
-    SpectraDynamicSceneEntityRef owner;
-    SpectraDynamicSceneViewportSegmentSpan segments;
-    SpectraDynamicSceneColorSpan colors;
-    SpectraDynamicSceneFloatSpan widths;
-    float width;
-    uint32_t width_mode;
-    uint32_t depth_mode;
-    SpectraDynamicSceneTransform transform;
-} SpectraDynamicSceneViewportSegmentSet;
-
-typedef struct SpectraDynamicSceneViewportSegmentSetSpan {
-    const SpectraDynamicSceneViewportSegmentSet* data;
-    uint64_t count;
-} SpectraDynamicSceneViewportSegmentSetSpan;
 
 typedef struct SpectraDynamicSceneViewportVoxelGrid {
     const char* name;
@@ -497,11 +384,6 @@ typedef struct SpectraDynamicSceneViewportVoxelGrid {
     uint64_t index_count;
     uint64_t revision;
 } SpectraDynamicSceneViewportVoxelGrid;
-
-typedef struct SpectraDynamicSceneViewportVoxelGridSpan {
-    const SpectraDynamicSceneViewportVoxelGrid* data;
-    uint64_t count;
-} SpectraDynamicSceneViewportVoxelGridSpan;
 
 typedef struct SpectraDynamicSceneViewportCameraVisualImage {
     const uint8_t* rgba8;
@@ -525,29 +407,19 @@ typedef struct SpectraDynamicSceneViewportCameraVisual {
     SpectraDynamicSceneViewportCameraVisualImage image;
 } SpectraDynamicSceneViewportCameraVisual;
 
-typedef struct SpectraDynamicSceneViewportCameraVisualSpan {
-    const SpectraDynamicSceneViewportCameraVisual* data;
+typedef struct SpectraDynamicSceneTypedSpan {
+    uint32_t kind;
+    uint32_t item_size;
+    const void* data;
     uint64_t count;
-} SpectraDynamicSceneViewportCameraVisualSpan;
-
-typedef struct SpectraDynamicSceneDebugAttachmentSet {
-    SpectraDynamicSceneViewportSegmentSetSpan viewport_segment_sets;
-    SpectraDynamicSceneViewportVoxelGridSpan viewport_voxel_grids;
-    SpectraDynamicSceneViewportCameraVisualSpan viewport_camera_visuals;
-} SpectraDynamicSceneDebugAttachmentSet;
+} SpectraDynamicSceneTypedSpan;
 
 typedef struct SpectraDynamicSceneDocumentView {
     uint64_t struct_size;
     const char* default_coordinate_system;
     const char* active_camera_name;
-    SpectraDynamicSceneCameraSpan cameras;
-    SpectraDynamicSceneMaterialSpan materials;
-    SpectraDynamicSceneLightSpan lights;
-    SpectraDynamicSceneMeshSpan meshes;
-    SpectraDynamicSceneSphereSpan spheres;
-    SpectraDynamicScenePointCloudSpan point_clouds;
-    SpectraDynamicSceneVolumeSpan volumes;
-    SpectraDynamicSceneDebugAttachmentSet debug_attachments;
+    const SpectraDynamicSceneTypedSpan* items;
+    uint64_t item_count;
 } SpectraDynamicSceneDocumentView;
 
 typedef struct SpectraDynamicSceneFrameInfo {
@@ -558,12 +430,8 @@ typedef struct SpectraDynamicSceneFrameInfo {
 
 typedef struct SpectraDynamicSceneFrameView {
     uint64_t struct_size;
-    SpectraDynamicSceneMeshSpan meshes;
-    SpectraDynamicSceneSphereSpan spheres;
-    SpectraDynamicScenePointCloudSpan point_clouds;
-    SpectraDynamicSceneVolumeSpan volumes;
-    SpectraDynamicSceneCameraSpan cameras;
-    SpectraDynamicSceneDebugAttachmentSet debug_attachments;
+    const SpectraDynamicSceneTypedSpan* items;
+    uint64_t item_count;
 } SpectraDynamicSceneFrameView;
 
 typedef struct SpectraDynamicSceneUpdateInfo {
@@ -651,11 +519,10 @@ namespace {
         std::vector<std::vector<SpectraDynamicSceneVolumeChannel>> volume_channel_storage{};
         std::vector<SpectraDynamicSceneVolume> volume_views{};
         std::vector<SpectraDynamicSceneCamera> camera_views{};
-        std::vector<std::vector<SpectraDynamicSceneViewportSegment>> segment_storage{};
-        std::vector<std::vector<SpectraDynamicSceneColor>> color_storage{};
-        std::vector<SpectraDynamicSceneViewportSegmentSet> segment_set_views{};
         std::vector<SpectraDynamicSceneViewportVoxelGrid> voxel_grid_views{};
         std::vector<SpectraDynamicSceneViewportCameraVisual> camera_visual_views{};
+        std::vector<SpectraDynamicSceneTypedSpan> document_items{};
+        std::vector<SpectraDynamicSceneTypedSpan> frame_items{};
     };
 
     struct ProjectStatusCache {
@@ -875,6 +742,17 @@ namespace {
         for (std::size_t index = 0u; index < Count; ++index) output[index] = input[index];
     }
 
+    template <typename Value>
+    void append_scene_item(std::vector<SpectraDynamicSceneTypedSpan>& items, const std::uint32_t kind, const std::vector<Value>& values) {
+        if (values.empty()) return;
+        items.push_back(SpectraDynamicSceneTypedSpan{
+            .kind = kind,
+            .item_size = static_cast<std::uint32_t>(sizeof(Value)),
+            .data = values.data(),
+            .count = static_cast<std::uint64_t>(values.size()),
+        });
+    }
+
     [[nodiscard]] SpectraDynamicSceneTransform make_transform_view(const instant_ngp::spectra_project::Transform& transform) {
         SpectraDynamicSceneTransform view{};
         copy_array(view.position, transform.position);
@@ -1024,42 +902,6 @@ namespace {
         for (const instant_ngp::spectra_project::ViewportCameraVisual& visual : visuals) cache.camera_visual_views.push_back(make_camera_visual_view(visual));
     }
 
-    void make_segment_set_views(SceneViewCache& cache, const std::vector<instant_ngp::spectra_project::ViewportSegmentSet>& sets) {
-        cache.segment_storage.clear();
-        cache.color_storage.clear();
-        cache.segment_set_views.clear();
-        cache.segment_storage.resize(sets.size());
-        cache.color_storage.resize(sets.size());
-        cache.segment_set_views.reserve(sets.size());
-        for (std::size_t set_index = 0u; set_index < sets.size(); ++set_index) {
-            const instant_ngp::spectra_project::ViewportSegmentSet& set = sets[set_index];
-            cache.segment_storage[set_index].reserve(set.segments.size());
-            for (const instant_ngp::spectra_project::ViewportSegment& segment : set.segments) {
-                SpectraDynamicSceneViewportSegment segment_view{};
-                copy_array(segment_view.start, segment.start);
-                copy_array(segment_view.end, segment.end);
-                cache.segment_storage[set_index].push_back(segment_view);
-            }
-            cache.color_storage[set_index].reserve(set.colors.size());
-            for (const std::array<float, 4u>& color : set.colors) {
-                SpectraDynamicSceneColor color_view{};
-                copy_array(color_view.value, color);
-                cache.color_storage[set_index].push_back(color_view);
-            }
-            cache.segment_set_views.push_back(SpectraDynamicSceneViewportSegmentSet{
-                .name = set.name.c_str(),
-                .owner = make_entity_ref_view(set.owner),
-                .segments = SpectraDynamicSceneViewportSegmentSpan{.data = cache.segment_storage[set_index].empty() ? nullptr : cache.segment_storage[set_index].data(), .count = static_cast<std::uint64_t>(cache.segment_storage[set_index].size())},
-                .colors = SpectraDynamicSceneColorSpan{.data = cache.color_storage[set_index].empty() ? nullptr : cache.color_storage[set_index].data(), .count = static_cast<std::uint64_t>(cache.color_storage[set_index].size())},
-                .widths = SpectraDynamicSceneFloatSpan{.data = set.widths.empty() ? nullptr : set.widths.data(), .count = static_cast<std::uint64_t>(set.widths.size())},
-                .width = set.width,
-                .width_mode = set.width_mode,
-                .depth_mode = set.depth_mode,
-                .transform = make_transform_view(set.transform),
-            });
-        }
-    }
-
     [[nodiscard]] SpectraDynamicSceneViewportVoxelGrid make_voxel_grid_view(const instant_ngp::spectra_project::ViewportVoxelGrid& grid) {
         SpectraDynamicSceneViewportVoxelGrid view{
             .name = grid.name.c_str(),
@@ -1089,17 +931,6 @@ namespace {
         for (const instant_ngp::spectra_project::ViewportVoxelGrid& grid : grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
     }
 
-    [[nodiscard]] SpectraDynamicSceneDebugAttachmentSet make_debug_attachment_set_view(SceneViewCache& cache, const instant_ngp::spectra_project::DebugAttachmentSet& attachments) {
-        make_segment_set_views(cache, attachments.viewport_segment_sets);
-        make_voxel_grid_views(cache, attachments.viewport_voxel_grids);
-        make_camera_visual_views(cache, attachments.viewport_camera_visuals);
-        return SpectraDynamicSceneDebugAttachmentSet{
-            .viewport_segment_sets = SpectraDynamicSceneViewportSegmentSetSpan{.data = cache.segment_set_views.empty() ? nullptr : cache.segment_set_views.data(), .count = static_cast<std::uint64_t>(cache.segment_set_views.size())},
-            .viewport_voxel_grids = SpectraDynamicSceneViewportVoxelGridSpan{.data = cache.voxel_grid_views.empty() ? nullptr : cache.voxel_grid_views.data(), .count = static_cast<std::uint64_t>(cache.voxel_grid_views.size())},
-            .viewport_camera_visuals = SpectraDynamicSceneViewportCameraVisualSpan{.data = cache.camera_visual_views.empty() ? nullptr : cache.camera_visual_views.data(), .count = static_cast<std::uint64_t>(cache.camera_visual_views.size())},
-        };
-    }
-
     [[nodiscard]] SpectraDynamicSceneDocumentView make_document_view(SceneViewCache& cache) {
         make_material_views(cache, cache.document.materials);
         make_light_views(cache, cache.document.lights);
@@ -1107,16 +938,21 @@ namespace {
         cache.camera_views.clear();
         cache.camera_views.reserve(cache.document.cameras.size());
         for (const instant_ngp::spectra_project::Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
-        const SpectraDynamicSceneDebugAttachmentSet debug_attachments = make_debug_attachment_set_view(cache, cache.document.debug_attachments);
+        make_voxel_grid_views(cache, cache.document.debug_attachments.viewport_voxel_grids);
+        make_camera_visual_views(cache, cache.document.debug_attachments.viewport_camera_visuals);
+        cache.document_items.clear();
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_MATERIAL, cache.material_views);
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_LIGHT, cache.light_views);
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_CAMERA, cache.camera_views);
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_VOLUME, cache.volume_views);
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_VOXEL_GRID, cache.voxel_grid_views);
+        append_scene_item(cache.document_items, SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_CAMERA_VISUAL, cache.camera_visual_views);
         return SpectraDynamicSceneDocumentView{
             .struct_size = sizeof(SpectraDynamicSceneDocumentView),
             .default_coordinate_system = cache.document.default_coordinate_system.c_str(),
             .active_camera_name = cache.document.active_camera_name.c_str(),
-            .cameras = SpectraDynamicSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
-            .materials = SpectraDynamicSceneMaterialSpan{.data = cache.material_views.empty() ? nullptr : cache.material_views.data(), .count = static_cast<std::uint64_t>(cache.material_views.size())},
-            .lights = SpectraDynamicSceneLightSpan{.data = cache.light_views.empty() ? nullptr : cache.light_views.data(), .count = static_cast<std::uint64_t>(cache.light_views.size())},
-            .volumes = SpectraDynamicSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
-            .debug_attachments = debug_attachments,
+            .items = cache.document_items.empty() ? nullptr : cache.document_items.data(),
+            .item_count = static_cast<std::uint64_t>(cache.document_items.size()),
         };
     }
 
@@ -1125,12 +961,17 @@ namespace {
         cache.camera_views.clear();
         cache.camera_views.reserve(cache.frame.cameras.size());
         for (const instant_ngp::spectra_project::Camera& camera : cache.frame.cameras) cache.camera_views.push_back(make_camera_view(camera));
-        const SpectraDynamicSceneDebugAttachmentSet debug_attachments = make_debug_attachment_set_view(cache, cache.frame.debug_attachments);
+        make_voxel_grid_views(cache, cache.frame.debug_attachments.viewport_voxel_grids);
+        make_camera_visual_views(cache, cache.frame.debug_attachments.viewport_camera_visuals);
+        cache.frame_items.clear();
+        append_scene_item(cache.frame_items, SPECTRA_DYNAMIC_SCENE_ITEM_VOLUME, cache.volume_views);
+        append_scene_item(cache.frame_items, SPECTRA_DYNAMIC_SCENE_ITEM_CAMERA, cache.camera_views);
+        append_scene_item(cache.frame_items, SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_VOXEL_GRID, cache.voxel_grid_views);
+        append_scene_item(cache.frame_items, SPECTRA_DYNAMIC_SCENE_ITEM_VIEWPORT_CAMERA_VISUAL, cache.camera_visual_views);
         return SpectraDynamicSceneFrameView{
             .struct_size = sizeof(SpectraDynamicSceneFrameView),
-            .volumes = SpectraDynamicSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
-            .cameras = SpectraDynamicSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
-            .debug_attachments = debug_attachments,
+            .items = cache.frame_items.empty() ? nullptr : cache.frame_items.data(),
+            .item_count = static_cast<std::uint64_t>(cache.frame_items.size()),
         };
     }
 

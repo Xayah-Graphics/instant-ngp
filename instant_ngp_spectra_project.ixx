@@ -307,23 +307,6 @@ namespace instant_ngp::spectra_project {
         std::optional<ViewportCameraVisualImage> image{};
     };
 
-    struct ViewportSegment {
-        std::array<float, 3u> start{};
-        std::array<float, 3u> end{};
-    };
-
-    struct ViewportSegmentSet {
-        std::string name{};
-        SceneEntityRef owner{};
-        std::vector<ViewportSegment> segments{};
-        std::vector<std::array<float, 4u>> colors{};
-        std::vector<float> widths{};
-        float width{};
-        std::uint32_t width_mode{};
-        std::uint32_t depth_mode{};
-        Transform transform{};
-    };
-
     enum class ViewportVoxelGridSourceKind : std::uint32_t {
         IndexList = 0u,
         Bitfield = 1u,
@@ -353,7 +336,6 @@ namespace instant_ngp::spectra_project {
     };
 
     struct DebugAttachmentSet {
-        std::vector<ViewportSegmentSet> viewport_segment_sets{};
         std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
         std::vector<ViewportCameraVisual> viewport_camera_visuals{};
     };

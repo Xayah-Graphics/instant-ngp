@@ -1331,7 +1331,6 @@ namespace instant_ngp::spectra_project {
             state.latest_preview.reset();
             state.materials.clear();
             state.lights.clear();
-            state.debug_attachments.viewport_segment_sets.clear();
             state.debug_attachments.viewport_voxel_grids.clear();
             state.training = TrainingOptions{};
             state.training_running = false;
