@@ -1,12 +1,594 @@
-#if defined(_WIN32)
-#define SPECTRA_SCENE_EXPORT __declspec(dllexport)
-#else
-#define SPECTRA_SCENE_EXPORT __attribute__((visibility("default")))
-#endif
+export module ngp.plugin;
 
-import instant_ngp.spectra_project;
 import std;
 
+export namespace ngp::plugin {
+    struct SpectraScenePlugin;
+
+    enum class OptionKind : std::uint32_t {
+        Text = 0u,
+        DirectoryPath = 1u,
+        FilePath = 2u,
+        Choice = 3u,
+        Bool = 4u,
+        Float = 5u,
+        UnsignedInteger = 6u,
+    };
+
+    struct OptionChoice {
+        std::string value{};
+        std::string label{};
+    };
+
+    struct ControlSection {
+        std::string id{};
+        std::string label{};
+    };
+
+    struct OptionSchema {
+        std::string key{};
+        std::string label{};
+        std::string description{};
+        OptionKind kind{OptionKind::Text};
+        bool required_flag{};
+        std::string default_value{};
+        std::string section_id{};
+        std::vector<OptionChoice> choices{};
+
+        OptionSchema& section(std::string value) &;
+        [[nodiscard]] OptionSchema section(std::string value) &&;
+        OptionSchema& required_value(bool value = true) &;
+        [[nodiscard]] OptionSchema required_value(bool value = true) &&;
+        OptionSchema& required() &;
+        [[nodiscard]] OptionSchema required() &&;
+        OptionSchema& defaulted(std::string value) &;
+        [[nodiscard]] OptionSchema defaulted(std::string value) &&;
+        OptionSchema& describe(std::string value) &;
+        [[nodiscard]] OptionSchema describe(std::string value) &&;
+    };
+
+    struct Option {
+        std::string key{};
+        std::string value{};
+    };
+
+    struct OpenContext {
+        std::vector<Option> options{};
+        std::shared_ptr<struct HostServices> host_services{};
+    };
+
+    struct ActionContext {
+        std::vector<Option> options{};
+    };
+
+    enum class GpuResourceHandleKind : std::uint32_t {
+        OpaqueWin32 = 1u,
+        OpaqueFileDescriptor = 2u,
+    };
+
+    struct GpuDeviceIdentity {
+        std::uint32_t vendor_id{};
+        std::uint32_t device_id{};
+        std::array<std::uint8_t, 16u> device_uuid{};
+        std::array<std::uint8_t, 8u> device_luid{};
+        std::uint32_t device_node_mask{};
+    };
+
+    inline constexpr std::uint32_t GpuBufferKindVolumeChannel = 0u;
+    inline constexpr std::uint32_t GpuBufferKindViewportVoxelGrid = 1u;
+
+    struct GpuBufferAllocation {
+        std::uint64_t resource_id{};
+        std::uint64_t byte_size{};
+        std::uint32_t kind{};
+        GpuResourceHandleKind handle_kind{GpuResourceHandleKind::OpaqueWin32};
+        std::uintptr_t handle{};
+        GpuDeviceIdentity device_identity{};
+    };
+
+    struct HostServices {
+        std::move_only_function<GpuBufferAllocation(std::uint32_t, std::uint64_t, std::string_view)> request_gpu_buffer{};
+        std::move_only_function<void(std::uint64_t)> release_gpu_buffer{};
+    };
+
+    inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
+    inline constexpr std::uint32_t ControlPlacementPanelSummary = 1u << 1u;
+    inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
+    inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
+    inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
+    inline constexpr std::uint32_t ControlActionStyleDanger = 2u;
+    inline constexpr std::uint32_t ControlTimelineModeLive = 0u;
+    inline constexpr std::uint32_t ControlTimelineModeRecord = 1u;
+    inline constexpr std::uint32_t ControlTimelineModePlayback = 2u;
+
+    struct Action {
+        std::string id{};
+        std::string label{};
+        std::string description{};
+        std::string section_id{};
+        std::uint32_t style{ControlActionStyleSecondary};
+        std::vector<OptionSchema> options{};
+    };
+
+    struct Metric {
+        std::string key{};
+        std::string label{};
+        std::string value{};
+        std::string section_id{};
+        std::uint32_t placement_flags{ControlPlacementPanelDetail};
+        bool has_color{};
+        std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
+    };
+
+    struct ActionState {
+        std::string action_id{};
+        bool enabled{};
+        std::string disabled_reason{};
+    };
+
+    struct ControlState {
+        std::string phase{};
+        std::string headline{};
+        std::string detail{};
+        std::vector<Metric> metrics{};
+        std::vector<ActionState> action_states{};
+    };
+
+    struct UpdateInfo {
+        double wall_delta_seconds{};
+        double scene_delta_seconds{};
+        double time_seconds{};
+        std::uint64_t frame_index{};
+        std::uint32_t timeline_mode{ControlTimelineModeLive};
+        bool timeline_playing{};
+    };
+
+    struct Transform {
+        std::array<float, 3u> position{};
+        std::array<float, 4u> rotation{0.0f, 0.0f, 0.0f, 1.0f};
+        std::array<float, 3u> scale{1.0f, 1.0f, 1.0f};
+    };
+
+    enum class SceneEntityKind : std::uint32_t {
+        Mesh = 0u,
+        Sphere = 1u,
+        PointCloud = 2u,
+        VolumeGrid = 3u,
+        Camera = 4u,
+        Light = 5u,
+    };
+
+    struct SceneEntityRef {
+        SceneEntityKind kind{SceneEntityKind::Mesh};
+        std::string name{};
+    };
+
+    enum class CameraProjection : std::uint32_t {
+        Perspective = 0u,
+        Pinhole = 1u,
+    };
+
+    struct Camera {
+        std::string name{};
+        std::string local_coordinate_system{};
+        Transform transform{};
+        std::array<float, 3u> target{};
+        std::array<float, 3u> up{};
+        CameraProjection projection{CameraProjection::Perspective};
+        float vertical_fov_degrees{};
+        std::uint32_t image_width{};
+        std::uint32_t image_height{};
+        float fx{};
+        float fy{};
+        float cx{};
+        float cy{};
+        float near_plane{};
+        float far_plane{};
+    };
+
+    struct Material {
+        std::string name{};
+        std::string model{"volume"};
+        std::string alpha_mode{"blend"};
+        std::array<float, 4u> base_color{1.0f, 1.0f, 1.0f, 1.0f};
+        float roughness{0.5f};
+        float volume_density_scale{1.0f};
+        float volume_temperature_scale{1.0f};
+    };
+
+    struct Light {
+        std::string name{};
+        std::string kind{"environment"};
+        Transform transform{};
+        std::array<float, 3u> color{1.0f, 1.0f, 1.0f};
+        float intensity{1.0f};
+    };
+
+    enum class VolumeChannelSourceKind : std::uint32_t {
+        Values = 0u,
+        ExternalGpuBuffer = 1u,
+    };
+
+    enum class VolumeChannelIndexEncoding : std::uint32_t {
+        Linear = 0u,
+        Morton3D = 1u,
+    };
+
+    enum class VolumeChannelFormat : std::uint32_t {
+        Float32 = 0u,
+        Float32x3 = 1u,
+    };
+
+    struct VolumeChannel {
+        std::string name{};
+        std::array<std::uint32_t, 3u> dimensions{};
+        VolumeChannelFormat format{VolumeChannelFormat::Float32};
+        VolumeChannelSourceKind source_kind{VolumeChannelSourceKind::Values};
+        VolumeChannelIndexEncoding index_encoding{VolumeChannelIndexEncoding::Linear};
+        std::uint64_t buffer_id{};
+        std::uintptr_t external_device_pointer{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
+    };
+
+    struct VolumeGrid {
+        std::string name{};
+        std::array<std::uint32_t, 3u> dimensions{};
+        std::array<float, 3u> origin{};
+        std::array<float, 3u> voxel_size{1.0f, 1.0f, 1.0f};
+        std::vector<VolumeChannel> channels{};
+        std::string material_name{};
+    };
+
+    struct ViewportCameraVisualImage {
+        const std::uint8_t* rgba8{};
+        std::uint64_t rgba8_size{};
+        std::uint64_t revision{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::array<float, 4u> tint{};
+    };
+
+    struct ViewportCameraVisual {
+        std::string name{};
+        SceneEntityRef owner{.kind = SceneEntityKind::Camera};
+        std::array<float, 4u> color{};
+        float width{};
+        std::uint32_t width_mode{};
+        std::uint32_t depth_mode{};
+        float visual_near{};
+        float visual_far{};
+        std::optional<ViewportCameraVisualImage> image{};
+    };
+
+    enum class ViewportVoxelGridSourceKind : std::uint32_t {
+        IndexList = 0u,
+        Bitfield = 1u,
+    };
+
+    enum class ViewportVoxelGridIndexEncoding : std::uint32_t {
+        Linear = 0u,
+        Morton3D = 1u,
+    };
+
+    struct ViewportVoxelGrid {
+        std::string name{};
+        SceneEntityRef owner{};
+        std::array<std::uint32_t, 3u> dimensions{};
+        std::array<float, 3u> origin{};
+        std::array<float, 3u> voxel_size{1.0f, 1.0f, 1.0f};
+        Transform transform{};
+        std::array<float, 4u> color{};
+        float cell_scale{1.0f};
+        std::uint32_t depth_mode{};
+        ViewportVoxelGridSourceKind source_kind{ViewportVoxelGridSourceKind::IndexList};
+        ViewportVoxelGridIndexEncoding index_encoding{ViewportVoxelGridIndexEncoding::Linear};
+        std::uint64_t buffer_id{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
+    };
+
+    struct DebugAttachmentSet {
+        std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
+        std::vector<ViewportCameraVisual> viewport_camera_visuals{};
+    };
+
+    struct Document {
+        std::string default_coordinate_system{};
+        std::string active_camera_name{};
+        std::vector<Camera> cameras{};
+        std::vector<Material> materials{};
+        std::vector<Light> lights{};
+        std::vector<VolumeGrid> volumes{};
+        DebugAttachmentSet debug_attachments{};
+    };
+
+    class SceneBuilder final {
+    public:
+        SceneBuilder& coordinate_system(std::string value);
+        SceneBuilder& active_camera(std::string value);
+        SceneBuilder& set_document(Document value);
+        [[nodiscard]] const Document& document() const;
+
+    private:
+        Document value{};
+    };
+
+    class ControlBuilder final {
+    public:
+        class MetricHandle final {
+        public:
+            MetricHandle(ControlBuilder& owner, std::size_t index);
+            MetricHandle& section(std::string value);
+            MetricHandle& summary();
+            MetricHandle& overlay();
+            MetricHandle& detail();
+            MetricHandle& color(std::array<float, 4u> value);
+
+        private:
+            ControlBuilder* owner{};
+            std::size_t index{};
+        };
+
+        ControlBuilder& phase(std::string value);
+        ControlBuilder& headline(std::string value);
+        ControlBuilder& detail(std::string value);
+        [[nodiscard]] MetricHandle metric(std::string key, std::string label, std::string value);
+        [[nodiscard]] MetricHandle metric(std::string key, std::string label, std::string_view value);
+        [[nodiscard]] MetricHandle metric(std::string key, std::string label, const char* value);
+        template <typename Value>
+            requires(std::integral<Value> || std::floating_point<Value>)
+        [[nodiscard]] MetricHandle metric(std::string key, std::string label, const Value value) {
+            return this->metric(std::move(key), std::move(label), std::format("{}", value));
+        }
+        ControlBuilder& enable(std::string action_id);
+        ControlBuilder& disable(std::string action_id, std::string reason);
+        [[nodiscard]] const ControlState& state() const;
+
+    private:
+        friend class MetricHandle;
+
+        ControlState value{};
+    };
+
+    [[nodiscard]] ControlSection section(std::string id, std::string label);
+    [[nodiscard]] OptionChoice option_choice(std::string value);
+    [[nodiscard]] OptionChoice option_choice(std::string value, std::string label);
+    [[nodiscard]] OptionSchema text(std::string key, std::string label);
+    [[nodiscard]] OptionSchema directory(std::string key, std::string label);
+    [[nodiscard]] OptionSchema file(std::string key, std::string label);
+    [[nodiscard]] OptionSchema choice(std::string key, std::string label, std::initializer_list<std::string> values);
+    [[nodiscard]] OptionSchema toggle(std::string key, std::string label, bool default_value);
+    [[nodiscard]] OptionSchema float_option(std::string key, std::string label, float default_value);
+    [[nodiscard]] OptionSchema unsigned_integer(std::string key, std::string label, std::uint64_t default_value);
+
+    template <typename Project>
+    struct ActionBinding {
+        Action schema{};
+        std::function<void(Project&, ActionContext)> invoke{};
+
+        ActionBinding& description(std::string value) & {
+            this->schema.description = std::move(value);
+            return *this;
+        }
+
+        [[nodiscard]] ActionBinding description(std::string value) && {
+            this->schema.description = std::move(value);
+            return std::move(*this);
+        }
+
+        ActionBinding& section(std::string value) & {
+            this->schema.section_id = std::move(value);
+            return *this;
+        }
+
+        [[nodiscard]] ActionBinding section(std::string value) && {
+            this->schema.section_id = std::move(value);
+            return std::move(*this);
+        }
+
+        ActionBinding& primary() & {
+            this->schema.style = ControlActionStylePrimary;
+            return *this;
+        }
+
+        [[nodiscard]] ActionBinding primary() && {
+            this->schema.style = ControlActionStylePrimary;
+            return std::move(*this);
+        }
+
+        ActionBinding& danger() & {
+            this->schema.style = ControlActionStyleDanger;
+            return *this;
+        }
+
+        [[nodiscard]] ActionBinding danger() && {
+            this->schema.style = ControlActionStyleDanger;
+            return std::move(*this);
+        }
+
+        ActionBinding& option(OptionSchema value) & {
+            this->schema.options.push_back(std::move(value));
+            return *this;
+        }
+
+        [[nodiscard]] ActionBinding option(OptionSchema value) && {
+            this->schema.options.push_back(std::move(value));
+            return std::move(*this);
+        }
+    };
+
+    template <typename Project>
+    [[nodiscard]] ActionBinding<Project> action(std::string id, std::string label, void (Project::*handler)()) {
+        return ActionBinding<Project>{
+            .schema = Action{.id = std::move(id), .label = std::move(label)},
+            .invoke = [handler](Project& project, ActionContext) {
+                (project.*handler)();
+            },
+        };
+    }
+
+    template <typename Project>
+    [[nodiscard]] ActionBinding<Project> action(std::string id, std::string label, void (Project::*handler)(ActionContext)) {
+        return ActionBinding<Project>{
+            .schema = Action{.id = std::move(id), .label = std::move(label)},
+            .invoke = [handler](Project& project, ActionContext context) {
+                (project.*handler)(std::move(context));
+            },
+        };
+    }
+
+    template <typename Project>
+    struct SettingBinding {
+        OptionSchema schema{};
+        std::function<void(Project&, std::string_view)> update{};
+
+        SettingBinding& section(std::string value) & {
+            this->schema.section_id = std::move(value);
+            return *this;
+        }
+
+        [[nodiscard]] SettingBinding section(std::string value) && {
+            this->schema.section_id = std::move(value);
+            return std::move(*this);
+        }
+    };
+
+    [[nodiscard]] bool parse_bool(std::string_view text);
+    [[nodiscard]] float parse_float(std::string_view text);
+    [[nodiscard]] std::uint64_t parse_unsigned_integer(std::string_view text);
+
+    template <typename Project>
+    [[nodiscard]] SettingBinding<Project> toggle(std::string key, std::string label, const bool default_value, void (Project::*handler)(bool)) {
+        return SettingBinding<Project>{
+            .schema = toggle(std::move(key), std::move(label), default_value),
+            .update = [handler](Project& project, const std::string_view value) {
+                (project.*handler)(parse_bool(value));
+            },
+        };
+    }
+
+    template <typename Project>
+    [[nodiscard]] SettingBinding<Project> float_value(std::string key, std::string label, const float default_value, void (Project::*handler)(float)) {
+        return SettingBinding<Project>{
+            .schema = float_option(std::move(key), std::move(label), default_value),
+            .update = [handler](Project& project, const std::string_view value) {
+                (project.*handler)(parse_float(value));
+            },
+        };
+    }
+
+    template <typename Project>
+    [[nodiscard]] SettingBinding<Project> unsigned_integer_value(std::string key, std::string label, const std::uint64_t default_value, void (Project::*handler)(std::uint64_t)) {
+        return SettingBinding<Project>{
+            .schema = unsigned_integer(std::move(key), std::move(label), default_value),
+            .update = [handler](Project& project, const std::string_view value) {
+                (project.*handler)(parse_unsigned_integer(value));
+            },
+        };
+    }
+
+    template <typename Project>
+    struct PluginDefinition {
+        std::string id{};
+        std::string title{};
+        std::string open_action_label{};
+        std::string open_action_description{};
+        double frames_per_second{};
+        std::vector<ControlSection> sections{};
+        std::vector<OptionSchema> open_options{};
+        std::vector<ActionBinding<Project>> actions{};
+        std::vector<SettingBinding<Project>> settings{};
+    };
+
+    struct TypeErasedAction {
+        Action schema{};
+        std::function<void(void*, ActionContext)> invoke{};
+    };
+
+    struct TypeErasedSetting {
+        OptionSchema schema{};
+        std::function<void(void*, std::string_view)> update{};
+    };
+
+    struct TypeErasedPluginDefinition {
+        std::string id{};
+        std::string title{};
+        std::string open_action_label{};
+        std::string open_action_description{};
+        double frames_per_second{};
+        std::vector<ControlSection> sections{};
+        std::vector<OptionSchema> open_options{};
+        std::vector<TypeErasedAction> actions{};
+        std::vector<TypeErasedSetting> settings{};
+        std::function<void*(OpenContext)> open{};
+        std::function<void(void*)> destroy{};
+        std::function<void(void*, const UpdateInfo&)> update{};
+        std::function<std::uint64_t(void*)> revision{};
+        std::function<void(void*, SceneBuilder&)> write_scene{};
+        std::function<void(void*, ControlBuilder&)> write_controls{};
+    };
+
+    template <typename Project>
+    [[nodiscard]] TypeErasedPluginDefinition erase_plugin_definition(const PluginDefinition<Project>& definition) {
+        TypeErasedPluginDefinition erased{
+            .id = definition.id,
+            .title = definition.title,
+            .open_action_label = definition.open_action_label,
+            .open_action_description = definition.open_action_description,
+            .frames_per_second = definition.frames_per_second,
+            .sections = definition.sections,
+            .open_options = definition.open_options,
+            .open = [](OpenContext context) -> void* {
+                return new Project{Project::open(std::move(context))};
+            },
+            .destroy = [](void* project) {
+                delete static_cast<Project*>(project);
+            },
+            .update = [](void* project, const UpdateInfo& update) {
+                static_cast<Project*>(project)->update(update);
+            },
+            .revision = [](void* project) -> std::uint64_t {
+                return static_cast<Project*>(project)->revision();
+            },
+            .write_scene = [](void* project, SceneBuilder& scene) {
+                static_cast<Project*>(project)->write_scene(scene);
+            },
+            .write_controls = [](void* project, ControlBuilder& controls) {
+                static_cast<Project*>(project)->write_controls(controls);
+            },
+        };
+        erased.actions.reserve(definition.actions.size());
+        for (const ActionBinding<Project>& action : definition.actions) {
+            erased.actions.push_back(TypeErasedAction{
+                .schema = action.schema,
+                .invoke = [invoke = action.invoke](void* project, ActionContext context) {
+                    invoke(*static_cast<Project*>(project), std::move(context));
+                },
+            });
+        }
+        erased.settings.reserve(definition.settings.size());
+        for (const SettingBinding<Project>& setting : definition.settings) {
+            erased.settings.push_back(TypeErasedSetting{
+                .schema = setting.schema,
+                .update = [update = setting.update](void* project, const std::string_view value) {
+                    update(*static_cast<Project*>(project), value);
+                },
+            });
+        }
+        return erased;
+    }
+
+    [[nodiscard]] const SpectraScenePlugin* export_type_erased_plugin(const TypeErasedPluginDefinition& definition);
+
+    template <typename Project>
+    [[nodiscard]] const SpectraScenePlugin* export_plugin() {
+        static const TypeErasedPluginDefinition definition = erase_plugin_definition(Project::plugin());
+        return export_type_erased_plugin(definition);
+    }
+}
+
+namespace ngp::plugin {
 constexpr std::uint32_t plugin_abi_version = 4u;
 typedef void SpectraSceneInstance;
 
@@ -488,6 +1070,224 @@ struct SpectraScenePlugin {
     SpectraSceneLastErrorFn last_error{};
 };
 
+OptionSchema& OptionSchema::section(std::string value) & {
+    this->section_id = std::move(value);
+    return *this;
+}
+
+OptionSchema OptionSchema::section(std::string value) && {
+    this->section_id = std::move(value);
+    return std::move(*this);
+}
+
+OptionSchema& OptionSchema::required_value(const bool value) & {
+    this->required_flag = value;
+    return *this;
+}
+
+OptionSchema OptionSchema::required_value(const bool value) && {
+    this->required_flag = value;
+    return std::move(*this);
+}
+
+OptionSchema& OptionSchema::required() & {
+    this->required_flag = true;
+    return *this;
+}
+
+OptionSchema OptionSchema::required() && {
+    this->required_flag = true;
+    return std::move(*this);
+}
+
+OptionSchema& OptionSchema::defaulted(std::string value) & {
+    this->default_value = std::move(value);
+    return *this;
+}
+
+OptionSchema OptionSchema::defaulted(std::string value) && {
+    this->default_value = std::move(value);
+    return std::move(*this);
+}
+
+OptionSchema& OptionSchema::describe(std::string value) & {
+    this->description = std::move(value);
+    return *this;
+}
+
+OptionSchema OptionSchema::describe(std::string value) && {
+    this->description = std::move(value);
+    return std::move(*this);
+}
+
+SceneBuilder& SceneBuilder::coordinate_system(std::string value) {
+    this->value.default_coordinate_system = std::move(value);
+    return *this;
+}
+
+SceneBuilder& SceneBuilder::active_camera(std::string value) {
+    this->value.active_camera_name = std::move(value);
+    return *this;
+}
+
+SceneBuilder& SceneBuilder::set_document(Document document) {
+    this->value = std::move(document);
+    return *this;
+}
+
+const Document& SceneBuilder::document() const {
+    return this->value;
+}
+
+ControlBuilder::MetricHandle::MetricHandle(ControlBuilder& owner, const std::size_t index) : owner(&owner), index(index) {
+}
+
+ControlBuilder::MetricHandle& ControlBuilder::MetricHandle::section(std::string value) {
+    this->owner->value.metrics[this->index].section_id = std::move(value);
+    return *this;
+}
+
+ControlBuilder::MetricHandle& ControlBuilder::MetricHandle::summary() {
+    this->owner->value.metrics[this->index].placement_flags |= ControlPlacementPanelSummary;
+    return *this;
+}
+
+ControlBuilder::MetricHandle& ControlBuilder::MetricHandle::overlay() {
+    this->owner->value.metrics[this->index].placement_flags |= ControlPlacementViewportOverlay;
+    return *this;
+}
+
+ControlBuilder::MetricHandle& ControlBuilder::MetricHandle::detail() {
+    this->owner->value.metrics[this->index].placement_flags |= ControlPlacementPanelDetail;
+    return *this;
+}
+
+ControlBuilder::MetricHandle& ControlBuilder::MetricHandle::color(std::array<float, 4u> value) {
+    Metric& metric = this->owner->value.metrics[this->index];
+    metric.has_color = true;
+    metric.color = value;
+    return *this;
+}
+
+ControlBuilder& ControlBuilder::phase(std::string value) {
+    this->value.phase = std::move(value);
+    return *this;
+}
+
+ControlBuilder& ControlBuilder::headline(std::string value) {
+    this->value.headline = std::move(value);
+    return *this;
+}
+
+ControlBuilder& ControlBuilder::detail(std::string value) {
+    this->value.detail = std::move(value);
+    return *this;
+}
+
+ControlBuilder::MetricHandle ControlBuilder::metric(std::string key, std::string label, std::string metric_value) {
+    this->value.metrics.push_back(Metric{
+        .key = std::move(key),
+        .label = std::move(label),
+        .value = std::move(metric_value),
+    });
+    return MetricHandle{*this, this->value.metrics.size() - 1u};
+}
+
+ControlBuilder::MetricHandle ControlBuilder::metric(std::string key, std::string label, const std::string_view value) {
+    return this->metric(std::move(key), std::move(label), std::string{value});
+}
+
+ControlBuilder::MetricHandle ControlBuilder::metric(std::string key, std::string label, const char* value) {
+    return this->metric(std::move(key), std::move(label), value == nullptr ? std::string{} : std::string{value});
+}
+
+ControlBuilder& ControlBuilder::enable(std::string action_id) {
+    this->value.action_states.push_back(ActionState{.action_id = std::move(action_id), .enabled = true});
+    return *this;
+}
+
+ControlBuilder& ControlBuilder::disable(std::string action_id, std::string reason) {
+    this->value.action_states.push_back(ActionState{.action_id = std::move(action_id), .enabled = false, .disabled_reason = std::move(reason)});
+    return *this;
+}
+
+const ControlState& ControlBuilder::state() const {
+    return this->value;
+}
+
+ControlSection section(std::string id, std::string label) {
+    return ControlSection{.id = std::move(id), .label = std::move(label)};
+}
+
+OptionChoice option_choice(std::string value) {
+    return OptionChoice{.value = value, .label = std::move(value)};
+}
+
+OptionChoice option_choice(std::string value, std::string label) {
+    return OptionChoice{.value = std::move(value), .label = std::move(label)};
+}
+
+namespace {
+    [[nodiscard]] OptionSchema option_schema(std::string key, std::string label, const OptionKind kind) {
+        return OptionSchema{.key = std::move(key), .label = std::move(label), .kind = kind};
+    }
+}
+
+OptionSchema text(std::string key, std::string label) {
+    return option_schema(std::move(key), std::move(label), OptionKind::Text);
+}
+
+OptionSchema directory(std::string key, std::string label) {
+    return option_schema(std::move(key), std::move(label), OptionKind::DirectoryPath);
+}
+
+OptionSchema file(std::string key, std::string label) {
+    return option_schema(std::move(key), std::move(label), OptionKind::FilePath);
+}
+
+OptionSchema choice(std::string key, std::string label, const std::initializer_list<std::string> values) {
+    OptionSchema schema = option_schema(std::move(key), std::move(label), OptionKind::Choice);
+    schema.choices.reserve(values.size());
+    for (const std::string& value : values) schema.choices.push_back(option_choice(value));
+    return schema;
+}
+
+OptionSchema toggle(std::string key, std::string label, const bool default_value) {
+    return option_schema(std::move(key), std::move(label), OptionKind::Bool).defaulted(default_value ? "true" : "false");
+}
+
+OptionSchema float_option(std::string key, std::string label, const float default_value) {
+    return option_schema(std::move(key), std::move(label), OptionKind::Float).defaulted(std::format("{:.9g}", default_value));
+}
+
+OptionSchema unsigned_integer(std::string key, std::string label, const std::uint64_t default_value) {
+    return option_schema(std::move(key), std::move(label), OptionKind::UnsignedInteger).defaulted(std::format("{}", default_value));
+}
+
+bool parse_bool(const std::string_view text) {
+    if (text == "true") return true;
+    if (text == "false") return false;
+    throw std::runtime_error(std::format("expected bool setting value, got '{}'", text));
+}
+
+float parse_float(const std::string_view text) {
+    float value{};
+    const char* const begin = text.data();
+    const char* const end = text.data() + text.size();
+    const std::from_chars_result result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(value)) throw std::runtime_error(std::format("expected finite float setting value, got '{}'", text));
+    return value;
+}
+
+std::uint64_t parse_unsigned_integer(const std::string_view text) {
+    std::uint64_t value{};
+    const char* const begin = text.data();
+    const char* const end = text.data() + text.size();
+    const std::from_chars_result result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end) throw std::runtime_error(std::format("expected unsigned integer setting value, got '{}'", text));
+    return value;
+}
+
 namespace {
     struct OptionSchemaViews {
         std::vector<std::vector<SpectraSceneControlOptionChoice>> choices{};
@@ -499,11 +1299,12 @@ namespace {
         OptionSchemaViews open_options{};
         std::vector<OptionSchemaViews> action_options{};
         std::vector<SpectraSceneControlAction> control_actions{};
+        std::vector<OptionSchema> control_setting_schemas{};
         OptionSchemaViews control_settings{};
     };
 
     struct SceneViewCache {
-        instant_ngp::spectra_project::Document document{};
+        Document document{};
         std::vector<SpectraSceneMaterial> material_views{};
         std::vector<SpectraSceneLight> light_views{};
         std::vector<std::vector<SpectraSceneVolumeChannel>> volume_channel_storage{};
@@ -513,20 +1314,22 @@ namespace {
         std::vector<SpectraSceneViewportCameraVisual> camera_visual_views{};
     };
 
-    struct ProjectControlStateCache {
-        instant_ngp::spectra_project::ProjectControlState state{};
+    struct ControlStateCache {
+        ControlState state{};
         std::vector<SpectraSceneControlMetric> metric_views{};
         std::vector<SpectraSceneControlActionState> action_state_views{};
     };
 
     struct PluginInstance {
-        instant_ngp::spectra_project::InstantNgpSpectraProject project{};
+        const TypeErasedPluginDefinition* definition{};
+        void* project{};
         std::string last_error{};
         SceneViewCache scene_cache{};
-        ProjectControlStateCache control_state_cache{};
+        ControlStateCache control_state_cache{};
     };
 
     std::string global_error{};
+    const TypeErasedPluginDefinition* active_definition{};
 
     [[nodiscard]] std::string string_from_abi(const char* value, const std::string_view context, const bool allow_empty) {
         const std::string_view view = value == nullptr ? std::string_view{} : std::string_view{value};
@@ -534,14 +1337,14 @@ namespace {
         return std::string{view};
     }
 
-    [[nodiscard]] std::vector<instant_ngp::spectra_project::Option> options_from_abi(const SpectraSceneOptionSpan options, const std::string_view context) {
+    [[nodiscard]] std::vector<Option> options_from_abi(const SpectraSceneOptionSpan options, const std::string_view context) {
         if (options.count != 0u && options.data == nullptr) throw std::runtime_error(std::format("{} pointer is null", context));
         if (options.count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error(std::format("{} count is too large", context));
-        std::vector<instant_ngp::spectra_project::Option> converted{};
+        std::vector<Option> converted{};
         converted.reserve(static_cast<std::size_t>(options.count));
         const std::span<const SpectraSceneOption> option_span{options.data, static_cast<std::size_t>(options.count)};
         for (const SpectraSceneOption& option : option_span) {
-            converted.push_back(instant_ngp::spectra_project::Option{
+            converted.push_back(Option{
                 .key = string_from_abi(option.key, std::format("{} key", context), false),
                 .value = string_from_abi(option.value, std::format("{} value", context), true),
             });
@@ -556,16 +1359,16 @@ namespace {
         return message;
     }
 
-    [[nodiscard]] instant_ngp::spectra_project::GpuResourceHandleKind gpu_handle_kind_from_abi(const std::uint32_t kind) {
+    [[nodiscard]] GpuResourceHandleKind gpu_handle_kind_from_abi(const std::uint32_t kind) {
         switch (kind) {
-            case 1u: return instant_ngp::spectra_project::GpuResourceHandleKind::OpaqueWin32;
-            case 2u: return instant_ngp::spectra_project::GpuResourceHandleKind::OpaqueFileDescriptor;
+            case 1u: return GpuResourceHandleKind::OpaqueWin32;
+            case 2u: return GpuResourceHandleKind::OpaqueFileDescriptor;
             default: throw std::runtime_error(std::format("unknown scene plugin GPU resource handle kind {}", kind));
         }
     }
 
-    [[nodiscard]] instant_ngp::spectra_project::GpuDeviceIdentity device_identity_from_abi(const SpectraSceneGpuDeviceIdentity& identity) {
-        instant_ngp::spectra_project::GpuDeviceIdentity converted{
+    [[nodiscard]] GpuDeviceIdentity device_identity_from_abi(const SpectraSceneGpuDeviceIdentity& identity) {
+        GpuDeviceIdentity converted{
             .vendor_id = identity.vendor_id,
             .device_id = identity.device_id,
             .device_node_mask = identity.device_node_mask,
@@ -575,20 +1378,20 @@ namespace {
         return converted;
     }
 
-    [[nodiscard]] OptionSchemaViews make_option_schema_views(const std::vector<instant_ngp::spectra_project::OptionSchema>& schemas) {
+    [[nodiscard]] OptionSchemaViews make_option_schema_views(const std::vector<OptionSchema>& schemas) {
         OptionSchemaViews views{};
         views.choices.resize(schemas.size());
         views.schemas.reserve(schemas.size());
         for (std::size_t index = 0u; index < schemas.size(); ++index) {
-            const instant_ngp::spectra_project::OptionSchema& schema = schemas[index];
+            const OptionSchema& schema = schemas[index];
             views.choices[index].reserve(schema.choices.size());
-            for (const instant_ngp::spectra_project::OptionChoice& choice : schema.choices) views.choices[index].push_back(SpectraSceneControlOptionChoice{.value = choice.value.c_str(), .label = choice.label.c_str()});
+            for (const OptionChoice& choice : schema.choices) views.choices[index].push_back(SpectraSceneControlOptionChoice{.value = choice.value.c_str(), .label = choice.label.c_str()});
             views.schemas.push_back(SpectraSceneControlOptionSchema{
                 .key = schema.key.c_str(),
                 .label = schema.label.c_str(),
                 .description = schema.description.c_str(),
                 .kind = static_cast<std::uint32_t>(schema.kind),
-                .required = schema.required ? 1u : 0u,
+                .required = schema.required_flag ? 1u : 0u,
                 .default_value = schema.default_value.c_str(),
                 .section_id = schema.section_id.c_str(),
                 .choices = SpectraSceneControlOptionChoiceSpan{.data = views.choices[index].empty() ? nullptr : views.choices[index].data(), .count = static_cast<std::uint64_t>(views.choices[index].size())},
@@ -597,37 +1400,33 @@ namespace {
         return views;
     }
 
-    [[nodiscard]] DescriptorViews make_descriptor_views() {
-        const instant_ngp::spectra_project::Descriptor& descriptor = instant_ngp::spectra_project::InstantNgpSpectraProject::descriptor();
+    [[nodiscard]] DescriptorViews make_descriptor_views(const TypeErasedPluginDefinition& descriptor) {
         DescriptorViews views{};
         views.sections.reserve(descriptor.sections.size());
-        for (const instant_ngp::spectra_project::ControlSection& section : descriptor.sections) {
+        for (const ControlSection& section : descriptor.sections) {
             views.sections.push_back(SpectraSceneControlSection{
                 .id = section.id.c_str(),
                 .label = section.label.c_str(),
             });
         }
         views.open_options = make_option_schema_views(descriptor.open_options);
-        views.action_options.reserve(descriptor.control_actions.size());
-        views.control_actions.reserve(descriptor.control_actions.size());
-        for (const instant_ngp::spectra_project::ProjectAction& action : descriptor.control_actions) {
-            views.action_options.push_back(make_option_schema_views(action.options));
+        views.action_options.reserve(descriptor.actions.size());
+        views.control_actions.reserve(descriptor.actions.size());
+        for (const TypeErasedAction& action : descriptor.actions) {
+            views.action_options.push_back(make_option_schema_views(action.schema.options));
             const OptionSchemaViews& action_options = views.action_options.back();
             views.control_actions.push_back(SpectraSceneControlAction{
-                .id = action.id.c_str(),
-                .label = action.label.c_str(),
-                .description = action.description.c_str(),
-                .section_id = action.section_id.c_str(),
-                .style = action.style,
+                .id = action.schema.id.c_str(),
+                .label = action.schema.label.c_str(),
+                .description = action.schema.description.c_str(),
+                .section_id = action.schema.section_id.c_str(),
+                .style = action.schema.style,
                 .options = SpectraSceneControlOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
             });
         }
-        views.control_settings = make_option_schema_views(descriptor.control_settings);
-        return views;
-    }
-
-    [[nodiscard]] const DescriptorViews& descriptor_views() {
-        static const DescriptorViews views = make_descriptor_views();
+        views.control_setting_schemas.reserve(descriptor.settings.size());
+        for (const TypeErasedSetting& setting : descriptor.settings) views.control_setting_schemas.push_back(setting.schema);
+        views.control_settings = make_option_schema_views(views.control_setting_schemas);
         return views;
     }
 
@@ -636,7 +1435,7 @@ namespace {
         for (std::size_t index = 0u; index < Count; ++index) output[index] = input[index];
     }
 
-    [[nodiscard]] SpectraSceneTransform make_transform_view(const instant_ngp::spectra_project::Transform& transform) {
+    [[nodiscard]] SpectraSceneTransform make_transform_view(const Transform& transform) {
         SpectraSceneTransform view{};
         copy_array(view.position, transform.position);
         copy_array(view.rotation, transform.rotation);
@@ -644,14 +1443,14 @@ namespace {
         return view;
     }
 
-    [[nodiscard]] SpectraSceneEntityRef make_entity_ref_view(const instant_ngp::spectra_project::SceneEntityRef& ref) {
+    [[nodiscard]] SpectraSceneEntityRef make_entity_ref_view(const SceneEntityRef& ref) {
         return SpectraSceneEntityRef{
             .kind = static_cast<std::uint32_t>(ref.kind),
             .name = ref.name.c_str(),
         };
     }
 
-    [[nodiscard]] SpectraSceneMaterial make_material_view(const instant_ngp::spectra_project::Material& material) {
+    [[nodiscard]] SpectraSceneMaterial make_material_view(const Material& material) {
         SpectraSceneMaterial view{
             .name = material.name.c_str(),
             .model = material.model.c_str(),
@@ -665,7 +1464,7 @@ namespace {
         return view;
     }
 
-    [[nodiscard]] SpectraSceneLight make_light_view(const instant_ngp::spectra_project::Light& light) {
+    [[nodiscard]] SpectraSceneLight make_light_view(const Light& light) {
         SpectraSceneLight view{
             .name = light.name.c_str(),
             .kind = light.kind.c_str(),
@@ -677,15 +1476,15 @@ namespace {
         return view;
     }
 
-    void make_volume_views(SceneViewCache& cache, const std::vector<instant_ngp::spectra_project::VolumeGrid>& volumes) {
+    void make_volume_views(SceneViewCache& cache, const std::vector<VolumeGrid>& volumes) {
         cache.volume_channel_storage.clear();
         cache.volume_views.clear();
         cache.volume_channel_storage.resize(volumes.size());
         cache.volume_views.reserve(volumes.size());
         for (std::size_t volume_index = 0u; volume_index < volumes.size(); ++volume_index) {
-            const instant_ngp::spectra_project::VolumeGrid& volume = volumes[volume_index];
+            const VolumeGrid& volume = volumes[volume_index];
             cache.volume_channel_storage[volume_index].reserve(volume.channels.size());
-            for (const instant_ngp::spectra_project::VolumeChannel& channel : volume.channels) {
+            for (const VolumeChannel& channel : volume.channels) {
                 SpectraSceneVolumeChannel channel_view{
                     .name = channel.name.c_str(),
                     .format = static_cast<std::uint32_t>(channel.format),
@@ -716,7 +1515,7 @@ namespace {
         }
     }
 
-    [[nodiscard]] SpectraSceneCamera make_camera_view(const instant_ngp::spectra_project::Camera& camera) {
+    [[nodiscard]] SpectraSceneCamera make_camera_view(const Camera& camera) {
         SpectraSceneCamera view{
             .name = camera.name.c_str(),
             .local_coordinate_system = camera.local_coordinate_system.c_str(),
@@ -737,7 +1536,7 @@ namespace {
         return view;
     }
 
-    [[nodiscard]] SpectraSceneViewportCameraVisual make_camera_visual_view(const instant_ngp::spectra_project::ViewportCameraVisual& visual) {
+    [[nodiscard]] SpectraSceneViewportCameraVisual make_camera_visual_view(const ViewportCameraVisual& visual) {
         SpectraSceneViewportCameraVisual view{
             .name = visual.name.c_str(),
             .owner = make_entity_ref_view(visual.owner),
@@ -750,7 +1549,7 @@ namespace {
         };
         copy_array(view.color, visual.color);
         if (visual.image.has_value()) {
-            const instant_ngp::spectra_project::ViewportCameraVisualImage& image = *visual.image;
+            const ViewportCameraVisualImage& image = *visual.image;
             view.image = SpectraSceneViewportCameraVisualImage{
                 .rgba8 = image.rgba8,
                 .rgba8_size = image.rgba8_size,
@@ -763,7 +1562,7 @@ namespace {
         return view;
     }
 
-    [[nodiscard]] SpectraSceneViewportVoxelGrid make_voxel_grid_view(const instant_ngp::spectra_project::ViewportVoxelGrid& grid) {
+    [[nodiscard]] SpectraSceneViewportVoxelGrid make_voxel_grid_view(const ViewportVoxelGrid& grid) {
         SpectraSceneViewportVoxelGrid view{
             .name = grid.name.c_str(),
             .owner = make_entity_ref_view(grid.owner),
@@ -788,20 +1587,20 @@ namespace {
     [[nodiscard]] SpectraSceneDocumentView make_document_view(SceneViewCache& cache) {
         cache.material_views.clear();
         cache.material_views.reserve(cache.document.materials.size());
-        for (const instant_ngp::spectra_project::Material& material : cache.document.materials) cache.material_views.push_back(make_material_view(material));
+        for (const Material& material : cache.document.materials) cache.material_views.push_back(make_material_view(material));
         cache.light_views.clear();
         cache.light_views.reserve(cache.document.lights.size());
-        for (const instant_ngp::spectra_project::Light& light : cache.document.lights) cache.light_views.push_back(make_light_view(light));
+        for (const Light& light : cache.document.lights) cache.light_views.push_back(make_light_view(light));
         make_volume_views(cache, cache.document.volumes);
         cache.camera_views.clear();
         cache.camera_views.reserve(cache.document.cameras.size());
-        for (const instant_ngp::spectra_project::Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
+        for (const Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
         cache.voxel_grid_views.clear();
         cache.voxel_grid_views.reserve(cache.document.debug_attachments.viewport_voxel_grids.size());
-        for (const instant_ngp::spectra_project::ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
+        for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
         cache.camera_visual_views.clear();
         cache.camera_visual_views.reserve(cache.document.debug_attachments.viewport_camera_visuals.size());
-        for (const instant_ngp::spectra_project::ViewportCameraVisual& visual : cache.document.debug_attachments.viewport_camera_visuals) cache.camera_visual_views.push_back(make_camera_visual_view(visual));
+        for (const ViewportCameraVisual& visual : cache.document.debug_attachments.viewport_camera_visuals) cache.camera_visual_views.push_back(make_camera_visual_view(visual));
         return SpectraSceneDocumentView{
             .struct_size = sizeof(SpectraSceneDocumentView),
             .default_coordinate_system = cache.document.default_coordinate_system.c_str(),
@@ -817,12 +1616,12 @@ namespace {
         };
     }
 
-    [[nodiscard]] SpectraSceneControlStateView make_control_state_view(ProjectControlStateCache& cache) {
+    [[nodiscard]] SpectraSceneControlStateView make_control_state_view(ControlStateCache& cache) {
         cache.metric_views.clear();
         cache.action_state_views.clear();
         cache.metric_views.reserve(cache.state.metrics.size());
         cache.action_state_views.reserve(cache.state.action_states.size());
-        for (const instant_ngp::spectra_project::ProjectMetric& metric : cache.state.metrics) {
+        for (const Metric& metric : cache.state.metrics) {
             cache.metric_views.push_back(SpectraSceneControlMetric{
                 .key = metric.key.c_str(),
                 .label = metric.label.c_str(),
@@ -834,7 +1633,7 @@ namespace {
             });
             copy_array(cache.metric_views.back().color, metric.color);
         }
-        for (const instant_ngp::spectra_project::ProjectActionState& action_state : cache.state.action_states) {
+        for (const ActionState& action_state : cache.state.action_states) {
             cache.action_state_views.push_back(SpectraSceneControlActionState{
                 .action_id = action_state.action_id.c_str(),
                 .enabled = action_state.enabled ? 1u : 0u,
@@ -868,22 +1667,23 @@ namespace {
             }
             *instance = nullptr;
             if (open_info->struct_size != sizeof(SpectraSceneOpenInfo)) throw std::runtime_error("scene plugin open info ABI size mismatch");
-            std::vector<instant_ngp::spectra_project::Option> options = options_from_abi(open_info->options, "scene plugin open options");
+            if (active_definition == nullptr) throw std::runtime_error("scene plugin definition is not initialized");
+            std::vector<Option> options = options_from_abi(open_info->options, "scene plugin open options");
             if (open_info->host_services == nullptr) throw std::runtime_error("scene plugin open info host services pointer is null");
             if (open_info->host_services->struct_size != sizeof(SpectraSceneHostServices)) throw std::runtime_error("scene plugin host services ABI size mismatch");
             if (open_info->host_services->request_gpu_buffer == nullptr) throw std::runtime_error("scene plugin host services request_gpu_buffer function is null");
             if (open_info->host_services->release_gpu_buffer == nullptr) throw std::runtime_error("scene plugin host services release_gpu_buffer function is null");
             if (open_info->host_services->last_error == nullptr) throw std::runtime_error("scene plugin host services last_error function is null");
             const SpectraSceneHostServices* host_services_view = open_info->host_services;
-            std::shared_ptr<instant_ngp::spectra_project::HostServices> host_services = std::make_shared<instant_ngp::spectra_project::HostServices>();
+            std::shared_ptr<HostServices> host_services = std::make_shared<HostServices>();
             host_services->request_gpu_buffer = [host_services_view](const std::uint32_t kind, const std::uint64_t byte_size, const std::string_view debug_name) {
                 const std::string debug_name_text{debug_name};
                 std::uint32_t abi_kind{};
                 switch (kind) {
-                    case instant_ngp::spectra_project::GpuBufferKindVolumeChannel:
+                    case GpuBufferKindVolumeChannel:
                         abi_kind = SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL;
                         break;
-                    case instant_ngp::spectra_project::GpuBufferKindViewportVoxelGrid:
+                    case GpuBufferKindViewportVoxelGrid:
                         abi_kind = SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID;
                         break;
                     default:
@@ -900,7 +1700,7 @@ namespace {
                 if (result != SPECTRA_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*host_services_view));
                 if (allocation.struct_size != sizeof(SpectraSceneGpuBufferAllocation)) throw std::runtime_error("scene plugin GPU buffer allocation ABI size mismatch");
                 if (allocation.kind != abi_kind) throw std::runtime_error(std::format("scene plugin GPU buffer allocation kind {} does not match request kind {}", allocation.kind, abi_kind));
-                return instant_ngp::spectra_project::GpuBufferAllocation{
+                return GpuBufferAllocation{
                     .resource_id = allocation.resource_id,
                     .byte_size = allocation.byte_size,
                     .kind = kind,
@@ -914,7 +1714,8 @@ namespace {
                 if (result != SPECTRA_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*host_services_view));
             };
             std::unique_ptr<PluginInstance> created = std::make_unique<PluginInstance>();
-            created->project = instant_ngp::spectra_project::InstantNgpSpectraProject::open(options, std::move(host_services));
+            created->definition = active_definition;
+            created->project = active_definition->open(OpenContext{.options = std::move(options), .host_services = std::move(host_services)});
             *instance = reinterpret_cast<SpectraSceneInstance*>(created.release());
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -924,7 +1725,10 @@ namespace {
     }
 
     void scene_destroy(SpectraSceneInstance* instance) noexcept {
-        delete reinterpret_cast<PluginInstance*>(instance);
+        PluginInstance* plugin_instance = reinterpret_cast<PluginInstance*>(instance);
+        if (plugin_instance == nullptr) return;
+        if (plugin_instance->definition != nullptr && plugin_instance->project != nullptr) plugin_instance->definition->destroy(plugin_instance->project);
+        delete plugin_instance;
     }
 
     [[nodiscard]] SpectraSceneResult scene_reset(SpectraSceneInstance* instance) noexcept {
@@ -944,7 +1748,9 @@ namespace {
             PluginInstance& plugin_instance = checked_instance(instance, "document");
             if (document == nullptr) throw std::runtime_error("document output pointer is null");
             plugin_instance.last_error.clear();
-            plugin_instance.scene_cache.document = plugin_instance.project.document();
+            SceneBuilder builder{};
+            plugin_instance.definition->write_scene(plugin_instance.project, builder);
+            plugin_instance.scene_cache.document = builder.document();
             *document = make_document_view(plugin_instance.scene_cache);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -982,7 +1788,7 @@ namespace {
             if (update_info == nullptr) throw std::runtime_error("scene_update info pointer is null");
             if (update_info->struct_size != sizeof(SpectraSceneUpdateInfo)) throw std::runtime_error("scene_update info ABI size mismatch");
             plugin_instance.last_error.clear();
-            plugin_instance.project.update(instant_ngp::spectra_project::UpdateInfo{
+            plugin_instance.definition->update(plugin_instance.project, UpdateInfo{
                 .wall_delta_seconds = update_info->wall_delta_seconds,
                 .scene_delta_seconds = update_info->scene_delta_seconds,
                 .time_seconds = update_info->time_seconds,
@@ -1003,7 +1809,7 @@ namespace {
             PluginInstance& plugin_instance = checked_instance(instance, "scene_revision");
             if (revision == nullptr) throw std::runtime_error("scene_revision output pointer is null");
             plugin_instance.last_error.clear();
-            *revision = plugin_instance.project.scene_revision();
+            *revision = plugin_instance.definition->revision(plugin_instance.project);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1017,8 +1823,10 @@ namespace {
             PluginInstance& plugin_instance = checked_instance(instance, "control_action");
             plugin_instance.last_error.clear();
             const std::string action = string_from_abi(action_id, "control action id", false);
-            const std::vector<instant_ngp::spectra_project::Option> converted_options = options_from_abi(options, "control action options");
-            plugin_instance.project.execute_action(action, converted_options);
+            const std::vector<Option> converted_options = options_from_abi(options, "control action options");
+            const auto action_binding = std::ranges::find_if(plugin_instance.definition->actions, [&action](const TypeErasedAction& candidate) { return candidate.schema.id == action; });
+            if (action_binding == plugin_instance.definition->actions.end()) throw std::runtime_error(std::format("unknown control action '{}'", action));
+            action_binding->invoke(plugin_instance.project, ActionContext{.options = converted_options});
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1033,7 +1841,9 @@ namespace {
             plugin_instance.last_error.clear();
             const std::string setting_key = string_from_abi(key, "control setting key", false);
             const std::string setting_value = string_from_abi(value, "control setting value", true);
-            plugin_instance.project.update_setting(setting_key, setting_value);
+            const auto setting = std::ranges::find_if(plugin_instance.definition->settings, [&setting_key](const TypeErasedSetting& candidate) { return candidate.schema.key == setting_key; });
+            if (setting == plugin_instance.definition->settings.end()) throw std::runtime_error(std::format("unknown control setting '{}'", setting_key));
+            setting->update(plugin_instance.project, setting_value);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1047,7 +1857,9 @@ namespace {
             PluginInstance& plugin_instance = checked_instance(instance, "control_state");
             if (state == nullptr) throw std::runtime_error("control_state output pointer is null");
             plugin_instance.last_error.clear();
-            plugin_instance.control_state_cache.state = plugin_instance.project.control_state();
+            ControlBuilder builder{};
+            plugin_instance.definition->write_controls(plugin_instance.project, builder);
+            plugin_instance.control_state_cache.state = builder.state();
             *state = make_control_state_view(plugin_instance.control_state_cache);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -1057,22 +1869,28 @@ namespace {
         }
     }
 
-    [[nodiscard]] const SpectraScenePlugin& plugin() {
-        const instant_ngp::spectra_project::Descriptor& descriptor = instant_ngp::spectra_project::InstantNgpSpectraProject::descriptor();
-        const DescriptorViews& views = descriptor_views();
-        static const SpectraScenePlugin value{
+    struct PluginExportState {
+        DescriptorViews views{};
+        SpectraScenePlugin plugin{};
+    };
+
+    [[nodiscard]] PluginExportState make_export_state(const TypeErasedPluginDefinition& definition) {
+        PluginExportState state{
+            .views = make_descriptor_views(definition),
+        };
+        state.plugin = SpectraScenePlugin{
             .abi_version = plugin_abi_version,
             .struct_size = sizeof(SpectraScenePlugin),
-            .id = descriptor.id.c_str(),
-            .title = descriptor.title.c_str(),
-            .open_action_label = descriptor.open_action_label.c_str(),
-            .open_action_description = descriptor.open_action_description.c_str(),
+            .id = definition.id.c_str(),
+            .title = definition.title.c_str(),
+            .open_action_label = definition.open_action_label.c_str(),
+            .open_action_description = definition.open_action_description.c_str(),
             .base_pbrt_path = "",
-            .frames_per_second = descriptor.frames_per_second,
-            .sections = SpectraSceneControlSectionSpan{.data = views.sections.empty() ? nullptr : views.sections.data(), .count = static_cast<std::uint64_t>(views.sections.size())},
-            .open_options = SpectraSceneControlOptionSchemaSpan{.data = views.open_options.schemas.empty() ? nullptr : views.open_options.schemas.data(), .count = static_cast<std::uint64_t>(views.open_options.schemas.size())},
-            .control_actions = SpectraSceneControlActionSpan{.data = views.control_actions.empty() ? nullptr : views.control_actions.data(), .count = static_cast<std::uint64_t>(views.control_actions.size())},
-            .control_settings = SpectraSceneControlOptionSchemaSpan{.data = views.control_settings.schemas.empty() ? nullptr : views.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(views.control_settings.schemas.size())},
+            .frames_per_second = definition.frames_per_second,
+            .sections = SpectraSceneControlSectionSpan{.data = state.views.sections.empty() ? nullptr : state.views.sections.data(), .count = static_cast<std::uint64_t>(state.views.sections.size())},
+            .open_options = SpectraSceneControlOptionSchemaSpan{.data = state.views.open_options.schemas.empty() ? nullptr : state.views.open_options.schemas.data(), .count = static_cast<std::uint64_t>(state.views.open_options.schemas.size())},
+            .control_actions = SpectraSceneControlActionSpan{.data = state.views.control_actions.empty() ? nullptr : state.views.control_actions.data(), .count = static_cast<std::uint64_t>(state.views.control_actions.size())},
+            .control_settings = SpectraSceneControlOptionSchemaSpan{.data = state.views.control_settings.schemas.empty() ? nullptr : state.views.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(state.views.control_settings.schemas.size())},
             .create = scene_create,
             .destroy = scene_destroy,
             .reset = scene_reset,
@@ -1085,10 +1903,14 @@ namespace {
             .control_state = control_state,
             .last_error = last_error,
         };
-        return value;
+        return state;
     }
 } // namespace
 
-extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v4(void) {
-    return &plugin();
+const SpectraScenePlugin* export_type_erased_plugin(const TypeErasedPluginDefinition& definition) {
+    active_definition = &definition;
+    static const PluginExportState state = make_export_state(definition);
+    return &state.plugin;
 }
+
+} // namespace ngp::plugin

@@ -11,15 +11,22 @@ module;
 
 #include <cuda_runtime_api.h>
 
-module instant_ngp.spectra_project;
+#if defined(_WIN32)
+#define SPECTRA_SCENE_EXPORT __declspec(dllexport)
+#else
+#define SPECTRA_SCENE_EXPORT __attribute__((visibility("default")))
+#endif
+
+module ngp.project;
 
 import std;
 import dataset.nerf_synthetic;
 import dataset.dd_nerf;
 import ngp.train;
 import ngp.inspector;
+import ngp.plugin;
 
-namespace instant_ngp::spectra_project {
+namespace ngp::project {
     namespace {
         constexpr std::uint32_t viewport_width_screen = 0u;
         constexpr std::uint32_t viewport_depth_tested = 0u;
@@ -96,93 +103,6 @@ namespace instant_ngp::spectra_project {
             std::uint64_t revision{};
         };
 
-        [[nodiscard]] OptionChoice choice(std::string value) {
-            return OptionChoice{.value = value, .label = std::move(value)};
-        }
-
-        [[nodiscard]] OptionSchema option(std::string key, std::string label, std::string description, const OptionKind kind, const bool required, std::string section_id, std::string default_value = {}, std::vector<OptionChoice> choices = {}) {
-            return OptionSchema{
-                .key = std::move(key),
-                .label = std::move(label),
-                .description = std::move(description),
-                .kind = kind,
-                .required = required,
-                .default_value = std::move(default_value),
-                .section_id = std::move(section_id),
-                .choices = std::move(choices),
-            };
-        }
-
-        [[nodiscard]] ProjectAction action(std::string id, std::string label, std::string description, std::string section_id, std::vector<OptionSchema> options = {}, const std::uint32_t style = ControlActionStyleSecondary) {
-            return ProjectAction{
-                .id = std::move(id),
-                .label = std::move(label),
-                .description = std::move(description),
-                .section_id = std::move(section_id),
-                .style = style,
-                .options = std::move(options),
-            };
-        }
-
-        [[nodiscard]] Descriptor make_descriptor() {
-            return Descriptor{
-                .id = "instant-ngp.project",
-                .title = "Instant NGP Project",
-                .open_action_label = "Open Dataset",
-                .open_action_description = "Load the configured dataset and publish scene entities to Spectra.",
-                .frames_per_second = 60.0,
-                .sections = {
-                    ControlSection{.id = section_dataset_id, .label = "Dataset"},
-                    ControlSection{.id = section_camera_visuals_id, .label = "Camera Visuals"},
-                    ControlSection{.id = section_training_id, .label = "Training"},
-                    ControlSection{.id = section_preview_id, .label = "Preview"},
-                    ControlSection{.id = section_diagnostics_id, .label = "Diagnostics"},
-                },
-                .open_options = {
-                    option("dataset", "Dataset", "Dataset root directory.", OptionKind::DirectoryPath, true, section_dataset_id),
-                    option("format", "Format", "Dataset provider.", OptionKind::Choice, false, section_dataset_id, "auto", {choice("auto"), choice("nerf-synthetic"), choice("dd-nerf-dataset")}),
-                    option("frame_sets", "Frame Sets", "Comma-separated frame sets: train, validation, test.", OptionKind::Text, false, section_dataset_id, "train"),
-                    option("scene_scale", "Scene Scale", "Dataset scene scale passed to the dataset loader.", OptionKind::Float, false, section_dataset_id, "0.33"),
-                    option("frame_stride", "Frame Stride", "Only every Nth frame is visualized.", OptionKind::UnsignedInteger, false, section_dataset_id, "1"),
-                    option("max_frames", "Max Frames", "0 means no frame count limit.", OptionKind::UnsignedInteger, false, section_dataset_id, "0"),
-                    option("visual_far", "Visual Far", "Camera frustum visualization far plane.", OptionKind::Float, false, section_camera_visuals_id, "0.25"),
-                    option("image_alpha", "Image Alpha", "Camera image plane opacity in [0, 1].", OptionKind::Float, false, section_camera_visuals_id, "0.35"),
-                    option("frustum_width", "Frustum Width", "Screen-space frustum line width.", OptionKind::Float, false, section_camera_visuals_id, "1.5"),
-                },
-                .control_actions = {
-                    action(
-                        action_start_training_id,
-                        "Start Training",
-                        "Start or resume optimization on the selected frame set.",
-                        section_training_id,
-                        {
-                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for optimization.", OptionKind::Choice, false, section_training_id, "train", {choice("train"), choice("validation"), choice("test")}),
-                            option(action_option_target_steps_key, "Target Steps", "Optimization stops when this global step is reached.", OptionKind::UnsignedInteger, false, section_training_id, "200000"),
-                            option(action_option_steps_per_update_key, "Steps Per Update", "Optimization iterations executed during each GUI project update.", OptionKind::UnsignedInteger, false, section_training_id, "1"),
-                        },
-                        ControlActionStylePrimary),
-                    action(action_pause_training_id, "Pause", "Pause optimization after the current GUI update.", section_training_id),
-                    action(
-                        action_render_preview_id,
-                        "Render Preview",
-                        "Render one loaded frame through the current model and publish GT, prediction, and error images.",
-                        section_preview_id,
-                        {
-                            option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for preview rendering.", OptionKind::Choice, false, section_preview_id, "train", {choice("train"), choice("validation"), choice("test")}),
-                            option(action_option_image_index_key, "Image Index", "Zero-based image index in the selected frame set.", OptionKind::UnsignedInteger, false, section_preview_id, "0"),
-                            option(action_option_refresh_acceleration_key, "Refresh Acceleration", "Rebuild the density-grid acceleration before rendering.", OptionKind::Bool, false, section_preview_id, "false"),
-                        },
-                        ControlActionStylePrimary),
-                    action(action_reset_training_id, "Reset", "Destroy the current optimizer state and keep the loaded dataset visualization.", section_training_id, {}, ControlActionStyleDanger),
-                },
-                .control_settings = {
-                    option(setting_show_occupancy_key, "Show Occupancy", "Show the occupancy voxel grid attached to the reconstructed density volume.", OptionKind::Bool, false, section_diagnostics_id, "true"),
-                    option(setting_occupancy_alpha_key, "Occupancy Alpha", "Viewport occupancy voxel opacity in [0, 1].", OptionKind::Float, false, section_diagnostics_id, "0.18"),
-                    option(setting_occupancy_cell_scale_key, "Cell Scale", "Viewport occupancy voxel cube scale in (0, 1].", OptionKind::Float, false, section_diagnostics_id, "0.75"),
-                },
-            };
-        }
-
         [[nodiscard]] float parse_float(const std::string& text, const std::string_view name) {
             float value{};
             const char* const begin = text.data();
@@ -225,11 +145,11 @@ namespace instant_ngp::spectra_project {
             return frame_sets;
         }
 
-        [[nodiscard]] SceneOptions parse_scene_options(const std::span<const Option> options) {
+        [[nodiscard]] SceneOptions parse_scene_options(const std::span<const ngp::plugin::Option> options) {
             SceneOptions parsed{};
             std::optional<std::string> dataset_option{};
             std::set<std::string> seen_options{};
-            for (const Option& option : options) {
+            for (const ngp::plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("scene plugin open option '{}' is duplicated", option.key));
                 if (option.key == "dataset") dataset_option = option.value;
                 else if (option.key == "format") parsed.format = option.value;
@@ -362,22 +282,22 @@ namespace instant_ngp::spectra_project {
         }
     }
 
-    struct InstantNgpSpectraProject::State {
+    struct Project::State {
         ~State() noexcept;
 
         SceneOptions options{};
-        std::shared_ptr<HostServices> host_services{};
+        std::shared_ptr<ngp::plugin::HostServices> host_services{};
         std::variant<std::monostate, dataset::nerf_synthetic::Dataset, dataset::dd_nerf::Dataset> dataset{};
         std::unique_ptr<ngp::train::InstantNGP> ngp{};
         TrainingOptions training{};
         std::optional<ngp::train::OptimizationStats> latest_stats{};
         std::optional<PreviewState> latest_preview{};
         std::uint64_t next_preview_revision{1u};
-        GpuBufferAllocation density_allocation{};
+        ngp::plugin::GpuBufferAllocation density_allocation{};
         cudaExternalMemory_t density_external_memory{};
         float* density_values{};
         std::uint64_t density_buffer_byte_size{};
-        GpuBufferAllocation color_allocation{};
+        ngp::plugin::GpuBufferAllocation color_allocation{};
         cudaExternalMemory_t color_external_memory{};
         float* color_values{};
         std::uint64_t color_buffer_byte_size{};
@@ -387,65 +307,120 @@ namespace instant_ngp::spectra_project {
         std::array<std::uint32_t, 3u> exported_density_dimensions{};
         float exported_density_optical_thickness_step{};
         float exported_volume_density_scale{};
-        GpuBufferAllocation occupancy_allocation{};
+        ngp::plugin::GpuBufferAllocation occupancy_allocation{};
         cudaExternalMemory_t occupancy_external_memory{};
         std::uint8_t* occupancy_bitfield{};
         std::uint64_t occupancy_buffer_byte_size{};
         std::uint64_t exported_occupancy_revision{};
-        std::optional<ViewportVoxelGrid> occupancy_grid{};
-        std::vector<Material> materials{};
-        std::vector<Light> lights{};
-        std::optional<VolumeGrid> density_volume{};
-        DebugAttachmentSet debug_attachments{};
+        std::optional<ngp::plugin::ViewportVoxelGrid> occupancy_grid{};
+        std::vector<ngp::plugin::Material> materials{};
+        std::vector<ngp::plugin::Light> lights{};
+        std::optional<ngp::plugin::VolumeGrid> density_volume{};
+        ngp::plugin::DebugAttachmentSet debug_attachments{};
         bool training_running{};
         bool training_complete{};
         bool host_timeline_playing{true};
-        std::uint32_t host_timeline_mode{ControlTimelineModeLive};
+        std::uint32_t host_timeline_mode{ngp::plugin::ControlTimelineModeLive};
         std::string project_error{};
         std::uint64_t scene_revision{1u};
-        std::vector<Camera> cameras{};
+        std::vector<ngp::plugin::Camera> cameras{};
         std::string overview_camera_name{"Overview"};
     };
 
-    InstantNgpSpectraProject::InstantNgpSpectraProject() = default;
-    InstantNgpSpectraProject::InstantNgpSpectraProject(std::unique_ptr<State> state) : state(std::move(state)) {}
-    InstantNgpSpectraProject::InstantNgpSpectraProject(InstantNgpSpectraProject&& other) noexcept = default;
-    InstantNgpSpectraProject& InstantNgpSpectraProject::operator=(InstantNgpSpectraProject&& other) noexcept = default;
-    InstantNgpSpectraProject::~InstantNgpSpectraProject() noexcept = default;
+    Project::Project() = default;
+    Project::Project(std::unique_ptr<State> state) : state(std::move(state)) {}
+    Project::Project(Project&& other) noexcept = default;
+    Project& Project::operator=(Project&& other) noexcept = default;
+    Project::~Project() noexcept = default;
 
-    const Descriptor& InstantNgpSpectraProject::descriptor() {
-        static const Descriptor descriptor = make_descriptor();
-        return descriptor;
+    const ngp::plugin::PluginDefinition<Project>& Project::plugin() {
+        static const ngp::plugin::PluginDefinition<Project> definition{
+            .id = "ngp.project",
+            .title = "Instant NGP Project",
+            .open_action_label = "Open Dataset",
+            .open_action_description = "Load the configured dataset and publish scene entities to Spectra.",
+            .frames_per_second = 60.0,
+            .sections = {
+                ngp::plugin::section(section_dataset_id, "Dataset"),
+                ngp::plugin::section(section_camera_visuals_id, "Camera Visuals"),
+                ngp::plugin::section(section_training_id, "Training"),
+                ngp::plugin::section(section_preview_id, "Preview"),
+                ngp::plugin::section(section_diagnostics_id, "Diagnostics"),
+            },
+            .open_options = {
+                ngp::plugin::directory("dataset", "Dataset").describe("Dataset root directory.").section(section_dataset_id).required(),
+                ngp::plugin::choice("format", "Format", {"auto", "nerf-synthetic", "dd-nerf-dataset"}).describe("Dataset provider.").section(section_dataset_id).defaulted("auto"),
+                ngp::plugin::text("frame_sets", "Frame Sets").describe("Comma-separated frame sets: train, validation, test.").section(section_dataset_id).defaulted("train"),
+                ngp::plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
+                ngp::plugin::unsigned_integer("frame_stride", "Frame Stride", 1u).describe("Only every Nth frame is visualized.").section(section_dataset_id),
+                ngp::plugin::unsigned_integer("max_frames", "Max Frames", 0u).describe("0 means no frame count limit.").section(section_dataset_id),
+                ngp::plugin::float_option("visual_far", "Visual Far", 0.25f).describe("Camera frustum visualization far plane.").section(section_camera_visuals_id),
+                ngp::plugin::float_option("image_alpha", "Image Alpha", 0.35f).describe("Camera image plane opacity in [0, 1].").section(section_camera_visuals_id),
+                ngp::plugin::float_option("frustum_width", "Frustum Width", 1.5f).describe("Screen-space frustum line width.").section(section_camera_visuals_id),
+            },
+            .actions = {
+                ngp::plugin::action(action_start_training_id, "Start Training", &Project::start_training)
+                    .description("Start or resume optimization on the selected frame set.")
+                    .section(section_training_id)
+                    .primary()
+                    .option(ngp::plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for optimization.").section(section_training_id).defaulted("train"))
+                    .option(ngp::plugin::unsigned_integer(action_option_target_steps_key, "Target Steps", 200000u).describe("Optimization stops when this global step is reached.").section(section_training_id))
+                    .option(ngp::plugin::unsigned_integer(action_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id)),
+                ngp::plugin::action(action_pause_training_id, "Pause", &Project::pause_training)
+                    .description("Pause optimization after the current GUI update.")
+                    .section(section_training_id),
+                ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
+                    .description("Render one loaded frame through the current model and publish preview metrics.")
+                    .section(section_preview_id)
+                    .primary()
+                    .option(ngp::plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
+                    .option(ngp::plugin::unsigned_integer(action_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id))
+                    .option(ngp::plugin::toggle(action_option_refresh_acceleration_key, "Refresh Acceleration", false).describe("Rebuild the density-grid acceleration before rendering.").section(section_preview_id)),
+                ngp::plugin::action(action_reset_training_id, "Reset", &Project::reset_training)
+                    .description("Destroy the current optimizer state and keep the loaded dataset visualization.")
+                    .section(section_training_id)
+                    .danger(),
+            },
+            .settings = {
+                ngp::plugin::toggle(setting_show_occupancy_key, "Show Occupancy", true, &Project::set_show_occupancy)
+                    .section(section_diagnostics_id),
+                ngp::plugin::float_value(setting_occupancy_alpha_key, "Occupancy Alpha", 0.18f, &Project::set_occupancy_alpha)
+                    .section(section_diagnostics_id),
+                ngp::plugin::float_value(setting_occupancy_cell_scale_key, "Cell Scale", 0.75f, &Project::set_occupancy_cell_scale)
+                    .section(section_diagnostics_id),
+            },
+        };
+        return definition;
     }
 
     namespace {
-        [[nodiscard]] bool frame_set_loaded(const InstantNgpSpectraProject::State& state, const std::string& frame_set) {
+        [[nodiscard]] bool frame_set_loaded(const Project::State& state, const std::string& frame_set) {
             return std::ranges::any_of(state.options.frame_sets, [&frame_set](const std::string& loaded_frame_set) { return loaded_frame_set == frame_set; });
         }
 
-        [[nodiscard]] std::uint32_t current_training_step(const InstantNgpSpectraProject::State& state) {
+        [[nodiscard]] std::uint32_t current_training_step(const Project::State& state) {
             if (!state.latest_stats.has_value()) return 0u;
             return state.latest_stats->step;
         }
 
-        [[nodiscard]] bool host_timeline_advances_scene(const InstantNgpSpectraProject::State& state) {
-            return state.host_timeline_playing && state.host_timeline_mode != ControlTimelineModePlayback;
+        [[nodiscard]] bool host_timeline_advances_scene(const Project::State& state) {
+            return state.host_timeline_playing && state.host_timeline_mode != ngp::plugin::ControlTimelineModePlayback;
         }
 
         [[nodiscard]] bool has_nonzero_bytes(const std::span<const std::uint8_t> bytes) {
             return std::ranges::any_of(bytes, [](const std::uint8_t value) { return value != 0u; });
         }
 
-        void close_imported_handle(GpuBufferAllocation& allocation) noexcept {
+        void close_imported_handle(ngp::plugin::GpuBufferAllocation& allocation) noexcept {
 #if defined(_WIN32)
-            if (allocation.handle_kind == GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
+            if (allocation.handle_kind == ngp::plugin::GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
 #else
-            if (allocation.handle_kind == GpuResourceHandleKind::OpaqueFileDescriptor && allocation.handle != 0u) static_cast<void>(close(static_cast<int>(allocation.handle)));
+            if (allocation.handle_kind == ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor && allocation.handle != 0u) static_cast<void>(close(static_cast<int>(allocation.handle)));
 #endif
             allocation.handle = 0u;
         }
 
-        void release_density_buffer(InstantNgpSpectraProject::State& state) noexcept {
+        void release_density_buffer(Project::State& state) noexcept {
             state.density_values = nullptr;
             if (state.density_external_memory != nullptr) {
                 static_cast<void>(cudaDestroyExternalMemory(state.density_external_memory));
@@ -457,7 +432,7 @@ namespace instant_ngp::spectra_project {
                 } catch (...) {
                 }
             }
-            state.density_allocation = GpuBufferAllocation{};
+            state.density_allocation = ngp::plugin::GpuBufferAllocation{};
             state.density_buffer_byte_size = 0u;
             state.exported_density_revision = 0u;
             state.exported_density_dimensions = {};
@@ -466,7 +441,7 @@ namespace instant_ngp::spectra_project {
             state.density_volume.reset();
         }
 
-        void release_color_buffer(InstantNgpSpectraProject::State& state) noexcept {
+        void release_color_buffer(Project::State& state) noexcept {
             state.color_values = nullptr;
             if (state.color_external_memory != nullptr) {
                 static_cast<void>(cudaDestroyExternalMemory(state.color_external_memory));
@@ -478,12 +453,12 @@ namespace instant_ngp::spectra_project {
                 } catch (...) {
                 }
             }
-            state.color_allocation = GpuBufferAllocation{};
+            state.color_allocation = ngp::plugin::GpuBufferAllocation{};
             state.color_buffer_byte_size = 0u;
             state.exported_color_revision = 0u;
         }
 
-        void release_occupancy_buffer(InstantNgpSpectraProject::State& state) noexcept {
+        void release_occupancy_buffer(Project::State& state) noexcept {
             state.occupancy_bitfield = nullptr;
             if (state.occupancy_external_memory != nullptr) {
                 static_cast<void>(cudaDestroyExternalMemory(state.occupancy_external_memory));
@@ -495,13 +470,13 @@ namespace instant_ngp::spectra_project {
                 } catch (...) {
                 }
             }
-            state.occupancy_allocation = GpuBufferAllocation{};
+            state.occupancy_allocation = ngp::plugin::GpuBufferAllocation{};
             state.occupancy_buffer_byte_size = 0u;
             state.exported_occupancy_revision = 0u;
             state.occupancy_grid.reset();
         }
 
-        void validate_cuda_device_identity(const GpuDeviceIdentity& identity) {
+        void validate_cuda_device_identity(const ngp::plugin::GpuDeviceIdentity& identity) {
             int cuda_device = -1;
             if (const cudaError_t status = cudaGetDevice(&cuda_device); status != cudaSuccess) throw std::runtime_error{std::string{"cudaGetDevice failed: "} + cudaGetErrorString(status)};
             cudaDeviceProp device_properties{};
@@ -525,16 +500,16 @@ namespace instant_ngp::spectra_project {
 #endif
         }
 
-        void ensure_density_buffer(InstantNgpSpectraProject::State& state, const std::uint64_t byte_size) {
+        void ensure_density_buffer(Project::State& state, const std::uint64_t byte_size) {
             if (state.density_allocation.resource_id != 0u && state.density_buffer_byte_size >= byte_size) return;
             if (state.density_allocation.resource_id != 0u) release_density_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for density volume visualization."};
             if (byte_size == 0u) throw std::runtime_error{"density grid volume byte size is invalid."};
             if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
             if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume");
+            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid density volume resource id."};
-            if (allocation.kind != GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume density GPU buffer."};
+            if (allocation.kind != ngp::plugin::GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume density GPU buffer."};
             if (allocation.byte_size < byte_size) {
                 close_imported_handle(allocation);
                 state.host_services->release_gpu_buffer(allocation.resource_id);
@@ -551,12 +526,12 @@ namespace instant_ngp::spectra_project {
                 memory_desc.size = allocation.byte_size;
                 switch (allocation.handle_kind) {
 #if defined(_WIN32)
-                    case GpuResourceHandleKind::OpaqueWin32:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
                         memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
                         break;
 #else
-                    case GpuResourceHandleKind::OpaqueFileDescriptor:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
                         memory_desc.handle.fd = static_cast<int>(allocation.handle);
                         break;
@@ -592,16 +567,16 @@ namespace instant_ngp::spectra_project {
             }
         }
 
-        void ensure_color_buffer(InstantNgpSpectraProject::State& state, const std::uint64_t byte_size) {
+        void ensure_color_buffer(Project::State& state, const std::uint64_t byte_size) {
             if (state.color_allocation.resource_id != 0u && state.color_buffer_byte_size >= byte_size) return;
             if (state.color_allocation.resource_id != 0u) release_color_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for color volume visualization."};
             if (byte_size == 0u) throw std::runtime_error{"color grid volume byte size is invalid."};
             if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
             if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindVolumeChannel, byte_size, "instant-ngp color grid volume");
+            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp color grid volume");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid color volume resource id."};
-            if (allocation.kind != GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume color GPU buffer."};
+            if (allocation.kind != ngp::plugin::GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume color GPU buffer."};
             if (allocation.byte_size < byte_size) {
                 close_imported_handle(allocation);
                 state.host_services->release_gpu_buffer(allocation.resource_id);
@@ -618,12 +593,12 @@ namespace instant_ngp::spectra_project {
                 memory_desc.size = allocation.byte_size;
                 switch (allocation.handle_kind) {
 #if defined(_WIN32)
-                    case GpuResourceHandleKind::OpaqueWin32:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
                         memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
                         break;
 #else
-                    case GpuResourceHandleKind::OpaqueFileDescriptor:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
                         memory_desc.handle.fd = static_cast<int>(allocation.handle);
                         break;
@@ -659,16 +634,16 @@ namespace instant_ngp::spectra_project {
             }
         }
 
-        void ensure_occupancy_buffer(InstantNgpSpectraProject::State& state, const ngp::inspector::OccupancyGridDeviceView& view) {
+        void ensure_occupancy_buffer(Project::State& state, const ngp::inspector::OccupancyGridDeviceView& view) {
             if (state.occupancy_allocation.resource_id != 0u && state.occupancy_buffer_byte_size >= view.bitfield_bytes) return;
             if (state.occupancy_allocation.resource_id != 0u) release_occupancy_buffer(state);
             if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for occupancy grid visualization."};
             if (view.bitfield_bytes == 0u) throw std::runtime_error{"occupancy grid bitfield byte size is invalid."};
             if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
             if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield");
+            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield");
             if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid occupancy grid resource id."};
-            if (allocation.kind != GpuBufferKindViewportVoxelGrid) throw std::runtime_error{"Spectra returned a non-viewport-voxel occupancy GPU buffer."};
+            if (allocation.kind != ngp::plugin::GpuBufferKindViewportVoxelGrid) throw std::runtime_error{"Spectra returned a non-viewport-voxel occupancy GPU buffer."};
             if (allocation.byte_size < view.bitfield_bytes) {
                 close_imported_handle(allocation);
                 state.host_services->release_gpu_buffer(allocation.resource_id);
@@ -685,12 +660,12 @@ namespace instant_ngp::spectra_project {
                 memory_desc.size = allocation.byte_size;
                 switch (allocation.handle_kind) {
 #if defined(_WIN32)
-                    case GpuResourceHandleKind::OpaqueWin32:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
                         memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
                         break;
 #else
-                    case GpuResourceHandleKind::OpaqueFileDescriptor:
+                    case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
                         memory_desc.handle.fd = static_cast<int>(allocation.handle);
                         break;
@@ -726,7 +701,7 @@ namespace instant_ngp::spectra_project {
             }
         }
 
-        void publish_occupancy_grid_if_ready(InstantNgpSpectraProject::State& state) {
+        void publish_occupancy_grid_if_ready(Project::State& state) {
             if (!state.options.show_occupancy || state.ngp == nullptr || !state.density_volume.has_value()) {
                 state.occupancy_grid.reset();
                 return;
@@ -751,25 +726,25 @@ namespace instant_ngp::spectra_project {
             if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"cudaDeviceSynchronize after occupancy grid export failed: "} + cudaGetErrorString(status)};
             const float voxel_size = 1.0f / static_cast<float>(view.dimensions[0]);
             state.exported_occupancy_revision = view.revision;
-            state.occupancy_grid = ViewportVoxelGrid{
+            state.occupancy_grid = ngp::plugin::ViewportVoxelGrid{
                 .name = "NGP Occupancy Grid",
-                .owner = SceneEntityRef{.kind = SceneEntityKind::VolumeGrid, .name = density_volume_name},
+                .owner = ngp::plugin::SceneEntityRef{.kind = ngp::plugin::SceneEntityKind::VolumeGrid, .name = density_volume_name},
                 .dimensions = view.dimensions,
                 .origin = {0.0f, 0.0f, 0.0f},
                 .voxel_size = {voxel_size, voxel_size, voxel_size},
-                .transform = Transform{},
+                .transform = ngp::plugin::Transform{},
                 .color = {0.12f, 0.78f, 1.0f, state.options.occupancy_alpha},
                 .cell_scale = state.options.occupancy_cell_scale,
                 .depth_mode = viewport_depth_tested,
-                .source_kind = ViewportVoxelGridSourceKind::Bitfield,
-                .index_encoding = ViewportVoxelGridIndexEncoding::Morton3D,
+                .source_kind = ngp::plugin::ViewportVoxelGridSourceKind::Bitfield,
+                .index_encoding = ngp::plugin::ViewportVoxelGridIndexEncoding::Morton3D,
                 .buffer_id = state.occupancy_allocation.resource_id,
                 .source_byte_size = view.bitfield_bytes,
                 .revision = view.revision,
             };
         }
 
-        void create_trainer_if_needed(InstantNgpSpectraProject::State& state) {
+        void create_trainer_if_needed(Project::State& state) {
             if (state.ngp != nullptr) return;
             std::visit([&](const auto& dataset) {
                 if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
@@ -780,13 +755,13 @@ namespace instant_ngp::spectra_project {
             }, state.dataset);
         }
 
-        void refresh_debug_attachments(InstantNgpSpectraProject::State& state) {
+        void refresh_debug_attachments(Project::State& state) {
             publish_occupancy_grid_if_ready(state);
             state.debug_attachments.viewport_voxel_grids.clear();
             if (state.occupancy_grid.has_value()) state.debug_attachments.viewport_voxel_grids.push_back(*state.occupancy_grid);
         }
 
-        void publish_density_grid_volume(InstantNgpSpectraProject::State& state) {
+        void publish_density_grid_volume(Project::State& state) {
             create_trainer_if_needed(state);
             const ngp::inspector::Inspector inspector{*state.ngp};
             const ngp::inspector::DensityGridDeviceView view = inspector.density_grid_device_view();
@@ -825,7 +800,7 @@ namespace instant_ngp::spectra_project {
             const float volume_density_scale = 1.0f / view.optical_thickness_step;
 
             state.materials = {
-                Material{
+                ngp::plugin::Material{
                     .name = density_material_name,
                     .model = "volume",
                     .alpha_mode = "blend",
@@ -836,14 +811,14 @@ namespace instant_ngp::spectra_project {
                 },
             };
             state.lights = {
-                Light{
+                ngp::plugin::Light{
                     .name = density_light_name,
                     .kind = "directional",
                     .color = {1.0f, 1.0f, 1.0f},
                     .intensity = 3.0f,
                 },
             };
-            state.density_volume = VolumeGrid{
+            state.density_volume = ngp::plugin::VolumeGrid{
                 .name = density_volume_name,
                 .dimensions = view.dimensions,
                 .origin = {0.0f, 0.0f, 0.0f},
@@ -853,23 +828,23 @@ namespace instant_ngp::spectra_project {
                     1.0f / static_cast<float>(view.dimensions[2]),
                 },
                 .channels = {
-                    VolumeChannel{
+                    ngp::plugin::VolumeChannel{
                         .name = "density",
                         .dimensions = view.dimensions,
-                        .format = VolumeChannelFormat::Float32,
-                        .source_kind = VolumeChannelSourceKind::ExternalGpuBuffer,
-                        .index_encoding = VolumeChannelIndexEncoding::Morton3D,
+                        .format = ngp::plugin::VolumeChannelFormat::Float32,
+                        .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
+                        .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.density_allocation.resource_id,
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(state.density_values),
                         .source_byte_size = byte_size,
                         .revision = view.revision,
                     },
-                    VolumeChannel{
+                    ngp::plugin::VolumeChannel{
                         .name = "color",
                         .dimensions = view.dimensions,
-                        .format = VolumeChannelFormat::Float32x3,
-                        .source_kind = VolumeChannelSourceKind::ExternalGpuBuffer,
-                        .index_encoding = VolumeChannelIndexEncoding::Morton3D,
+                        .format = ngp::plugin::VolumeChannelFormat::Float32x3,
+                        .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
+                        .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.color_allocation.resource_id,
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(state.color_values),
                         .source_byte_size = color_byte_size,
@@ -887,16 +862,16 @@ namespace instant_ngp::spectra_project {
             ++state.scene_revision;
         }
 
-        void set_project_error(InstantNgpSpectraProject::State& state, std::string message) {
+        void set_project_error(Project::State& state, std::string message) {
             state.project_error = std::move(message);
             state.training_running = false;
             state.training_complete = false;
         }
 
-        [[nodiscard]] TrainingOptions parse_training_options(const InstantNgpSpectraProject::State& state, const std::span<const Option> options) {
+        [[nodiscard]] TrainingOptions parse_training_options(const Project::State& state, const std::span<const ngp::plugin::Option> options) {
             TrainingOptions parsed{};
             std::set<std::string> seen_options{};
-            for (const Option& option : options) {
+            for (const ngp::plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
                 if (option.key == action_option_frame_set_key) parsed.frame_set = option.value;
                 else if (option.key == action_option_target_steps_key) {
@@ -917,10 +892,10 @@ namespace instant_ngp::spectra_project {
             return parsed;
         }
 
-        [[nodiscard]] PreviewOptions parse_preview_options(const InstantNgpSpectraProject::State& state, const std::span<const Option> options) {
+        [[nodiscard]] PreviewOptions parse_preview_options(const Project::State& state, const std::span<const ngp::plugin::Option> options) {
             PreviewOptions parsed{};
             std::set<std::string> seen_options{};
-            for (const Option& option : options) {
+            for (const ngp::plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
                 if (option.key == action_option_frame_set_key) parsed.frame_set = option.value;
                 else if (option.key == action_option_image_index_key) {
@@ -938,37 +913,19 @@ namespace instant_ngp::spectra_project {
             return parsed;
         }
 
-        void add_metric(ProjectControlState& control_state, std::string key, std::string label, std::string value, std::string section_id = section_diagnostics_id, const std::uint32_t placement_flags = ControlPlacementPanelDetail, const std::optional<std::array<float, 4u>> color = {}) {
-            ProjectMetric metric{
-                .key = std::move(key),
-                .label = std::move(label),
-                .value = std::move(value),
-                .section_id = std::move(section_id),
-                .placement_flags = placement_flags,
-            };
-            if (color.has_value()) {
-                metric.has_color = true;
-                metric.color = *color;
-            }
-            control_state.metrics.push_back(std::move(metric));
-        }
-
-        void add_action_state(ProjectControlState& control_state, std::string action_id, const bool enabled, std::string disabled_reason = {}) {
-            control_state.action_states.push_back(ProjectActionState{.action_id = std::move(action_id), .enabled = enabled, .disabled_reason = std::move(disabled_reason)});
-        }
     }
 
-    InstantNgpSpectraProject::State::~State() noexcept {
+    Project::State::~State() noexcept {
         release_color_buffer(*this);
         release_density_buffer(*this);
         release_occupancy_buffer(*this);
     }
 
-    InstantNgpSpectraProject InstantNgpSpectraProject::open(const std::span<const Option> options, std::shared_ptr<HostServices> host_services) {
-        if (host_services == nullptr) throw std::runtime_error("host services are required to open the Instant NGP Spectra project");
+    Project Project::open(ngp::plugin::OpenContext context) {
+        if (context.host_services == nullptr) throw std::runtime_error("host services are required to open the Instant NGP Spectra project");
         std::unique_ptr<State> created = std::make_unique<State>();
-        created->host_services = std::move(host_services);
-        created->options = parse_scene_options(options);
+        created->host_services = std::move(context.host_services);
+        created->options = parse_scene_options(context.options);
 
         const bool is_nerf_synthetic = dataset::nerf_synthetic::is_dataset(created->options.dataset_path);
         const bool is_dd_nerf = dataset::dd_nerf::is_dataset(created->options.dataset_path);
@@ -1027,13 +984,13 @@ namespace instant_ngp::spectra_project {
         const Vector3 overview_right = normalize(cross(overview_up, overview_forward), "overview camera right");
         const Vector3 overview_camera_up = cross(overview_forward, overview_right);
         const Quaternion overview_rotation = quaternion_from_frame(overview_right, overview_camera_up, overview_forward, "overview camera");
-        created->cameras.push_back(Camera{
+        created->cameras.push_back(ngp::plugin::Camera{
             .name = created->overview_camera_name,
             .local_coordinate_system = spectra_y_up,
-            .transform = Transform{.position = {overview_eye.x, overview_eye.y, overview_eye.z}, .rotation = {overview_rotation.x, overview_rotation.y, overview_rotation.z, overview_rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
+            .transform = ngp::plugin::Transform{.position = {overview_eye.x, overview_eye.y, overview_eye.z}, .rotation = {overview_rotation.x, overview_rotation.y, overview_rotation.z, overview_rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
             .target = {overview_target.x, overview_target.y, overview_target.z},
             .up = {overview_up.x, overview_up.y, overview_up.z},
-            .projection = CameraProjection::Perspective,
+            .projection = ngp::plugin::CameraProjection::Perspective,
             .vertical_fov_degrees = 45.0f,
             .near_plane = 0.01f,
             .far_plane = 20.0f,
@@ -1065,13 +1022,13 @@ namespace instant_ngp::spectra_project {
                         if (frame.rgba.empty()) throw std::runtime_error(std::format("dataset camera '{}' image is empty", camera_name));
                         if (static_cast<std::uint64_t>(frame.rgba.size()) != expected_bytes) throw std::runtime_error(std::format("dataset camera '{}' image byte count does not match width * height * 4", camera_name));
                         const float t = selected_camera_count > 1u ? static_cast<float>(selected_index) / static_cast<float>(selected_camera_count - 1u) : 0.0f;
-                        created->cameras.push_back(Camera{
+                        created->cameras.push_back(ngp::plugin::Camera{
                             .name = camera_name,
                             .local_coordinate_system = opencv,
-                            .transform = Transform{.position = {origin.x, origin.y, origin.z}, .rotation = {rotation.x, rotation.y, rotation.z, rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
+                            .transform = ngp::plugin::Transform{.position = {origin.x, origin.y, origin.z}, .rotation = {rotation.x, rotation.y, rotation.z, rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
                             .target = {focus.x, focus.y, focus.z},
                             .up = {navigation_up.x, navigation_up.y, navigation_up.z},
-                            .projection = CameraProjection::Pinhole,
+                            .projection = ngp::plugin::CameraProjection::Pinhole,
                             .vertical_fov_degrees = 45.0f,
                             .image_width = frame.width,
                             .image_height = frame.height,
@@ -1082,16 +1039,16 @@ namespace instant_ngp::spectra_project {
                             .near_plane = 0.01f,
                             .far_plane = 10.0f,
                         });
-                        created->debug_attachments.viewport_camera_visuals.push_back(ViewportCameraVisual{
+                        created->debug_attachments.viewport_camera_visuals.push_back(ngp::plugin::ViewportCameraVisual{
                             .name = std::format("{} Visual", camera_name),
-                            .owner = SceneEntityRef{.kind = SceneEntityKind::Camera, .name = camera_name},
+                            .owner = ngp::plugin::SceneEntityRef{.kind = ngp::plugin::SceneEntityKind::Camera, .name = camera_name},
                             .color = {0.12f + 0.72f * t, 0.82f, 1.0f - 0.55f * t, 0.52f},
                             .width = created->options.frustum_width,
                             .width_mode = viewport_width_screen,
                             .depth_mode = viewport_always_visible,
                             .visual_near = 0.02f,
                             .visual_far = created->options.visual_far,
-                            .image = ViewportCameraVisualImage{
+                            .image = ngp::plugin::ViewportCameraVisualImage{
                                 .rgba8 = frame.rgba.data(),
                                 .rgba8_size = expected_bytes,
                                 .revision = 1u,
@@ -1107,16 +1064,16 @@ namespace instant_ngp::spectra_project {
         }, created->dataset);
 
         publish_density_grid_volume(*created);
-        return InstantNgpSpectraProject{std::move(created)};
+        return Project{std::move(created)};
     }
 
-    void InstantNgpSpectraProject::update(const UpdateInfo& update) {
+    void Project::update(const ngp::plugin::UpdateInfo& update) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
         if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
         if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
-        if (update.timeline_mode > ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
+        if (update.timeline_mode > ngp::plugin::ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
         state.host_timeline_playing = update.timeline_playing;
         state.host_timeline_mode = update.timeline_mode;
         if (!state.training_running) return;
@@ -1160,187 +1117,193 @@ namespace instant_ngp::spectra_project {
         }
     }
 
-    void InstantNgpSpectraProject::execute_action(const std::string_view action_id, const std::span<const Option> options) {
+    void Project::start_training(ngp::plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        if (action_id == action_start_training_id) {
-            const TrainingOptions parsed = parse_training_options(state, options);
-            create_trainer_if_needed(state);
-            state.training = parsed;
-            state.project_error.clear();
-            state.training_complete = false;
-            state.training_running = true;
-        } else if (action_id == action_pause_training_id) {
-            if (!state.training_running) throw std::runtime_error("training is not running");
-            state.training_running = false;
-        } else if (action_id == action_render_preview_id) {
-            if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
-            const PreviewOptions parsed = parse_preview_options(state, options);
-            create_trainer_if_needed(state);
-            const ngp::inspector::Inspector inspector{*state.ngp};
-            std::expected<ngp::inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(ngp::inspector::EvaluationPreviewRequest{
-                .frame_set = parsed.frame_set,
-                .image_index = parsed.image_index,
-                .refresh_acceleration = parsed.refresh_acceleration,
-            });
-            if (!preview) throw std::runtime_error(preview.error());
-            const std::uint64_t revision = state.next_preview_revision++;
-            PreviewState next_preview{
-                .frame_set = preview->frame_set,
-                .image_index = preview->image_index,
-                .step = preview->step,
-                .mse = preview->mse,
-                .psnr = preview->psnr,
-                .revision = revision,
-            };
-            state.latest_preview = std::move(next_preview);
-            state.project_error.clear();
-        } else if (action_id == action_reset_training_id) {
-            release_color_buffer(state);
-            release_density_buffer(state);
-            release_occupancy_buffer(state);
-            state.ngp.reset();
-            state.latest_stats.reset();
-            state.latest_preview.reset();
-            state.materials.clear();
-            state.lights.clear();
-            state.debug_attachments.viewport_voxel_grids.clear();
-            state.training = TrainingOptions{};
-            state.training_running = false;
-            state.training_complete = false;
-            state.project_error.clear();
-            publish_density_grid_volume(state);
-        } else {
-            throw std::runtime_error(std::format("unknown project action '{}'", action_id));
-        }
+        const TrainingOptions parsed = parse_training_options(state, context.options);
+        create_trainer_if_needed(state);
+        state.training = parsed;
+        state.project_error.clear();
+        state.training_complete = false;
+        state.training_running = true;
     }
 
-    void InstantNgpSpectraProject::update_setting(const std::string_view key, const std::string_view value) {
+    void Project::pause_training() {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        bool changed{};
-        if (key == setting_show_occupancy_key) {
-            const bool parsed = parse_bool(std::string{value}, setting_show_occupancy_key);
-            changed = state.options.show_occupancy != parsed;
-            state.options.show_occupancy = parsed;
-            if (!state.options.show_occupancy) release_occupancy_buffer(state);
-        } else if (key == setting_occupancy_alpha_key) {
-            const float parsed = parse_float(std::string{value}, setting_occupancy_alpha_key);
-            if (parsed < 0.0f || parsed > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
-            changed = state.options.occupancy_alpha != parsed;
-            state.options.occupancy_alpha = parsed;
-        } else if (key == setting_occupancy_cell_scale_key) {
-            const float parsed = parse_float(std::string{value}, setting_occupancy_cell_scale_key);
-            if (!(parsed > 0.0f) || parsed > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
-            changed = state.options.occupancy_cell_scale != parsed;
-            state.options.occupancy_cell_scale = parsed;
-        } else {
-            throw std::runtime_error(std::format("unknown project setting '{}'", key));
-        }
+        if (!state.training_running) throw std::runtime_error("training is not running");
+        state.training_running = false;
+    }
+
+    void Project::render_preview(ngp::plugin::ActionContext context) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
+        const PreviewOptions parsed = parse_preview_options(state, context.options);
+        create_trainer_if_needed(state);
+        const ngp::inspector::Inspector inspector{*state.ngp};
+        std::expected<ngp::inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(ngp::inspector::EvaluationPreviewRequest{
+            .frame_set = parsed.frame_set,
+            .image_index = parsed.image_index,
+            .refresh_acceleration = parsed.refresh_acceleration,
+        });
+        if (!preview) throw std::runtime_error(preview.error());
+        const std::uint64_t revision = state.next_preview_revision++;
+        PreviewState next_preview{
+            .frame_set = preview->frame_set,
+            .image_index = preview->image_index,
+            .step = preview->step,
+            .mse = preview->mse,
+            .psnr = preview->psnr,
+            .revision = revision,
+        };
+        state.latest_preview = std::move(next_preview);
+        state.project_error.clear();
+    }
+
+    void Project::reset_training() {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        release_color_buffer(state);
+        release_density_buffer(state);
+        release_occupancy_buffer(state);
+        state.ngp.reset();
+        state.latest_stats.reset();
+        state.latest_preview.reset();
+        state.materials.clear();
+        state.lights.clear();
+        state.debug_attachments.viewport_voxel_grids.clear();
+        state.training = TrainingOptions{};
+        state.training_running = false;
+        state.training_complete = false;
+        state.project_error.clear();
+        publish_density_grid_volume(state);
+    }
+
+    void Project::set_show_occupancy(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.options.show_occupancy != value;
+        state.options.show_occupancy = value;
+        if (!state.options.show_occupancy) release_occupancy_buffer(state);
         if (!changed) return;
         refresh_debug_attachments(state);
         ++state.scene_revision;
         state.project_error.clear();
     }
 
-    std::uint64_t InstantNgpSpectraProject::scene_revision() const {
+    void Project::set_occupancy_alpha(const float value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        if (value < 0.0f || value > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
+        State& state = *this->state;
+        const bool changed = state.options.occupancy_alpha != value;
+        state.options.occupancy_alpha = value;
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    void Project::set_occupancy_cell_scale(const float value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        if (!(value > 0.0f) || value > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
+        State& state = *this->state;
+        const bool changed = state.options.occupancy_cell_scale != value;
+        state.options.occupancy_cell_scale = value;
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    std::uint64_t Project::revision() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         return this->state->scene_revision;
     }
 
-    ProjectControlState InstantNgpSpectraProject::control_state() const {
+    void Project::write_controls(ngp::plugin::ControlBuilder& controls) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
-        ProjectControlState control_state{};
         if (!state.project_error.empty()) {
-            control_state.phase = "Error";
-            control_state.headline = "Project error";
-            control_state.detail = state.project_error;
+            controls.phase("Error").headline("Project error").detail(state.project_error);
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            control_state.phase = "Running";
-            control_state.headline = "Training running";
-            control_state.detail = std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set);
+            controls.phase("Running").headline("Training running").detail(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
         } else if (state.training_running) {
-            control_state.phase = "Paused";
-            control_state.headline = "Timeline paused";
-            control_state.detail = std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set);
+            controls.phase("Paused").headline("Timeline paused").detail(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
         } else if (state.training_complete) {
-            control_state.phase = "Complete";
-            control_state.headline = "Training complete";
-            control_state.detail = std::format("Reached target step {}.", state.training.target_steps);
+            controls.phase("Complete").headline("Training complete").detail(std::format("Reached target step {}.", state.training.target_steps));
         } else if (state.latest_stats.has_value()) {
-            control_state.phase = "Paused";
-            control_state.headline = "Training paused";
-            control_state.detail = std::format("Current step {}.", current_training_step(state));
+            controls.phase("Paused").headline("Training paused").detail(std::format("Current step {}.", current_training_step(state)));
         } else {
-            control_state.phase = "Ready";
-            control_state.headline = "Dataset loaded";
-            control_state.detail = "Start training from the Scene controls.";
+            controls.phase("Ready").headline("Dataset loaded").detail("Start training from the Scene controls.");
         }
 
-        add_metric(control_state, "dataset", "Dataset", state.options.dataset_path.filename().string(), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(control_state, "format", "Format", state.options.format, section_diagnostics_id);
-        add_metric(control_state, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(control_state, "step", "Step", std::format("{}", current_training_step(state)), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
-        add_metric(control_state, "target_steps", "Target", std::format("{}", state.training.target_steps), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(control_state, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden");
-        add_metric(control_state, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision));
-        add_metric(control_state, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision));
-        add_metric(control_state, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
-        add_metric(control_state, "color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None");
-        if (state.density_volume.has_value()) add_metric(control_state, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
-        if (state.exported_density_optical_thickness_step > 0.0f) add_metric(control_state, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
-        if (state.exported_volume_density_scale > 0.0f) add_metric(control_state, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));
-        add_metric(control_state, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden");
+        controls.metric("dataset", "Dataset", state.options.dataset_path.filename().string()).section(section_training_id).summary();
+        controls.metric("format", "Format", state.options.format).section(section_diagnostics_id);
+        controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets)).section(section_training_id).summary();
+        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).summary().overlay().color({0.55f, 0.85f, 1.0f, 1.0f});
+        controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id).summary();
+        controls.metric("density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
+        controls.metric("density_grid_revision", "Density Rev", state.exported_density_revision).section(section_diagnostics_id);
+        controls.metric("color_grid_revision", "Color Rev", state.exported_color_revision).section(section_diagnostics_id);
+        controls.metric("density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None").section(section_diagnostics_id);
+        controls.metric("color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None").section(section_diagnostics_id);
+        if (state.density_volume.has_value()) controls.metric("density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2])).section(section_diagnostics_id);
+        if (state.exported_density_optical_thickness_step > 0.0f) controls.metric("optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step)).section(section_diagnostics_id);
+        if (state.exported_volume_density_scale > 0.0f) controls.metric("volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale)).section(section_diagnostics_id);
+        controls.metric("occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
         if (state.latest_stats.has_value()) {
-            add_metric(control_state, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
-            add_metric(control_state, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
-            add_metric(control_state, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
-            add_metric(control_state, "occupancy_revision", "Occupancy Revision", std::format("{}", state.exported_occupancy_revision));
+            controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).summary().overlay().color({1.0f, 0.38f, 0.25f, 1.0f});
+            controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).summary().overlay().color({0.25f, 0.75f, 1.0f, 1.0f});
+            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).summary().overlay().color({0.16f, 0.86f, 0.55f, 1.0f});
+            controls.metric("occupancy_revision", "Occupancy Revision", state.exported_occupancy_revision).section(section_diagnostics_id);
         }
         if (state.latest_preview.has_value()) {
-            add_metric(control_state, "preview_frame_set", "Preview Frame Set", state.latest_preview->frame_set, section_preview_id);
-            add_metric(control_state, "preview_image", "Preview Image", std::format("{}", state.latest_preview->image_index), section_preview_id);
-            add_metric(control_state, "preview_step", "Preview Step", std::format("{}", state.latest_preview->step), section_preview_id);
-            add_metric(control_state, "preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse), section_preview_id);
-            add_metric(control_state, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", section_preview_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+            controls.metric("preview_frame_set", "Preview Frame Set", state.latest_preview->frame_set).section(section_preview_id);
+            controls.metric("preview_image", "Preview Image", state.latest_preview->image_index).section(section_preview_id);
+            controls.metric("preview_step", "Preview Step", state.latest_preview->step).section(section_preview_id);
+            controls.metric("preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse)).section(section_preview_id);
+            controls.metric("preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf").section(section_preview_id).summary().overlay().color({0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
-            add_action_state(control_state, action_start_training_id, false, "Resolve or reset the project error before starting training.");
-            add_action_state(control_state, action_pause_training_id, false, "Training is not running.");
-            add_action_state(control_state, action_render_preview_id, false, "Resolve or reset the project error before rendering a preview.");
-            add_action_state(control_state, action_reset_training_id, true);
+            controls.disable(action_start_training_id, "Resolve or reset the project error before starting training.");
+            controls.disable(action_pause_training_id, "Training is not running.");
+            controls.disable(action_render_preview_id, "Resolve or reset the project error before rendering a preview.");
+            controls.enable(action_reset_training_id);
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            add_action_state(control_state, action_start_training_id, false, "Training is already running.");
-            add_action_state(control_state, action_pause_training_id, true);
-            add_action_state(control_state, action_render_preview_id, false, "Pause the host timeline before rendering a preview.");
-            add_action_state(control_state, action_reset_training_id, true);
+            controls.disable(action_start_training_id, "Training is already running.");
+            controls.enable(action_pause_training_id);
+            controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
+            controls.enable(action_reset_training_id);
         } else if (state.training_running) {
-            add_action_state(control_state, action_start_training_id, false, "Training is already running; resume with Space or stop it with Pause.");
-            add_action_state(control_state, action_pause_training_id, true);
-            add_action_state(control_state, action_render_preview_id, true);
-            add_action_state(control_state, action_reset_training_id, true);
+            controls.disable(action_start_training_id, "Training is already running; resume with Space or stop it with Pause.");
+            controls.enable(action_pause_training_id);
+            controls.enable(action_render_preview_id);
+            controls.enable(action_reset_training_id);
         } else {
-            add_action_state(control_state, action_start_training_id, true);
-            add_action_state(control_state, action_pause_training_id, false, "Training is not running.");
-            add_action_state(control_state, action_render_preview_id, true);
-            add_action_state(control_state, action_reset_training_id, true);
+            controls.enable(action_start_training_id);
+            controls.disable(action_pause_training_id, "Training is not running.");
+            controls.enable(action_render_preview_id);
+            controls.enable(action_reset_training_id);
         }
-        return control_state;
     }
 
-    Document InstantNgpSpectraProject::document() const {
+    void Project::write_scene(ngp::plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
-        return Document{
+        scene.set_document(ngp::plugin::Document{
             .default_coordinate_system = spectra_y_up,
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
             .materials = this->state->materials,
             .lights = this->state->lights,
-            .volumes = this->state->density_volume.has_value() ? std::vector<VolumeGrid>{*this->state->density_volume} : std::vector<VolumeGrid>{},
+            .volumes = this->state->density_volume.has_value() ? std::vector<ngp::plugin::VolumeGrid>{*this->state->density_volume} : std::vector<ngp::plugin::VolumeGrid>{},
             .debug_attachments = this->state->debug_attachments,
-        };
+        });
     }
 
+}
+
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v4(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+    return ngp::plugin::export_plugin<ngp::project::Project>();
 }

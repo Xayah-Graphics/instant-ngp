@@ -3,7 +3,7 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 project(InstantNGP VERSION 1.0.0 LANGUAGES CXX CUDA)
 
 option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
-option(NGP_BUILD_SPECTRA_PROJECT_PLUGIN "Build the Spectra dynamic project plugin" OFF)
+option(NGP_BUILD_PROJECT_PLUGIN "Build the Spectra dynamic project plugin" OFF)
 
 # ============================================================================
 # C++ Configuration
@@ -146,7 +146,7 @@ set_property(TARGET libngp PROPERTY CXX_MODULE_STD ON)
 # ============================================================================
 # Optional Dataset Loading
 # ============================================================================
-if (NGP_BUILD_APP OR NGP_BUILD_SPECTRA_PROJECT_PLUGIN)
+if (NGP_BUILD_APP OR NGP_BUILD_PROJECT_PLUGIN)
     set(NGP_DATASET_COMMIT "bc636fbfc7507e8173156393f71c0b569f5fe95b")
     set(NGP_DATASET_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/${NGP_DATASET_COMMIT}")
     download_if_needed(
@@ -223,19 +223,19 @@ endif ()
 # ============================================================================
 # Optional Spectra Project Plugin
 # ============================================================================
-if (NGP_BUILD_SPECTRA_PROJECT_PLUGIN)
-    add_library(instant_ngp_spectra_project_plugin SHARED)
+if (NGP_BUILD_PROJECT_PLUGIN)
+    add_library(ngp_project_plugin SHARED)
     target_sources(
-            instant_ngp_spectra_project_plugin
+            ngp_project_plugin
             PRIVATE
-            instant_ngp_spectra_project.cpp
-            instant_ngp_spectra_project_plugin.cpp
+            ngp.project.cpp
             PRIVATE
             FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            instant_ngp_spectra_project.ixx
+            ngp.plugin.ixx
+            ngp.project.ixx
     )
-    target_include_directories(instant_ngp_spectra_project_plugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-    target_compile_definitions(instant_ngp_spectra_project_plugin PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
-    target_link_libraries(instant_ngp_spectra_project_plugin PRIVATE dataset-loader libngp CUDA::cudart)
-    set_property(TARGET instant_ngp_spectra_project_plugin PROPERTY CXX_MODULE_STD ON)
+    target_include_directories(ngp_project_plugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    target_compile_definitions(ngp_project_plugin PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
+    target_link_libraries(ngp_project_plugin PRIVATE dataset-loader libngp CUDA::cudart)
+    set_property(TARGET ngp_project_plugin PROPERTY CXX_MODULE_STD ON)
 endif ()
