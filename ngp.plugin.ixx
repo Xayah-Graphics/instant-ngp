@@ -1289,21 +1289,21 @@ std::uint64_t parse_unsigned_integer(const std::string_view text) {
 }
 
 namespace {
-    struct OptionSchemaViews {
+    struct OptionSchemaAbiStorage {
         std::vector<std::vector<SpectraSceneControlOptionChoice>> choices{};
         std::vector<SpectraSceneControlOptionSchema> schemas{};
     };
 
-    struct DescriptorViews {
+    struct PluginDescriptorStorage {
         std::vector<SpectraSceneControlSection> sections{};
-        OptionSchemaViews open_options{};
-        std::vector<OptionSchemaViews> action_options{};
+        OptionSchemaAbiStorage open_options{};
+        std::vector<OptionSchemaAbiStorage> action_options{};
         std::vector<SpectraSceneControlAction> control_actions{};
         std::vector<OptionSchema> control_setting_schemas{};
-        OptionSchemaViews control_settings{};
+        OptionSchemaAbiStorage control_settings{};
     };
 
-    struct SceneViewCache {
+    struct SceneAbiStorage {
         Document document{};
         std::vector<SpectraSceneMaterial> material_views{};
         std::vector<SpectraSceneLight> light_views{};
@@ -1314,22 +1314,30 @@ namespace {
         std::vector<SpectraSceneViewportCameraVisual> camera_visual_views{};
     };
 
-    struct ControlStateCache {
+    struct ControlStateAbiStorage {
         ControlState state{};
         std::vector<SpectraSceneControlMetric> metric_views{};
         std::vector<SpectraSceneControlActionState> action_state_views{};
+    };
+
+    struct PluginExportState {
+        explicit PluginExportState(const TypeErasedPluginDefinition& plugin_definition);
+
+        [[nodiscard]] static PluginExportState& instance(const TypeErasedPluginDefinition* plugin_definition = nullptr);
+
+        const TypeErasedPluginDefinition& definition;
+        PluginDescriptorStorage descriptor_storage{};
+        SpectraScenePlugin plugin{};
+        std::string export_error{};
     };
 
     struct PluginInstance {
         const TypeErasedPluginDefinition* definition{};
         void* project{};
         std::string last_error{};
-        SceneViewCache scene_cache{};
-        ControlStateCache control_state_cache{};
+        SceneAbiStorage scene_abi{};
+        ControlStateAbiStorage control_state_abi{};
     };
-
-    std::string global_error{};
-    const TypeErasedPluginDefinition* active_definition{};
 
     [[nodiscard]] std::string string_from_abi(const char* value, const std::string_view context, const bool allow_empty) {
         const std::string_view view = value == nullptr ? std::string_view{} : std::string_view{value};
@@ -1378,15 +1386,15 @@ namespace {
         return converted;
     }
 
-    [[nodiscard]] OptionSchemaViews make_option_schema_views(const std::vector<OptionSchema>& schemas) {
-        OptionSchemaViews views{};
-        views.choices.resize(schemas.size());
-        views.schemas.reserve(schemas.size());
+    [[nodiscard]] OptionSchemaAbiStorage make_option_schema_abi_storage(const std::vector<OptionSchema>& schemas) {
+        OptionSchemaAbiStorage storage{};
+        storage.choices.resize(schemas.size());
+        storage.schemas.reserve(schemas.size());
         for (std::size_t index = 0u; index < schemas.size(); ++index) {
             const OptionSchema& schema = schemas[index];
-            views.choices[index].reserve(schema.choices.size());
-            for (const OptionChoice& choice : schema.choices) views.choices[index].push_back(SpectraSceneControlOptionChoice{.value = choice.value.c_str(), .label = choice.label.c_str()});
-            views.schemas.push_back(SpectraSceneControlOptionSchema{
+            storage.choices[index].reserve(schema.choices.size());
+            for (const OptionChoice& choice : schema.choices) storage.choices[index].push_back(SpectraSceneControlOptionChoice{.value = choice.value.c_str(), .label = choice.label.c_str()});
+            storage.schemas.push_back(SpectraSceneControlOptionSchema{
                 .key = schema.key.c_str(),
                 .label = schema.label.c_str(),
                 .description = schema.description.c_str(),
@@ -1394,28 +1402,28 @@ namespace {
                 .required = schema.required_flag ? 1u : 0u,
                 .default_value = schema.default_value.c_str(),
                 .section_id = schema.section_id.c_str(),
-                .choices = SpectraSceneControlOptionChoiceSpan{.data = views.choices[index].empty() ? nullptr : views.choices[index].data(), .count = static_cast<std::uint64_t>(views.choices[index].size())},
+                .choices = SpectraSceneControlOptionChoiceSpan{.data = storage.choices[index].empty() ? nullptr : storage.choices[index].data(), .count = static_cast<std::uint64_t>(storage.choices[index].size())},
             });
         }
-        return views;
+        return storage;
     }
 
-    [[nodiscard]] DescriptorViews make_descriptor_views(const TypeErasedPluginDefinition& descriptor) {
-        DescriptorViews views{};
-        views.sections.reserve(descriptor.sections.size());
+    [[nodiscard]] PluginDescriptorStorage make_plugin_descriptor_storage(const TypeErasedPluginDefinition& descriptor) {
+        PluginDescriptorStorage storage{};
+        storage.sections.reserve(descriptor.sections.size());
         for (const ControlSection& section : descriptor.sections) {
-            views.sections.push_back(SpectraSceneControlSection{
+            storage.sections.push_back(SpectraSceneControlSection{
                 .id = section.id.c_str(),
                 .label = section.label.c_str(),
             });
         }
-        views.open_options = make_option_schema_views(descriptor.open_options);
-        views.action_options.reserve(descriptor.actions.size());
-        views.control_actions.reserve(descriptor.actions.size());
+        storage.open_options = make_option_schema_abi_storage(descriptor.open_options);
+        storage.action_options.reserve(descriptor.actions.size());
+        storage.control_actions.reserve(descriptor.actions.size());
         for (const TypeErasedAction& action : descriptor.actions) {
-            views.action_options.push_back(make_option_schema_views(action.schema.options));
-            const OptionSchemaViews& action_options = views.action_options.back();
-            views.control_actions.push_back(SpectraSceneControlAction{
+            storage.action_options.push_back(make_option_schema_abi_storage(action.schema.options));
+            const OptionSchemaAbiStorage& action_options = storage.action_options.back();
+            storage.control_actions.push_back(SpectraSceneControlAction{
                 .id = action.schema.id.c_str(),
                 .label = action.schema.label.c_str(),
                 .description = action.schema.description.c_str(),
@@ -1424,10 +1432,10 @@ namespace {
                 .options = SpectraSceneControlOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
             });
         }
-        views.control_setting_schemas.reserve(descriptor.settings.size());
-        for (const TypeErasedSetting& setting : descriptor.settings) views.control_setting_schemas.push_back(setting.schema);
-        views.control_settings = make_option_schema_views(views.control_setting_schemas);
-        return views;
+        storage.control_setting_schemas.reserve(descriptor.settings.size());
+        for (const TypeErasedSetting& setting : descriptor.settings) storage.control_setting_schemas.push_back(setting.schema);
+        storage.control_settings = make_option_schema_abi_storage(storage.control_setting_schemas);
+        return storage;
     }
 
     template <std::size_t Count>
@@ -1476,7 +1484,7 @@ namespace {
         return view;
     }
 
-    void make_volume_views(SceneViewCache& cache, const std::vector<VolumeGrid>& volumes) {
+    void make_volume_abi_views(SceneAbiStorage& cache, const std::vector<VolumeGrid>& volumes) {
         cache.volume_channel_storage.clear();
         cache.volume_views.clear();
         cache.volume_channel_storage.resize(volumes.size());
@@ -1584,14 +1592,14 @@ namespace {
         return view;
     }
 
-    [[nodiscard]] SpectraSceneDocumentView make_document_view(SceneViewCache& cache) {
+    [[nodiscard]] SpectraSceneDocumentView make_document_abi_view(SceneAbiStorage& cache) {
         cache.material_views.clear();
         cache.material_views.reserve(cache.document.materials.size());
         for (const Material& material : cache.document.materials) cache.material_views.push_back(make_material_view(material));
         cache.light_views.clear();
         cache.light_views.reserve(cache.document.lights.size());
         for (const Light& light : cache.document.lights) cache.light_views.push_back(make_light_view(light));
-        make_volume_views(cache, cache.document.volumes);
+        make_volume_abi_views(cache, cache.document.volumes);
         cache.camera_views.clear();
         cache.camera_views.reserve(cache.document.cameras.size());
         for (const Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
@@ -1616,7 +1624,7 @@ namespace {
         };
     }
 
-    [[nodiscard]] SpectraSceneControlStateView make_control_state_view(ControlStateCache& cache) {
+    [[nodiscard]] SpectraSceneControlStateView make_control_state_abi_view(ControlStateAbiStorage& cache) {
         cache.metric_views.clear();
         cache.action_state_views.clear();
         cache.metric_views.reserve(cache.state.metrics.size());
@@ -1658,16 +1666,16 @@ namespace {
     [[nodiscard]] SpectraSceneResult scene_create(const SpectraSceneOpenInfo* open_info, SpectraSceneInstance** instance) noexcept {
         try {
             if (open_info == nullptr) {
-                global_error = "create open info pointer is null";
+                PluginExportState::instance().export_error = "create open info pointer is null";
                 return SPECTRA_SCENE_RESULT_ERROR;
             }
             if (instance == nullptr) {
-                global_error = "create instance output pointer is null";
+                PluginExportState::instance().export_error = "create instance output pointer is null";
                 return SPECTRA_SCENE_RESULT_ERROR;
             }
             *instance = nullptr;
             if (open_info->struct_size != sizeof(SpectraSceneOpenInfo)) throw std::runtime_error("scene plugin open info ABI size mismatch");
-            if (active_definition == nullptr) throw std::runtime_error("scene plugin definition is not initialized");
+            const TypeErasedPluginDefinition& definition = PluginExportState::instance().definition;
             std::vector<Option> options = options_from_abi(open_info->options, "scene plugin open options");
             if (open_info->host_services == nullptr) throw std::runtime_error("scene plugin open info host services pointer is null");
             if (open_info->host_services->struct_size != sizeof(SpectraSceneHostServices)) throw std::runtime_error("scene plugin host services ABI size mismatch");
@@ -1714,12 +1722,12 @@ namespace {
                 if (result != SPECTRA_SCENE_RESULT_OK) throw std::runtime_error(host_services_error(*host_services_view));
             };
             std::unique_ptr<PluginInstance> created = std::make_unique<PluginInstance>();
-            created->definition = active_definition;
-            created->project = active_definition->open(OpenContext{.options = std::move(options), .host_services = std::move(host_services)});
+            created->definition = &definition;
+            created->project = definition.open(OpenContext{.options = std::move(options), .host_services = std::move(host_services)});
             *instance = reinterpret_cast<SpectraSceneInstance*>(created.release());
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
-            global_error = error.what();
+            PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1738,7 +1746,7 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1750,12 +1758,12 @@ namespace {
             plugin_instance.last_error.clear();
             SceneBuilder builder{};
             plugin_instance.definition->write_scene(plugin_instance.project, builder);
-            plugin_instance.scene_cache.document = builder.document();
-            *document = make_document_view(plugin_instance.scene_cache);
+            plugin_instance.scene_abi.document = builder.document();
+            *document = make_document_abi_view(plugin_instance.scene_abi);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1772,13 +1780,13 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
 
     [[nodiscard]] const char* last_error(SpectraSceneInstance* instance) noexcept {
-        if (instance == nullptr) return global_error.c_str();
+        if (instance == nullptr) return PluginExportState::instance().export_error.c_str();
         return reinterpret_cast<PluginInstance*>(instance)->last_error.c_str();
     }
 
@@ -1799,7 +1807,7 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1813,7 +1821,7 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1830,7 +1838,7 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1847,7 +1855,7 @@ namespace {
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
@@ -1859,38 +1867,32 @@ namespace {
             plugin_instance.last_error.clear();
             ControlBuilder builder{};
             plugin_instance.definition->write_controls(plugin_instance.project, builder);
-            plugin_instance.control_state_cache.state = builder.state();
-            *state = make_control_state_view(plugin_instance.control_state_cache);
+            plugin_instance.control_state_abi.state = builder.state();
+            *state = make_control_state_abi_view(plugin_instance.control_state_abi);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
-            else global_error = error.what();
+            else PluginExportState::instance().export_error = error.what();
             return SPECTRA_SCENE_RESULT_ERROR;
         }
     }
 
-    struct PluginExportState {
-        DescriptorViews views{};
-        SpectraScenePlugin plugin{};
-    };
-
-    [[nodiscard]] PluginExportState make_export_state(const TypeErasedPluginDefinition& definition) {
-        PluginExportState state{
-            .views = make_descriptor_views(definition),
-        };
-        state.plugin = SpectraScenePlugin{
+    PluginExportState::PluginExportState(const TypeErasedPluginDefinition& plugin_definition)
+        : definition(plugin_definition),
+          descriptor_storage(make_plugin_descriptor_storage(plugin_definition)),
+          plugin(SpectraScenePlugin{
             .abi_version = plugin_abi_version,
             .struct_size = sizeof(SpectraScenePlugin),
-            .id = definition.id.c_str(),
-            .title = definition.title.c_str(),
-            .open_action_label = definition.open_action_label.c_str(),
-            .open_action_description = definition.open_action_description.c_str(),
+            .id = plugin_definition.id.c_str(),
+            .title = plugin_definition.title.c_str(),
+            .open_action_label = plugin_definition.open_action_label.c_str(),
+            .open_action_description = plugin_definition.open_action_description.c_str(),
             .base_pbrt_path = "",
-            .frames_per_second = definition.frames_per_second,
-            .sections = SpectraSceneControlSectionSpan{.data = state.views.sections.empty() ? nullptr : state.views.sections.data(), .count = static_cast<std::uint64_t>(state.views.sections.size())},
-            .open_options = SpectraSceneControlOptionSchemaSpan{.data = state.views.open_options.schemas.empty() ? nullptr : state.views.open_options.schemas.data(), .count = static_cast<std::uint64_t>(state.views.open_options.schemas.size())},
-            .control_actions = SpectraSceneControlActionSpan{.data = state.views.control_actions.empty() ? nullptr : state.views.control_actions.data(), .count = static_cast<std::uint64_t>(state.views.control_actions.size())},
-            .control_settings = SpectraSceneControlOptionSchemaSpan{.data = state.views.control_settings.schemas.empty() ? nullptr : state.views.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(state.views.control_settings.schemas.size())},
+            .frames_per_second = plugin_definition.frames_per_second,
+            .sections = SpectraSceneControlSectionSpan{.data = descriptor_storage.sections.empty() ? nullptr : descriptor_storage.sections.data(), .count = static_cast<std::uint64_t>(descriptor_storage.sections.size())},
+            .open_options = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.open_options.schemas.empty() ? nullptr : descriptor_storage.open_options.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.open_options.schemas.size())},
+            .control_actions = SpectraSceneControlActionSpan{.data = descriptor_storage.control_actions.empty() ? nullptr : descriptor_storage.control_actions.data(), .count = static_cast<std::uint64_t>(descriptor_storage.control_actions.size())},
+            .control_settings = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.control_settings.schemas.empty() ? nullptr : descriptor_storage.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.control_settings.schemas.size())},
             .create = scene_create,
             .destroy = scene_destroy,
             .reset = scene_reset,
@@ -1902,14 +1904,21 @@ namespace {
             .control_setting_update = control_setting_update,
             .control_state = control_state,
             .last_error = last_error,
-        };
-        return state;
+        }) {}
+
+    PluginExportState& PluginExportState::instance(const TypeErasedPluginDefinition* plugin_definition) {
+        static std::optional<PluginExportState> state{};
+        if (!state.has_value()) {
+            if (plugin_definition == nullptr) throw std::runtime_error("scene plugin export state is not initialized");
+            state.emplace(*plugin_definition);
+        }
+        if (plugin_definition != nullptr && &state->definition != plugin_definition) throw std::runtime_error("scene plugin export state is already initialized with a different definition");
+        return *state;
     }
 } // namespace
 
 const SpectraScenePlugin* export_type_erased_plugin(const TypeErasedPluginDefinition& definition) {
-    active_definition = &definition;
-    static const PluginExportState state = make_export_state(definition);
+    const PluginExportState& state = PluginExportState::instance(&definition);
     return &state.plugin;
 }
 

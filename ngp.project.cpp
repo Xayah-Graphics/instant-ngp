@@ -88,12 +88,6 @@ namespace ngp::project {
             std::uint32_t steps_per_update{1u};
         };
 
-        struct PreviewOptions {
-            std::string frame_set{"train"};
-            std::uint32_t image_index{};
-            bool refresh_acceleration{};
-        };
-
         struct PreviewState {
             std::string frame_set{};
             std::uint32_t image_index{};
@@ -101,6 +95,34 @@ namespace ngp::project {
             float mse{};
             float psnr{};
             std::uint64_t revision{};
+        };
+
+        class ExternalGpuBuffer final {
+        public:
+            ExternalGpuBuffer() = default;
+            ExternalGpuBuffer(const ExternalGpuBuffer&) = delete;
+            ExternalGpuBuffer(ExternalGpuBuffer&&) = delete;
+            ExternalGpuBuffer& operator=(const ExternalGpuBuffer&) = delete;
+            ExternalGpuBuffer& operator=(ExternalGpuBuffer&&) = delete;
+            ~ExternalGpuBuffer() noexcept;
+
+            void ensure(std::shared_ptr<ngp::plugin::HostServices> host_services, std::uint32_t kind, std::uint64_t requested_byte_size, std::string_view debug_name, std::string_view label);
+            void reset() noexcept;
+
+            [[nodiscard]] bool has_capacity(std::uint64_t requested_byte_size) const noexcept;
+            [[nodiscard]] std::uint64_t resource_id() const noexcept;
+
+            template <typename Value>
+            [[nodiscard]] Value* mapped_as() const noexcept {
+                return static_cast<Value*>(this->mapped_buffer);
+            }
+
+        private:
+            std::shared_ptr<ngp::plugin::HostServices> host_services{};
+            ngp::plugin::GpuBufferAllocation allocation{};
+            cudaExternalMemory_t external_memory{};
+            void* mapped_buffer{};
+            std::uint64_t byte_size{};
         };
 
         [[nodiscard]] float parse_float(const std::string& text, const std::string_view name) {
@@ -283,8 +305,6 @@ namespace ngp::project {
     }
 
     struct Project::State {
-        ~State() noexcept;
-
         SceneOptions options{};
         std::shared_ptr<ngp::plugin::HostServices> host_services{};
         std::variant<std::monostate, dataset::nerf_synthetic::Dataset, dataset::dd_nerf::Dataset> dataset{};
@@ -293,24 +313,15 @@ namespace ngp::project {
         std::optional<ngp::train::OptimizationStats> latest_stats{};
         std::optional<PreviewState> latest_preview{};
         std::uint64_t next_preview_revision{1u};
-        ngp::plugin::GpuBufferAllocation density_allocation{};
-        cudaExternalMemory_t density_external_memory{};
-        float* density_values{};
-        std::uint64_t density_buffer_byte_size{};
-        ngp::plugin::GpuBufferAllocation color_allocation{};
-        cudaExternalMemory_t color_external_memory{};
-        float* color_values{};
-        std::uint64_t color_buffer_byte_size{};
+        ExternalGpuBuffer density_buffer{};
+        ExternalGpuBuffer color_buffer{};
         std::uint64_t exported_color_revision{};
         std::array<float, 3u> color_reference_direction{};
         std::uint64_t exported_density_revision{};
         std::array<std::uint32_t, 3u> exported_density_dimensions{};
         float exported_density_optical_thickness_step{};
         float exported_volume_density_scale{};
-        ngp::plugin::GpuBufferAllocation occupancy_allocation{};
-        cudaExternalMemory_t occupancy_external_memory{};
-        std::uint8_t* occupancy_bitfield{};
-        std::uint64_t occupancy_buffer_byte_size{};
+        ExternalGpuBuffer occupancy_buffer{};
         std::uint64_t exported_occupancy_revision{};
         std::optional<ngp::plugin::ViewportVoxelGrid> occupancy_grid{};
         std::vector<ngp::plugin::Material> materials{};
@@ -420,60 +431,33 @@ namespace ngp::project {
             allocation.handle = 0u;
         }
 
-        void release_density_buffer(Project::State& state) noexcept {
-            state.density_values = nullptr;
-            if (state.density_external_memory != nullptr) {
-                static_cast<void>(cudaDestroyExternalMemory(state.density_external_memory));
-                state.density_external_memory = nullptr;
-            }
-            if (state.density_allocation.resource_id != 0u && state.host_services != nullptr) {
-                try {
-                    state.host_services->release_gpu_buffer(state.density_allocation.resource_id);
-                } catch (...) {
-                }
-            }
-            state.density_allocation = ngp::plugin::GpuBufferAllocation{};
-            state.density_buffer_byte_size = 0u;
-            state.exported_density_revision = 0u;
-            state.exported_density_dimensions = {};
-            state.exported_density_optical_thickness_step = 0.0f;
-            state.exported_volume_density_scale = 0.0f;
-            state.density_volume.reset();
+        ExternalGpuBuffer::~ExternalGpuBuffer() noexcept {
+            this->reset();
         }
 
-        void release_color_buffer(Project::State& state) noexcept {
-            state.color_values = nullptr;
-            if (state.color_external_memory != nullptr) {
-                static_cast<void>(cudaDestroyExternalMemory(state.color_external_memory));
-                state.color_external_memory = nullptr;
+        void ExternalGpuBuffer::reset() noexcept {
+            this->mapped_buffer = nullptr;
+            if (this->external_memory != nullptr) {
+                static_cast<void>(cudaDestroyExternalMemory(this->external_memory));
+                this->external_memory = nullptr;
             }
-            if (state.color_allocation.resource_id != 0u && state.host_services != nullptr) {
+            if (this->allocation.resource_id != 0u && this->host_services != nullptr) {
                 try {
-                    state.host_services->release_gpu_buffer(state.color_allocation.resource_id);
+                    this->host_services->release_gpu_buffer(this->allocation.resource_id);
                 } catch (...) {
                 }
             }
-            state.color_allocation = ngp::plugin::GpuBufferAllocation{};
-            state.color_buffer_byte_size = 0u;
-            state.exported_color_revision = 0u;
+            this->allocation = ngp::plugin::GpuBufferAllocation{};
+            this->byte_size = 0u;
+            this->host_services.reset();
         }
 
-        void release_occupancy_buffer(Project::State& state) noexcept {
-            state.occupancy_bitfield = nullptr;
-            if (state.occupancy_external_memory != nullptr) {
-                static_cast<void>(cudaDestroyExternalMemory(state.occupancy_external_memory));
-                state.occupancy_external_memory = nullptr;
-            }
-            if (state.occupancy_allocation.resource_id != 0u && state.host_services != nullptr) {
-                try {
-                    state.host_services->release_gpu_buffer(state.occupancy_allocation.resource_id);
-                } catch (...) {
-                }
-            }
-            state.occupancy_allocation = ngp::plugin::GpuBufferAllocation{};
-            state.occupancy_buffer_byte_size = 0u;
-            state.exported_occupancy_revision = 0u;
-            state.occupancy_grid.reset();
+        bool ExternalGpuBuffer::has_capacity(const std::uint64_t requested_byte_size) const noexcept {
+            return this->allocation.resource_id != 0u && this->byte_size >= requested_byte_size;
+        }
+
+        std::uint64_t ExternalGpuBuffer::resource_id() const noexcept {
+            return this->allocation.resource_id;
         }
 
         void validate_cuda_device_identity(const ngp::plugin::GpuDeviceIdentity& identity) {
@@ -500,203 +484,70 @@ namespace ngp::project {
 #endif
         }
 
-        void ensure_density_buffer(Project::State& state, const std::uint64_t byte_size) {
-            if (state.density_allocation.resource_id != 0u && state.density_buffer_byte_size >= byte_size) return;
-            if (state.density_allocation.resource_id != 0u) release_density_buffer(state);
-            if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for density volume visualization."};
-            if (byte_size == 0u) throw std::runtime_error{"density grid volume byte size is invalid."};
-            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
-            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume");
-            if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid density volume resource id."};
-            if (allocation.kind != ngp::plugin::GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume density GPU buffer."};
-            if (allocation.byte_size < byte_size) {
-                close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned a density volume buffer smaller than requested."};
+        void ExternalGpuBuffer::ensure(std::shared_ptr<ngp::plugin::HostServices> next_host_services, const std::uint32_t kind, const std::uint64_t requested_byte_size, const std::string_view debug_name, const std::string_view label) {
+            if (this->has_capacity(requested_byte_size)) return;
+            this->reset();
+            if (next_host_services == nullptr) throw std::runtime_error{std::format("Spectra host services are required for {} visualization.", label)};
+            if (requested_byte_size == 0u) throw std::runtime_error{std::format("{} byte size is invalid.", label)};
+            if (!next_host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
+            if (!next_host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
+            ngp::plugin::GpuBufferAllocation next_allocation = next_host_services->request_gpu_buffer(kind, requested_byte_size, debug_name);
+            if (next_allocation.resource_id == 0u) throw std::runtime_error{std::format("Spectra returned an invalid {} resource id.", label)};
+            if (next_allocation.kind != kind) throw std::runtime_error{std::format("Spectra returned an unexpected GPU buffer kind for {}.", label)};
+            if (next_allocation.byte_size < requested_byte_size) {
+                close_imported_handle(next_allocation);
+                next_host_services->release_gpu_buffer(next_allocation.resource_id);
+                throw std::runtime_error{std::format("Spectra returned a {} buffer smaller than requested.", label)};
             }
-            if (allocation.handle == 0u) {
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned an empty density volume external memory handle."};
+            if (next_allocation.handle == 0u) {
+                next_host_services->release_gpu_buffer(next_allocation.resource_id);
+                throw std::runtime_error{std::format("Spectra returned an empty {} external memory handle.", label)};
             }
 
             try {
-                validate_cuda_device_identity(allocation.device_identity);
+                validate_cuda_device_identity(next_allocation.device_identity);
                 cudaExternalMemoryHandleDesc memory_desc{};
-                memory_desc.size = allocation.byte_size;
-                switch (allocation.handle_kind) {
+                memory_desc.size = next_allocation.byte_size;
+                switch (next_allocation.handle_kind) {
 #if defined(_WIN32)
                     case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
-                        memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
+                        memory_desc.handle.win32.handle = reinterpret_cast<void*>(next_allocation.handle);
                         break;
 #else
                     case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
-                        memory_desc.handle.fd = static_cast<int>(allocation.handle);
+                        memory_desc.handle.fd = static_cast<int>(next_allocation.handle);
                         break;
 #endif
                     default:
-                        throw std::runtime_error{"Spectra returned an unsupported density volume external memory handle kind."};
+                        throw std::runtime_error{std::format("Spectra returned an unsupported {} external memory handle kind.", label)};
                 }
 
                 cudaExternalMemory_t imported_memory{};
                 const cudaError_t import_status = cudaImportExternalMemory(&imported_memory, &memory_desc);
-                close_imported_handle(allocation);
-                if (import_status != cudaSuccess) throw std::runtime_error{std::string{"cudaImportExternalMemory for density volume failed: "} + cudaGetErrorString(import_status)};
+                close_imported_handle(next_allocation);
+                if (import_status != cudaSuccess) throw std::runtime_error{std::format("cudaImportExternalMemory for {} failed: {}", label, cudaGetErrorString(import_status))};
 
                 cudaExternalMemoryBufferDesc buffer_desc{};
-                buffer_desc.size = allocation.byte_size;
-                void* mapped_buffer = nullptr;
-                if (const cudaError_t status = cudaExternalMemoryGetMappedBuffer(&mapped_buffer, imported_memory, &buffer_desc); status != cudaSuccess) {
+                buffer_desc.size = next_allocation.byte_size;
+                void* next_mapped_buffer = nullptr;
+                if (const cudaError_t status = cudaExternalMemoryGetMappedBuffer(&next_mapped_buffer, imported_memory, &buffer_desc); status != cudaSuccess) {
                     static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{std::string{"cudaExternalMemoryGetMappedBuffer for density volume failed: "} + cudaGetErrorString(status)};
+                    throw std::runtime_error{std::format("cudaExternalMemoryGetMappedBuffer for {} failed: {}", label, cudaGetErrorString(status))};
                 }
-                if (mapped_buffer == nullptr) {
+                if (next_mapped_buffer == nullptr) {
                     static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{"cudaExternalMemoryGetMappedBuffer returned null for density volume."};
+                    throw std::runtime_error{std::format("cudaExternalMemoryGetMappedBuffer returned null for {}.", label)};
                 }
-                state.density_allocation = allocation;
-                state.density_external_memory = imported_memory;
-                state.density_values = static_cast<float*>(mapped_buffer);
-                state.density_buffer_byte_size = byte_size;
+                this->host_services = std::move(next_host_services);
+                this->allocation = next_allocation;
+                this->external_memory = imported_memory;
+                this->mapped_buffer = next_mapped_buffer;
+                this->byte_size = requested_byte_size;
             } catch (...) {
-                if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw;
-            }
-        }
-
-        void ensure_color_buffer(Project::State& state, const std::uint64_t byte_size) {
-            if (state.color_allocation.resource_id != 0u && state.color_buffer_byte_size >= byte_size) return;
-            if (state.color_allocation.resource_id != 0u) release_color_buffer(state);
-            if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for color volume visualization."};
-            if (byte_size == 0u) throw std::runtime_error{"color grid volume byte size is invalid."};
-            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
-            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp color grid volume");
-            if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid color volume resource id."};
-            if (allocation.kind != ngp::plugin::GpuBufferKindVolumeChannel) throw std::runtime_error{"Spectra returned a non-volume color GPU buffer."};
-            if (allocation.byte_size < byte_size) {
-                close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned a color volume buffer smaller than requested."};
-            }
-            if (allocation.handle == 0u) {
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned an empty color volume external memory handle."};
-            }
-
-            try {
-                validate_cuda_device_identity(allocation.device_identity);
-                cudaExternalMemoryHandleDesc memory_desc{};
-                memory_desc.size = allocation.byte_size;
-                switch (allocation.handle_kind) {
-#if defined(_WIN32)
-                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
-                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
-                        memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
-                        break;
-#else
-                    case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
-                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
-                        memory_desc.handle.fd = static_cast<int>(allocation.handle);
-                        break;
-#endif
-                    default:
-                        throw std::runtime_error{"Spectra returned an unsupported color volume external memory handle kind."};
-                }
-
-                cudaExternalMemory_t imported_memory{};
-                const cudaError_t import_status = cudaImportExternalMemory(&imported_memory, &memory_desc);
-                close_imported_handle(allocation);
-                if (import_status != cudaSuccess) throw std::runtime_error{std::string{"cudaImportExternalMemory for color volume failed: "} + cudaGetErrorString(import_status)};
-
-                cudaExternalMemoryBufferDesc buffer_desc{};
-                buffer_desc.size = allocation.byte_size;
-                void* mapped_buffer = nullptr;
-                if (const cudaError_t status = cudaExternalMemoryGetMappedBuffer(&mapped_buffer, imported_memory, &buffer_desc); status != cudaSuccess) {
-                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{std::string{"cudaExternalMemoryGetMappedBuffer for color volume failed: "} + cudaGetErrorString(status)};
-                }
-                if (mapped_buffer == nullptr) {
-                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{"cudaExternalMemoryGetMappedBuffer returned null for color volume."};
-                }
-                state.color_allocation = allocation;
-                state.color_external_memory = imported_memory;
-                state.color_values = static_cast<float*>(mapped_buffer);
-                state.color_buffer_byte_size = byte_size;
-            } catch (...) {
-                if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw;
-            }
-        }
-
-        void ensure_occupancy_buffer(Project::State& state, const ngp::inspector::OccupancyGridDeviceView& view) {
-            if (state.occupancy_allocation.resource_id != 0u && state.occupancy_buffer_byte_size >= view.bitfield_bytes) return;
-            if (state.occupancy_allocation.resource_id != 0u) release_occupancy_buffer(state);
-            if (state.host_services == nullptr) throw std::runtime_error{"Spectra host services are required for occupancy grid visualization."};
-            if (view.bitfield_bytes == 0u) throw std::runtime_error{"occupancy grid bitfield byte size is invalid."};
-            if (!state.host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
-            if (!state.host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            ngp::plugin::GpuBufferAllocation allocation = state.host_services->request_gpu_buffer(ngp::plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield");
-            if (allocation.resource_id == 0u) throw std::runtime_error{"Spectra returned an invalid occupancy grid resource id."};
-            if (allocation.kind != ngp::plugin::GpuBufferKindViewportVoxelGrid) throw std::runtime_error{"Spectra returned a non-viewport-voxel occupancy GPU buffer."};
-            if (allocation.byte_size < view.bitfield_bytes) {
-                close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned an occupancy grid buffer smaller than requested."};
-            }
-            if (allocation.handle == 0u) {
-                state.host_services->release_gpu_buffer(allocation.resource_id);
-                throw std::runtime_error{"Spectra returned an empty occupancy grid external memory handle."};
-            }
-
-            try {
-                validate_cuda_device_identity(allocation.device_identity);
-                cudaExternalMemoryHandleDesc memory_desc{};
-                memory_desc.size = allocation.byte_size;
-                switch (allocation.handle_kind) {
-#if defined(_WIN32)
-                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
-                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
-                        memory_desc.handle.win32.handle = reinterpret_cast<void*>(allocation.handle);
-                        break;
-#else
-                    case ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor:
-                        memory_desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
-                        memory_desc.handle.fd = static_cast<int>(allocation.handle);
-                        break;
-#endif
-                    default:
-                        throw std::runtime_error{"Spectra returned an unsupported occupancy grid external memory handle kind."};
-                }
-
-                cudaExternalMemory_t imported_memory{};
-                const cudaError_t import_status = cudaImportExternalMemory(&imported_memory, &memory_desc);
-                close_imported_handle(allocation);
-                if (import_status != cudaSuccess) throw std::runtime_error{std::string{"cudaImportExternalMemory for occupancy grid failed: "} + cudaGetErrorString(import_status)};
-
-                cudaExternalMemoryBufferDesc buffer_desc{};
-                buffer_desc.size = allocation.byte_size;
-                void* mapped_buffer = nullptr;
-                if (const cudaError_t status = cudaExternalMemoryGetMappedBuffer(&mapped_buffer, imported_memory, &buffer_desc); status != cudaSuccess) {
-                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{std::string{"cudaExternalMemoryGetMappedBuffer for occupancy grid failed: "} + cudaGetErrorString(status)};
-                }
-                if (mapped_buffer == nullptr) {
-                    static_cast<void>(cudaDestroyExternalMemory(imported_memory));
-                    throw std::runtime_error{"cudaExternalMemoryGetMappedBuffer returned null for occupancy grid."};
-                }
-                state.occupancy_allocation = allocation;
-                state.occupancy_external_memory = imported_memory;
-                state.occupancy_bitfield = static_cast<std::uint8_t*>(mapped_buffer);
-                state.occupancy_buffer_byte_size = view.bitfield_bytes;
-            } catch (...) {
-                if (allocation.handle != 0u) close_imported_handle(allocation);
-                state.host_services->release_gpu_buffer(allocation.resource_id);
+                if (next_allocation.handle != 0u) close_imported_handle(next_allocation);
+                next_host_services->release_gpu_buffer(next_allocation.resource_id);
                 throw;
             }
         }
@@ -720,9 +571,10 @@ namespace ngp::project {
                 state.occupancy_grid->cell_scale = state.options.occupancy_cell_scale;
                 return;
             }
-            ensure_occupancy_buffer(state, view);
-            if (state.occupancy_bitfield == nullptr) throw std::runtime_error{"Occupancy grid bitfield buffer was not mapped."};
-            if (const cudaError_t status = cudaMemcpy(state.occupancy_bitfield, view.bitfield, view.bitfield_bytes, cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy occupancy grid bitfield failed: "} + cudaGetErrorString(status)};
+            state.occupancy_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield", "occupancy grid");
+            std::uint8_t* const occupancy_bitfield = state.occupancy_buffer.mapped_as<std::uint8_t>();
+            if (occupancy_bitfield == nullptr) throw std::runtime_error{"Occupancy grid bitfield buffer was not mapped."};
+            if (const cudaError_t status = cudaMemcpy(occupancy_bitfield, view.bitfield, view.bitfield_bytes, cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy occupancy grid bitfield failed: "} + cudaGetErrorString(status)};
             if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"cudaDeviceSynchronize after occupancy grid export failed: "} + cudaGetErrorString(status)};
             const float voxel_size = 1.0f / static_cast<float>(view.dimensions[0]);
             state.exported_occupancy_revision = view.revision;
@@ -738,7 +590,7 @@ namespace ngp::project {
                 .depth_mode = viewport_depth_tested,
                 .source_kind = ngp::plugin::ViewportVoxelGridSourceKind::Bitfield,
                 .index_encoding = ngp::plugin::ViewportVoxelGridIndexEncoding::Morton3D,
-                .buffer_id = state.occupancy_allocation.resource_id,
+                .buffer_id = state.occupancy_buffer.resource_id(),
                 .source_byte_size = view.bitfield_bytes,
                 .revision = view.revision,
             };
@@ -780,14 +632,16 @@ namespace ngp::project {
             if (value_count > std::numeric_limits<std::uint64_t>::max() / (3u * sizeof(float))) throw std::runtime_error("Instant NGP color grid byte size overflows uint64");
             const std::uint64_t color_byte_size = value_count * 3u * sizeof(float);
             if (color_byte_size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error("Instant NGP color grid byte size exceeds host addressable size");
-            ensure_density_buffer(state, byte_size);
-            ensure_color_buffer(state, color_byte_size);
-            if (state.density_values == nullptr) throw std::runtime_error("Density volume external buffer was not mapped");
-            if (state.color_values == nullptr) throw std::runtime_error("Color volume external buffer was not mapped");
-            if (const cudaError_t status = cudaMemcpy(state.density_values, view.values, static_cast<std::size_t>(byte_size), cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy direct density grid failed: "} + cudaGetErrorString(status)};
+            state.density_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume", "density volume");
+            state.color_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindVolumeChannel, color_byte_size, "instant-ngp color grid volume", "color volume");
+            float* const density_values = state.density_buffer.mapped_as<float>();
+            float* const color_values = state.color_buffer.mapped_as<float>();
+            if (density_values == nullptr) throw std::runtime_error("Density volume external buffer was not mapped");
+            if (color_values == nullptr) throw std::runtime_error("Color volume external buffer was not mapped");
+            if (const cudaError_t status = cudaMemcpy(density_values, view.values, static_cast<std::size_t>(byte_size), cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy direct density grid failed: "} + cudaGetErrorString(status)};
             const std::expected<ngp::inspector::ColorGridSampleStats, std::string> color_stats = inspector.sample_color_grid(ngp::inspector::ColorGridSampleRequest{
                 .dimensions = view.dimensions,
-                .output_rgb = state.color_values,
+                .output_rgb = color_values,
                 .byte_size = color_byte_size,
                 .reference_direction = state.color_reference_direction,
                 .encoding = ngp::inspector::ColorGridEncoding::MortonFloat32x3,
@@ -834,8 +688,8 @@ namespace ngp::project {
                         .format = ngp::plugin::VolumeChannelFormat::Float32,
                         .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
                         .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
-                        .buffer_id = state.density_allocation.resource_id,
-                        .external_device_pointer = reinterpret_cast<std::uintptr_t>(state.density_values),
+                        .buffer_id = state.density_buffer.resource_id(),
+                        .external_device_pointer = reinterpret_cast<std::uintptr_t>(density_values),
                         .source_byte_size = byte_size,
                         .revision = view.revision,
                     },
@@ -845,8 +699,8 @@ namespace ngp::project {
                         .format = ngp::plugin::VolumeChannelFormat::Float32x3,
                         .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
                         .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
-                        .buffer_id = state.color_allocation.resource_id,
-                        .external_device_pointer = reinterpret_cast<std::uintptr_t>(state.color_values),
+                        .buffer_id = state.color_buffer.resource_id(),
+                        .external_device_pointer = reinterpret_cast<std::uintptr_t>(color_values),
                         .source_byte_size = color_byte_size,
                         .revision = view.revision,
                     },
@@ -892,33 +746,6 @@ namespace ngp::project {
             return parsed;
         }
 
-        [[nodiscard]] PreviewOptions parse_preview_options(const Project::State& state, const std::span<const ngp::plugin::Option> options) {
-            PreviewOptions parsed{};
-            std::set<std::string> seen_options{};
-            for (const ngp::plugin::Option& option : options) {
-                if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
-                if (option.key == action_option_frame_set_key) parsed.frame_set = option.value;
-                else if (option.key == action_option_image_index_key) {
-                    const std::uint64_t value_u64 = parse_u64(option.value, action_option_image_index_key);
-                    if (value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("image_index must fit in uint32");
-                    parsed.image_index = static_cast<std::uint32_t>(value_u64);
-                } else if (option.key == action_option_refresh_acceleration_key) {
-                    parsed.refresh_acceleration = parse_bool(option.value, action_option_refresh_acceleration_key);
-                } else {
-                    throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
-                }
-            }
-            if (parsed.frame_set != "train" && parsed.frame_set != "validation" && parsed.frame_set != "test") throw std::runtime_error(std::format("frame_set must be train, validation, or test; got '{}'", parsed.frame_set));
-            if (!frame_set_loaded(state, parsed.frame_set)) throw std::runtime_error(std::format("frame_set '{}' was not loaded by Open Dataset", parsed.frame_set));
-            return parsed;
-        }
-
-    }
-
-    Project::State::~State() noexcept {
-        release_color_buffer(*this);
-        release_density_buffer(*this);
-        release_occupancy_buffer(*this);
     }
 
     Project Project::open(ngp::plugin::OpenContext context) {
@@ -1139,13 +966,31 @@ namespace ngp::project {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
-        const PreviewOptions parsed = parse_preview_options(state, context.options);
+        std::string frame_set{"train"};
+        std::uint32_t image_index{};
+        bool refresh_acceleration{};
+        std::set<std::string> seen_options{};
+        for (const ngp::plugin::Option& option : context.options) {
+            if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
+            if (option.key == action_option_frame_set_key) frame_set = option.value;
+            else if (option.key == action_option_image_index_key) {
+                const std::uint64_t value_u64 = parse_u64(option.value, action_option_image_index_key);
+                if (value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("image_index must fit in uint32");
+                image_index = static_cast<std::uint32_t>(value_u64);
+            } else if (option.key == action_option_refresh_acceleration_key) {
+                refresh_acceleration = parse_bool(option.value, action_option_refresh_acceleration_key);
+            } else {
+                throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
+            }
+        }
+        if (frame_set != "train" && frame_set != "validation" && frame_set != "test") throw std::runtime_error(std::format("frame_set must be train, validation, or test; got '{}'", frame_set));
+        if (!frame_set_loaded(state, frame_set)) throw std::runtime_error(std::format("frame_set '{}' was not loaded by Open Dataset", frame_set));
         create_trainer_if_needed(state);
         const ngp::inspector::Inspector inspector{*state.ngp};
         std::expected<ngp::inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(ngp::inspector::EvaluationPreviewRequest{
-            .frame_set = parsed.frame_set,
-            .image_index = parsed.image_index,
-            .refresh_acceleration = parsed.refresh_acceleration,
+            .frame_set = frame_set,
+            .image_index = image_index,
+            .refresh_acceleration = refresh_acceleration,
         });
         if (!preview) throw std::runtime_error(preview.error());
         const std::uint64_t revision = state.next_preview_revision++;
@@ -1164,9 +1009,17 @@ namespace ngp::project {
     void Project::reset_training() {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        release_color_buffer(state);
-        release_density_buffer(state);
-        release_occupancy_buffer(state);
+        state.color_buffer.reset();
+        state.exported_color_revision = 0u;
+        state.density_buffer.reset();
+        state.exported_density_revision = 0u;
+        state.exported_density_dimensions = {};
+        state.exported_density_optical_thickness_step = 0.0f;
+        state.exported_volume_density_scale = 0.0f;
+        state.density_volume.reset();
+        state.occupancy_buffer.reset();
+        state.exported_occupancy_revision = 0u;
+        state.occupancy_grid.reset();
         state.ngp.reset();
         state.latest_stats.reset();
         state.latest_preview.reset();
@@ -1185,7 +1038,11 @@ namespace ngp::project {
         State& state = *this->state;
         const bool changed = state.options.show_occupancy != value;
         state.options.show_occupancy = value;
-        if (!state.options.show_occupancy) release_occupancy_buffer(state);
+        if (!state.options.show_occupancy) {
+            state.occupancy_buffer.reset();
+            state.exported_occupancy_revision = 0u;
+            state.occupancy_grid.reset();
+        }
         if (!changed) return;
         refresh_debug_attachments(state);
         ++state.scene_revision;
