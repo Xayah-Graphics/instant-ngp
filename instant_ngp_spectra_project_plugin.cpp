@@ -7,7 +7,7 @@
 import instant_ngp.spectra_project;
 import std;
 
-constexpr std::uint32_t plugin_abi_version = 1u;
+constexpr std::uint32_t plugin_abi_version = 2u;
 typedef void SpectraSceneInstance;
 
 typedef std::uint32_t SpectraSceneResult;
@@ -36,6 +36,16 @@ struct SpectraSceneControlOptionChoiceSpan {
     std::uint64_t count{};
 };
 
+struct SpectraSceneControlSection {
+    const char* id{};
+    const char* label{};
+};
+
+struct SpectraSceneControlSectionSpan {
+    const SpectraSceneControlSection* data{};
+    std::uint64_t count{};
+};
+
 struct SpectraSceneControlOptionSchema {
     const char* key{};
     const char* label{};
@@ -43,9 +53,7 @@ struct SpectraSceneControlOptionSchema {
     std::uint32_t kind{};
     std::uint32_t required{};
     const char* default_value{};
-    const char* group{};
-    std::uint32_t advanced{};
-    std::int32_t priority{};
+    const char* section_id{};
     SpectraSceneControlOptionChoiceSpan choices{};
 };
 
@@ -58,8 +66,7 @@ struct SpectraSceneControlAction {
     const char* id{};
     const char* label{};
     const char* description{};
-    std::uint32_t group{};
-    std::int32_t priority{};
+    const char* section_id{};
     std::uint32_t style{};
     SpectraSceneControlOptionSchemaSpan options{};
 };
@@ -83,8 +90,8 @@ struct SpectraSceneControlMetric {
     const char* key{};
     const char* label{};
     const char* value{};
+    const char* section_id{};
     std::uint32_t placement_flags{};
-    std::int32_t priority{};
     std::uint32_t has_color{};
     float color[4]{};
 };
@@ -129,6 +136,7 @@ struct SpectraSceneControlImage {
     const char* id{};
     const char* label{};
     const char* description{};
+    const char* section_id{};
     const std::uint8_t* rgba8{};
     std::uint64_t rgba8_size{};
     std::uint64_t revision{};
@@ -158,8 +166,7 @@ struct SpectraSceneControlScalarSeries {
     const char* description{};
     const char* unit{};
     float color[4]{};
-    std::uint32_t group{};
-    std::int32_t priority{};
+    const char* section_id{};
     std::uint64_t revision{};
     SpectraSceneControlScalarSampleSpan samples{};
 };
@@ -534,11 +541,11 @@ struct SpectraScenePlugin {
     std::uint64_t struct_size{};
     const char* id{};
     const char* title{};
-    const char* controls_panel_title{};
     const char* open_action_label{};
     const char* open_action_description{};
     const char* base_pbrt_path{};
     double frames_per_second{};
+    SpectraSceneControlSectionSpan sections{};
     SpectraSceneControlOptionSchemaSpan open_options{};
     SpectraSceneControlActionSpan control_actions{};
     SpectraSceneControlOptionSchemaSpan control_settings{};
@@ -562,6 +569,7 @@ namespace {
     };
 
     struct DescriptorViews {
+        std::vector<SpectraSceneControlSection> sections{};
         OptionSchemaViews open_options{};
         std::vector<OptionSchemaViews> action_options{};
         std::vector<SpectraSceneControlAction> control_actions{};
@@ -681,9 +689,7 @@ namespace {
                 .kind = static_cast<std::uint32_t>(schema.kind),
                 .required = schema.required ? 1u : 0u,
                 .default_value = schema.default_value.c_str(),
-                .group = schema.group.c_str(),
-                .advanced = schema.advanced ? 1u : 0u,
-                .priority = schema.priority,
+                .section_id = schema.section_id.c_str(),
                 .choices = SpectraSceneControlOptionChoiceSpan{.data = views.choices[index].empty() ? nullptr : views.choices[index].data(), .count = static_cast<std::uint64_t>(views.choices[index].size())},
             });
         }
@@ -693,6 +699,13 @@ namespace {
     [[nodiscard]] DescriptorViews make_descriptor_views() {
         const instant_ngp::spectra_project::Descriptor& descriptor = instant_ngp::spectra_project::InstantNgpSpectraProject::descriptor();
         DescriptorViews views{};
+        views.sections.reserve(descriptor.sections.size());
+        for (const instant_ngp::spectra_project::ControlSection& section : descriptor.sections) {
+            views.sections.push_back(SpectraSceneControlSection{
+                .id = section.id.c_str(),
+                .label = section.label.c_str(),
+            });
+        }
         views.open_options = make_option_schema_views(descriptor.open_options);
         views.action_options.reserve(descriptor.control_actions.size());
         views.control_actions.reserve(descriptor.control_actions.size());
@@ -703,8 +716,7 @@ namespace {
                 .id = action.id.c_str(),
                 .label = action.label.c_str(),
                 .description = action.description.c_str(),
-                .group = action.group,
-                .priority = action.priority,
+                .section_id = action.section_id.c_str(),
                 .style = action.style,
                 .options = SpectraSceneControlOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
             });
@@ -914,8 +926,8 @@ namespace {
                 .key = metric.key.c_str(),
                 .label = metric.label.c_str(),
                 .value = metric.value.c_str(),
+                .section_id = metric.section_id.c_str(),
                 .placement_flags = metric.placement_flags,
-                .priority = metric.priority,
                 .has_color = metric.has_color ? 1u : 0u,
                 .color = {},
             });
@@ -971,6 +983,7 @@ namespace {
                 .id = image.id.c_str(),
                 .label = image.label.c_str(),
                 .description = image.description.c_str(),
+                .section_id = image.section_id.c_str(),
                 .rgba8 = image.rgba8.empty() ? nullptr : image.rgba8.data(),
                 .rgba8_size = static_cast<std::uint64_t>(image.rgba8.size()),
                 .revision = image.revision,
@@ -1003,8 +1016,7 @@ namespace {
                 .description = series.description.c_str(),
                 .unit = series.unit.c_str(),
                 .color = {},
-                .group = series.group,
-                .priority = series.priority,
+                .section_id = series.section_id.c_str(),
                 .revision = series.revision,
                 .samples = SpectraSceneControlScalarSampleSpan{.data = samples.empty() ? nullptr : samples.data(), .count = static_cast<std::uint64_t>(samples.size())},
             };
@@ -1244,11 +1256,11 @@ namespace {
             .struct_size = sizeof(SpectraScenePlugin),
             .id = descriptor.id.c_str(),
             .title = descriptor.title.c_str(),
-            .controls_panel_title = descriptor.title.c_str(),
             .open_action_label = descriptor.open_action_label.c_str(),
             .open_action_description = descriptor.open_action_description.c_str(),
             .base_pbrt_path = "",
             .frames_per_second = descriptor.frames_per_second,
+            .sections = SpectraSceneControlSectionSpan{.data = views.sections.empty() ? nullptr : views.sections.data(), .count = static_cast<std::uint64_t>(views.sections.size())},
             .open_options = SpectraSceneControlOptionSchemaSpan{.data = views.open_options.schemas.empty() ? nullptr : views.open_options.schemas.data(), .count = static_cast<std::uint64_t>(views.open_options.schemas.size())},
             .control_actions = SpectraSceneControlActionSpan{.data = views.control_actions.empty() ? nullptr : views.control_actions.data(), .count = static_cast<std::uint64_t>(views.control_actions.size())},
             .control_settings = SpectraSceneControlOptionSchemaSpan{.data = views.control_settings.schemas.empty() ? nullptr : views.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(views.control_settings.schemas.size())},
@@ -1268,6 +1280,6 @@ namespace {
     }
 } // namespace
 
-extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v1(void) {
+extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v2(void) {
     return &plugin();
 }

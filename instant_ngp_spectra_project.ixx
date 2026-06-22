@@ -17,6 +17,11 @@ export namespace instant_ngp::spectra_project {
         std::string label{};
     };
 
+    struct ControlSection {
+        std::string id{};
+        std::string label{};
+    };
+
     struct OptionSchema {
         std::string key{};
         std::string label{};
@@ -24,9 +29,7 @@ export namespace instant_ngp::spectra_project {
         OptionKind kind{OptionKind::Text};
         bool required{};
         std::string default_value{};
-        std::string group{};
-        bool advanced{};
-        std::int32_t priority{};
+        std::string section_id{};
         std::vector<OptionChoice> choices{};
     };
 
@@ -68,9 +71,6 @@ export namespace instant_ngp::spectra_project {
     inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
     inline constexpr std::uint32_t ControlPlacementPanelSummary = 1u << 1u;
     inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
-    inline constexpr std::uint32_t ControlActionGroupRun = 0u;
-    inline constexpr std::uint32_t ControlActionGroupPreview = 1u;
-    inline constexpr std::uint32_t ControlActionGroupUtility = 3u;
     inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
     inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
     inline constexpr std::uint32_t ControlActionStyleDanger = 2u;
@@ -82,8 +82,7 @@ export namespace instant_ngp::spectra_project {
         std::string id{};
         std::string label{};
         std::string description{};
-        std::uint32_t group{ControlActionGroupUtility};
-        std::int32_t priority{};
+        std::string section_id{};
         std::uint32_t style{ControlActionStyleSecondary};
         std::vector<OptionSchema> options{};
     };
@@ -97,8 +96,8 @@ export namespace instant_ngp::spectra_project {
         std::string key{};
         std::string label{};
         std::string value{};
+        std::string section_id{};
         std::uint32_t placement_flags{ControlPlacementPanelDetail};
-        std::int32_t priority{};
         bool has_color{};
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
@@ -136,6 +135,7 @@ export namespace instant_ngp::spectra_project {
         std::string id{};
         std::string label{};
         std::string description{};
+        std::string section_id{};
         std::uint32_t width{};
         std::uint32_t height{};
         std::uint64_t revision{};
@@ -154,8 +154,7 @@ export namespace instant_ngp::spectra_project {
         std::string description{};
         std::string unit{};
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
-        std::uint32_t group{ControlActionGroupRun};
-        std::int32_t priority{};
+        std::string section_id{};
         std::uint64_t revision{};
         std::span<const ProjectScalarSample> samples{};
     };
@@ -326,6 +325,7 @@ export namespace instant_ngp::spectra_project {
         std::string open_action_label{};
         std::string open_action_description{};
         double frames_per_second{};
+        std::vector<ControlSection> sections{};
         std::vector<OptionSchema> open_options{};
         std::vector<ProjectAction> control_actions{};
         std::vector<OptionSchema> control_settings{};
