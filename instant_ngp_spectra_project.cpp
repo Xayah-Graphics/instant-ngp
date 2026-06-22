@@ -155,9 +155,8 @@ namespace instant_ngp::spectra_project {
             return Descriptor{
                 .id = "instant-ngp.project",
                 .title = "Instant NGP Project",
-                .controls_panel_title = "Instant NGP Project",
                 .open_action_label = "Open Dataset",
-                .open_action_description = "Load the configured dataset and publish dynamic scene entities to Spectra.",
+                .open_action_description = "Load the configured dataset and publish scene entities to Spectra.",
                 .frames_per_second = 60.0,
                 .open_options = {
                     option("dataset", "Dataset", "Dataset root directory.", OptionKind::DirectoryPath, true, {}, {}, "Dataset", false, 0),
@@ -254,7 +253,7 @@ namespace instant_ngp::spectra_project {
             std::optional<std::string> dataset_option{};
             std::set<std::string> seen_options{};
             for (const Option& option : options) {
-                if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("dynamic scene open option '{}' is duplicated", option.key));
+                if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("scene plugin open option '{}' is duplicated", option.key));
                 if (option.key == "dataset") dataset_option = option.value;
                 else if (option.key == "format") parsed.format = option.value;
                 else if (option.key == "frame_sets") parsed.frame_sets = parse_frame_sets(option.value);
@@ -264,7 +263,7 @@ namespace instant_ngp::spectra_project {
                 else if (option.key == "visual_far") parsed.visual_far = parse_float(option.value, "visual_far");
                 else if (option.key == "image_alpha") parsed.image_alpha = parse_float(option.value, "image_alpha");
                 else if (option.key == "frustum_width") parsed.frustum_width = parse_float(option.value, "frustum_width");
-                else throw std::runtime_error(std::format("unknown dynamic scene open option '{}'", option.key));
+                else throw std::runtime_error(std::format("unknown scene plugin open option '{}'", option.key));
             }
 
             if (!dataset_option.has_value() || dataset_option->empty()) throw std::runtime_error("dataset option is required");
@@ -830,7 +829,6 @@ namespace instant_ngp::spectra_project {
                 .index_encoding = ViewportVoxelGridIndexEncoding::Morton3D,
                 .buffer_id = state.occupancy_allocation.resource_id,
                 .source_byte_size = view.bitfield_bytes,
-                .index_count = 0u,
                 .revision = view.revision,
             };
         }
@@ -952,10 +950,6 @@ namespace instant_ngp::spectra_project {
             refresh_debug_attachments(state);
             ++state.scene_revision;
             push_log(state, "DENSITY_GRID", std::format("volume='{}' revision={} color_revision={} dimensions={}x{}x{} encoding=Morton3D density_format=Float32 color_format=Float32x3 optical_thickness_step={} volume_density_scale={}", density_volume_name, view.revision, state.exported_color_revision, view.dimensions[0], view.dimensions[1], view.dimensions[2], view.optical_thickness_step, volume_density_scale));
-        }
-
-        void initialize_density_volume(InstantNgpSpectraProject::State& state) {
-            publish_density_grid_volume(state);
         }
 
         void set_project_error(InstantNgpSpectraProject::State& state, std::string message) {
@@ -1212,7 +1206,7 @@ namespace instant_ngp::spectra_project {
             }
         }, created->dataset);
 
-        initialize_density_volume(*created);
+        publish_density_grid_volume(*created);
         push_log(*created, "CONFIG", std::format("profile={} dataset={} format={} scene_scale={} frame_sets={} visualized_cameras={} density_grid_revision={} color_grid_revision={} volume_density_scale={}", NGP_TRAIN_PROFILE_NAME, created->options.dataset_path.string(), created->options.format, created->options.scene_scale, joined_frame_sets(created->options.frame_sets), created->cameras.size() - 1u, created->exported_density_revision, created->exported_color_revision, created->exported_volume_density_scale));
         return InstantNgpSpectraProject{std::move(created)};
     }
@@ -1343,7 +1337,7 @@ namespace instant_ngp::spectra_project {
             state.project_error.clear();
             state.last_logged_step = 0u;
             clear_scalar_histories(state);
-            initialize_density_volume(state);
+            publish_density_grid_volume(state);
             push_log(state, "RESET", "training state reset and initial density restored");
         } else {
             throw std::runtime_error(std::format("unknown project action '{}'", action_id));
@@ -1529,10 +1523,4 @@ namespace instant_ngp::spectra_project {
         };
     }
 
-    Frame InstantNgpSpectraProject::frame(const FrameInfo& frame_info) const {
-        static_cast<void>(frame_info);
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        Frame frame{};
-        return frame;
-    }
 }

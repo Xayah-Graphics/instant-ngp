@@ -6,7 +6,6 @@ export namespace instant_ngp::spectra_project {
     enum class OptionKind : std::uint32_t {
         Text = 0,
         DirectoryPath = 1,
-        FilePath = 2,
         Choice = 3,
         Bool = 4,
         Float = 5,
@@ -71,7 +70,6 @@ export namespace instant_ngp::spectra_project {
     inline constexpr std::uint32_t ControlPlacementPanelDetail = 1u << 2u;
     inline constexpr std::uint32_t ControlActionGroupRun = 0u;
     inline constexpr std::uint32_t ControlActionGroupPreview = 1u;
-    inline constexpr std::uint32_t ControlActionGroupDebug = 2u;
     inline constexpr std::uint32_t ControlActionGroupUtility = 3u;
     inline constexpr std::uint32_t ControlActionStyleSecondary = 0u;
     inline constexpr std::uint32_t ControlActionStylePrimary = 1u;
@@ -210,11 +208,7 @@ export namespace instant_ngp::spectra_project {
         std::string model{"volume"};
         std::string alpha_mode{"blend"};
         std::array<float, 4u> base_color{1.0f, 1.0f, 1.0f, 1.0f};
-        std::array<float, 3u> emission_color{};
-        float emission_strength{};
         float roughness{0.5f};
-        float metallic{};
-        float alpha_cutoff{0.5f};
         float volume_density_scale{1.0f};
         float volume_temperature_scale{1.0f};
     };
@@ -225,7 +219,6 @@ export namespace instant_ngp::spectra_project {
         Transform transform{};
         std::array<float, 3u> color{1.0f, 1.0f, 1.0f};
         float intensity{1.0f};
-        float cone_angle_degrees{30.0f};
     };
 
     enum class VolumeChannelSourceKind : std::uint32_t {
@@ -246,7 +239,6 @@ export namespace instant_ngp::spectra_project {
     struct VolumeChannel {
         std::string name{};
         std::array<std::uint32_t, 3u> dimensions{};
-        std::vector<float> values{};
         VolumeChannelFormat format{VolumeChannelFormat::Float32};
         VolumeChannelSourceKind source_kind{VolumeChannelSourceKind::Values};
         VolumeChannelIndexEncoding index_encoding{VolumeChannelIndexEncoding::Linear};
@@ -310,7 +302,6 @@ export namespace instant_ngp::spectra_project {
         ViewportVoxelGridIndexEncoding index_encoding{ViewportVoxelGridIndexEncoding::Linear};
         std::uint64_t buffer_id{};
         std::uint64_t source_byte_size{};
-        std::uint64_t index_count{};
         std::uint64_t revision{};
     };
 
@@ -329,25 +320,11 @@ export namespace instant_ngp::spectra_project {
         DebugAttachmentSet debug_attachments{};
     };
 
-    struct FrameInfo {
-        double delta_seconds{};
-        double time_seconds{};
-        std::uint64_t frame_index{};
-    };
-
-    struct Frame {
-        std::vector<Camera> cameras{};
-        std::vector<VolumeGrid> volumes{};
-        DebugAttachmentSet debug_attachments{};
-    };
-
     struct Descriptor {
         std::string id{};
         std::string title{};
-        std::string controls_panel_title{};
         std::string open_action_label{};
         std::string open_action_description{};
-        std::string base_pbrt_path{};
         double frames_per_second{};
         std::vector<OptionSchema> open_options{};
         std::vector<ProjectAction> control_actions{};
@@ -379,7 +356,6 @@ export namespace instant_ngp::spectra_project {
         [[nodiscard]] std::span<const ProjectImage> images() const;
         [[nodiscard]] std::vector<ProjectScalarSeries> scalar_series() const;
         [[nodiscard]] Document document() const;
-        [[nodiscard]] Frame frame(const FrameInfo& frame_info) const;
 
     private:
         explicit InstantNgpSpectraProject(std::unique_ptr<State> state);
