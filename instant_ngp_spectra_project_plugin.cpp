@@ -7,7 +7,7 @@
 import instant_ngp.spectra_project;
 import std;
 
-constexpr std::uint32_t plugin_abi_version = 2u;
+constexpr std::uint32_t plugin_abi_version = 3u;
 typedef void SpectraSceneInstance;
 
 typedef std::uint32_t SpectraSceneResult;
@@ -121,17 +121,6 @@ struct SpectraSceneControlStatusView {
     SpectraSceneControlActionStateSpan action_states{};
 };
 
-struct SpectraSceneControlLogEntry {
-    std::uint64_t sequence{};
-    const char* level{};
-    const char* message{};
-};
-
-struct SpectraSceneControlLogEntrySpan {
-    const SpectraSceneControlLogEntry* data{};
-    std::uint64_t count{};
-};
-
 struct SpectraSceneControlImage {
     const char* id{};
     const char* label{};
@@ -149,40 +138,11 @@ struct SpectraSceneControlImageSpan {
     std::uint64_t count{};
 };
 
-struct SpectraSceneControlScalarSample {
-    std::uint64_t step{};
-    double time_seconds{};
-    double value{};
-};
-
-struct SpectraSceneControlScalarSampleSpan {
-    const SpectraSceneControlScalarSample* data{};
-    std::uint64_t count{};
-};
-
-struct SpectraSceneControlScalarSeries {
-    const char* id{};
-    const char* label{};
-    const char* description{};
-    const char* unit{};
-    float color[4]{};
-    const char* section_id{};
-    std::uint64_t revision{};
-    SpectraSceneControlScalarSampleSpan samples{};
-};
-
-struct SpectraSceneControlScalarSeriesSpan {
-    const SpectraSceneControlScalarSeries* data{};
-    std::uint64_t count{};
-};
-
 struct SpectraSceneControlSnapshotView {
     std::uint64_t struct_size{};
     SpectraSceneControlSettingValueSpan settings{};
     SpectraSceneControlStatusView status{};
-    SpectraSceneControlLogEntrySpan logs{};
     SpectraSceneControlImageSpan images{};
-    SpectraSceneControlScalarSeriesSpan scalar_series{};
 };
 
 struct SpectraSceneUpdateInfo {
@@ -598,20 +558,9 @@ namespace {
         std::vector<SpectraSceneControlSettingValue> setting_views{};
     };
 
-    struct ProjectLogCache {
-        std::vector<instant_ngp::spectra_project::ProjectLogEntry> logs{};
-        std::vector<SpectraSceneControlLogEntry> log_views{};
-    };
-
     struct ProjectImageCache {
         std::span<const instant_ngp::spectra_project::ProjectImage> images{};
         std::vector<SpectraSceneControlImage> image_views{};
-    };
-
-    struct ProjectScalarSeriesCache {
-        std::vector<instant_ngp::spectra_project::ProjectScalarSeries> series{};
-        std::vector<std::vector<SpectraSceneControlScalarSample>> sample_views{};
-        std::vector<SpectraSceneControlScalarSeries> series_views{};
     };
 
     struct PluginInstance {
@@ -620,9 +569,7 @@ namespace {
         SceneViewCache scene_cache{};
         ProjectStatusCache status_cache{};
         ProjectSettingCache setting_cache{};
-        ProjectLogCache log_cache{};
         ProjectImageCache image_cache{};
-        ProjectScalarSeriesCache scalar_series_cache{};
     };
 
     std::string global_error{};
@@ -962,19 +909,6 @@ namespace {
         return cache.setting_views;
     }
 
-    [[nodiscard]] std::span<const SpectraSceneControlLogEntry> make_log_view(ProjectLogCache& cache) {
-        cache.log_views.clear();
-        cache.log_views.reserve(cache.logs.size());
-        for (const instant_ngp::spectra_project::ProjectLogEntry& log : cache.logs) {
-            cache.log_views.push_back(SpectraSceneControlLogEntry{
-                .sequence = log.sequence,
-                .level = log.level.c_str(),
-                .message = log.message.c_str(),
-            });
-        }
-        return cache.log_views;
-    }
-
     [[nodiscard]] std::span<const SpectraSceneControlImage> make_image_view(ProjectImageCache& cache) {
         cache.image_views.clear();
         cache.image_views.reserve(cache.images.size());
@@ -992,38 +926,6 @@ namespace {
             });
         }
         return cache.image_views;
-    }
-
-    [[nodiscard]] std::span<const SpectraSceneControlScalarSeries> make_scalar_series_view(ProjectScalarSeriesCache& cache) {
-        cache.sample_views.clear();
-        cache.series_views.clear();
-        cache.sample_views.resize(cache.series.size());
-        cache.series_views.reserve(cache.series.size());
-        for (std::size_t series_index = 0u; series_index < cache.series.size(); ++series_index) {
-            const instant_ngp::spectra_project::ProjectScalarSeries& series = cache.series[series_index];
-            std::vector<SpectraSceneControlScalarSample>& samples = cache.sample_views[series_index];
-            samples.reserve(series.samples.size());
-            for (const instant_ngp::spectra_project::ProjectScalarSample& sample : series.samples) {
-                samples.push_back(SpectraSceneControlScalarSample{
-                    .step = sample.step,
-                    .time_seconds = sample.time_seconds,
-                    .value = sample.value,
-                });
-            }
-            SpectraSceneControlScalarSeries view{
-                .id = series.id.c_str(),
-                .label = series.label.c_str(),
-                .description = series.description.c_str(),
-                .unit = series.unit.c_str(),
-                .color = {},
-                .section_id = series.section_id.c_str(),
-                .revision = series.revision,
-                .samples = SpectraSceneControlScalarSampleSpan{.data = samples.empty() ? nullptr : samples.data(), .count = static_cast<std::uint64_t>(samples.size())},
-            };
-            copy_array(view.color, series.color);
-            cache.series_views.push_back(view);
-        }
-        return cache.series_views;
     }
 
     [[nodiscard]] PluginInstance& checked_instance(SpectraSceneInstance* instance, const std::string_view action) {
@@ -1224,21 +1126,15 @@ namespace {
             plugin_instance.last_error.clear();
             plugin_instance.setting_cache.settings = plugin_instance.project.settings();
             plugin_instance.status_cache.status = plugin_instance.project.status();
-            plugin_instance.log_cache.logs = plugin_instance.project.logs();
             plugin_instance.image_cache.images = plugin_instance.project.images();
-            plugin_instance.scalar_series_cache.series = plugin_instance.project.scalar_series();
             const std::span<const SpectraSceneControlSettingValue> settings = make_setting_view(plugin_instance.setting_cache);
             const SpectraSceneControlStatusView status = make_status_view(plugin_instance.status_cache);
-            const std::span<const SpectraSceneControlLogEntry> logs = make_log_view(plugin_instance.log_cache);
             const std::span<const SpectraSceneControlImage> images = make_image_view(plugin_instance.image_cache);
-            const std::span<const SpectraSceneControlScalarSeries> scalar_series = make_scalar_series_view(plugin_instance.scalar_series_cache);
             *snapshot = SpectraSceneControlSnapshotView{
                 .struct_size = sizeof(SpectraSceneControlSnapshotView),
                 .settings = SpectraSceneControlSettingValueSpan{.data = settings.empty() ? nullptr : settings.data(), .count = static_cast<std::uint64_t>(settings.size())},
                 .status = status,
-                .logs = SpectraSceneControlLogEntrySpan{.data = logs.empty() ? nullptr : logs.data(), .count = static_cast<std::uint64_t>(logs.size())},
                 .images = SpectraSceneControlImageSpan{.data = images.empty() ? nullptr : images.data(), .count = static_cast<std::uint64_t>(images.size())},
-                .scalar_series = SpectraSceneControlScalarSeriesSpan{.data = scalar_series.empty() ? nullptr : scalar_series.data(), .count = static_cast<std::uint64_t>(scalar_series.size())},
             };
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
@@ -1280,6 +1176,6 @@ namespace {
     }
 } // namespace
 
-extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v2(void) {
+extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v3(void) {
     return &plugin();
 }

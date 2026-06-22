@@ -125,12 +125,6 @@ export namespace instant_ngp::spectra_project {
         bool timeline_playing{};
     };
 
-    struct ProjectLogEntry {
-        std::uint64_t sequence{};
-        std::string level{};
-        std::string message{};
-    };
-
     struct ProjectImage {
         std::string id{};
         std::string label{};
@@ -140,23 +134,6 @@ export namespace instant_ngp::spectra_project {
         std::uint32_t height{};
         std::uint64_t revision{};
         std::vector<std::uint8_t> rgba8{};
-    };
-
-    struct ProjectScalarSample {
-        std::uint64_t step{};
-        double time_seconds{};
-        double value{};
-    };
-
-    struct ProjectScalarSeries {
-        std::string id{};
-        std::string label{};
-        std::string description{};
-        std::string unit{};
-        std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
-        std::string section_id{};
-        std::uint64_t revision{};
-        std::span<const ProjectScalarSample> samples{};
     };
 
     struct Transform {
@@ -352,9 +329,7 @@ export namespace instant_ngp::spectra_project {
 
         [[nodiscard]] std::uint64_t scene_revision() const;
         [[nodiscard]] ProjectStatus status() const;
-        [[nodiscard]] std::vector<ProjectLogEntry> logs() const;
         [[nodiscard]] std::span<const ProjectImage> images() const;
-        [[nodiscard]] std::vector<ProjectScalarSeries> scalar_series() const;
         [[nodiscard]] Document document() const;
 
     private:

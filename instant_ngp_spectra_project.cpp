@@ -33,7 +33,6 @@ namespace instant_ngp::spectra_project {
         constexpr char action_option_frame_set_key[] = "frame_set";
         constexpr char action_option_target_steps_key[] = "target_steps";
         constexpr char action_option_steps_per_update_key[] = "steps_per_update";
-        constexpr char action_option_log_every_key[] = "log_every";
         constexpr char action_option_image_index_key[] = "image_index";
         constexpr char action_option_refresh_acceleration_key[] = "refresh_acceleration";
         constexpr char setting_show_occupancy_key[] = "show_occupancy";
@@ -80,7 +79,6 @@ namespace instant_ngp::spectra_project {
             std::string frame_set{"train"};
             std::uint32_t target_steps{200000u};
             std::uint32_t steps_per_update{1u};
-            std::uint32_t log_every{100u};
         };
 
         struct PreviewOptions {
@@ -98,19 +96,6 @@ namespace instant_ngp::spectra_project {
             std::uint64_t revision{};
             std::vector<ProjectImage> images{};
         };
-
-        struct ScalarHistory {
-            std::string id{};
-            std::string label{};
-            std::string description{};
-            std::string unit{};
-            std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
-            std::string section_id{};
-            std::uint64_t revision{1u};
-            std::vector<ProjectScalarSample> samples{};
-        };
-
-        constexpr std::size_t scalar_history_capacity = 4096u;
 
         [[nodiscard]] OptionChoice choice(std::string value) {
             return OptionChoice{.value = value, .label = std::move(value)};
@@ -137,17 +122,6 @@ namespace instant_ngp::spectra_project {
                 .section_id = std::move(section_id),
                 .style = style,
                 .options = std::move(options),
-            };
-        }
-
-        [[nodiscard]] ScalarHistory make_scalar_history(std::string id, std::string label, std::string description, std::string unit, const std::array<float, 4u> color, std::string section_id) {
-            return ScalarHistory{
-                .id = std::move(id),
-                .label = std::move(label),
-                .description = std::move(description),
-                .unit = std::move(unit),
-                .color = color,
-                .section_id = std::move(section_id),
             };
         }
 
@@ -186,7 +160,6 @@ namespace instant_ngp::spectra_project {
                             option(action_option_frame_set_key, "Frame Set", "Loaded frame set used for optimization.", OptionKind::Choice, false, section_training_id, "train", {choice("train"), choice("validation"), choice("test")}),
                             option(action_option_target_steps_key, "Target Steps", "Optimization stops when this global step is reached.", OptionKind::UnsignedInteger, false, section_training_id, "200000"),
                             option(action_option_steps_per_update_key, "Steps Per Update", "Optimization iterations executed during each GUI project update.", OptionKind::UnsignedInteger, false, section_training_id, "1"),
-                            option(action_option_log_every_key, "Log Every", "Optimization step interval for progress log entries.", OptionKind::UnsignedInteger, false, section_training_id, "100"),
                         },
                         ControlActionStylePrimary),
                     action(action_pause_training_id, "Pause", "Pause optimization after the current GUI update.", section_training_id),
@@ -401,8 +374,6 @@ namespace instant_ngp::spectra_project {
         std::optional<ngp::train::OptimizationStats> latest_stats{};
         std::optional<PreviewState> latest_preview{};
         std::uint64_t next_preview_revision{1u};
-        double scalar_time_seconds{};
-        std::vector<ScalarHistory> scalar_histories{};
         GpuBufferAllocation density_allocation{};
         cudaExternalMemory_t density_external_memory{};
         float* density_values{};
@@ -432,10 +403,7 @@ namespace instant_ngp::spectra_project {
         bool host_timeline_playing{true};
         std::uint32_t host_timeline_mode{ControlTimelineModeLive};
         std::string project_error{};
-        std::uint32_t last_logged_step{};
-        std::uint64_t next_log_sequence{};
         std::uint64_t scene_revision{1u};
-        std::vector<ProjectLogEntry> logs{};
         std::vector<Camera> cameras{};
         std::string overview_camera_name{"Overview"};
     };
@@ -463,42 +431,6 @@ namespace instant_ngp::spectra_project {
 
         [[nodiscard]] bool host_timeline_advances_scene(const InstantNgpSpectraProject::State& state) {
             return state.host_timeline_playing && state.host_timeline_mode != ControlTimelineModePlayback;
-        }
-
-        void push_log(InstantNgpSpectraProject::State& state, std::string level, std::string message) {
-            state.logs.push_back(ProjectLogEntry{
-                .sequence = state.next_log_sequence++,
-                .level = std::move(level),
-                .message = std::move(message),
-            });
-            if (state.logs.size() > 2048u) state.logs.erase(state.logs.begin(), state.logs.begin() + static_cast<std::ptrdiff_t>(state.logs.size() - 2048u));
-        }
-
-        [[nodiscard]] ScalarHistory& scalar_history(InstantNgpSpectraProject::State& state, const std::string_view id) {
-            const auto history = std::ranges::find_if(state.scalar_histories, [id](const ScalarHistory& candidate) { return candidate.id == id; });
-            if (history == state.scalar_histories.end()) throw std::runtime_error(std::format("unknown scalar series '{}'", id));
-            return *history;
-        }
-
-        void append_scalar_sample(InstantNgpSpectraProject::State& state, const std::string_view id, const std::uint64_t step, const double value) {
-            if (!std::isfinite(state.scalar_time_seconds)) throw std::runtime_error("scalar series time must be finite");
-            if (!std::isfinite(value)) throw std::runtime_error(std::format("scalar series '{}' value must be finite", id));
-            ScalarHistory& history = scalar_history(state, id);
-            history.samples.push_back(ProjectScalarSample{
-                .step = step,
-                .time_seconds = state.scalar_time_seconds,
-                .value = value,
-            });
-            if (history.samples.size() > scalar_history_capacity) history.samples.erase(history.samples.begin(), history.samples.begin() + static_cast<std::ptrdiff_t>(history.samples.size() - scalar_history_capacity));
-            ++history.revision;
-        }
-
-        void clear_scalar_histories(InstantNgpSpectraProject::State& state) {
-            state.scalar_time_seconds = 0.0;
-            for (ScalarHistory& history : state.scalar_histories) {
-                history.samples.clear();
-                ++history.revision;
-            }
         }
 
         [[nodiscard]] bool has_nonzero_bytes(const std::span<const std::uint8_t> bytes) {
@@ -954,14 +886,12 @@ namespace instant_ngp::spectra_project {
             state.exported_volume_density_scale = volume_density_scale;
             refresh_debug_attachments(state);
             ++state.scene_revision;
-            push_log(state, "DENSITY_GRID", std::format("volume='{}' revision={} color_revision={} dimensions={}x{}x{} encoding=Morton3D density_format=Float32 color_format=Float32x3 optical_thickness_step={} volume_density_scale={}", density_volume_name, view.revision, state.exported_color_revision, view.dimensions[0], view.dimensions[1], view.dimensions[2], view.optical_thickness_step, volume_density_scale));
         }
 
         void set_project_error(InstantNgpSpectraProject::State& state, std::string message) {
             state.project_error = std::move(message);
             state.training_running = false;
             state.training_complete = false;
-            push_log(state, "ERROR", state.project_error);
         }
 
         [[nodiscard]] TrainingOptions parse_training_options(const InstantNgpSpectraProject::State& state, const std::span<const Option> options) {
@@ -978,10 +908,6 @@ namespace instant_ngp::spectra_project {
                     const std::uint64_t value_u64 = parse_u64(option.value, action_option_steps_per_update_key);
                     if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) throw std::runtime_error("steps_per_update must fit in int32 and be positive");
                     parsed.steps_per_update = static_cast<std::uint32_t>(value_u64);
-                } else if (option.key == action_option_log_every_key) {
-                    const std::uint64_t value_u64 = parse_u64(option.value, action_option_log_every_key);
-                    if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("log_every must fit in uint32 and be positive");
-                    parsed.log_every = static_cast<std::uint32_t>(value_u64);
                 } else {
                     throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
                 }
@@ -1066,15 +992,6 @@ namespace instant_ngp::spectra_project {
         std::unique_ptr<State> created = std::make_unique<State>();
         created->host_services = std::move(host_services);
         created->options = parse_scene_options(options);
-        created->scalar_histories = {
-            make_scalar_history("training_loss", "Training Loss", "Training loss reported by optimizer updates.", "", {1.0f, 0.38f, 0.25f, 1.0f}, section_training_id),
-            make_scalar_history("sample_efficiency_percent", "Sample Efficiency", "Useful sample ratio reported by optimization.", "%", {0.25f, 0.75f, 1.0f, 1.0f}, section_training_id),
-            make_scalar_history("occupancy_percent", "Occupancy", "Density-grid occupied cell ratio.", "%", {0.16f, 0.86f, 0.55f, 1.0f}, section_training_id),
-            make_scalar_history("step_time_ms", "Step Time", "Wall-clock optimizer update duration.", "ms", {1.0f, 0.75f, 0.25f, 1.0f}, section_training_id),
-            make_scalar_history("step_rate", "Step Rate", "Optimizer throughput for the last update.", "step/s", {0.65f, 0.5f, 1.0f, 1.0f}, section_training_id),
-            make_scalar_history("preview_mse", "Preview MSE", "Mean squared error from the most recent preview render.", "", {1.0f, 0.52f, 0.52f, 1.0f}, section_preview_id),
-            make_scalar_history("preview_psnr", "Preview PSNR", "Peak signal-to-noise ratio from the most recent preview render.", "dB", {0.55f, 0.85f, 1.0f, 1.0f}, section_preview_id),
-        };
 
         const bool is_nerf_synthetic = dataset::nerf_synthetic::is_dataset(created->options.dataset_path);
         const bool is_dd_nerf = dataset::dd_nerf::is_dataset(created->options.dataset_path);
@@ -1213,7 +1130,6 @@ namespace instant_ngp::spectra_project {
         }, created->dataset);
 
         publish_density_grid_volume(*created);
-        push_log(*created, "CONFIG", std::format("profile={} dataset={} format={} scene_scale={} frame_sets={} visualized_cameras={} density_grid_revision={} color_grid_revision={} volume_density_scale={}", NGP_TRAIN_PROFILE_NAME, created->options.dataset_path.string(), created->options.format, created->options.scene_scale, joined_frame_sets(created->options.frame_sets), created->cameras.size() - 1u, created->exported_density_revision, created->exported_color_revision, created->exported_volume_density_scale));
         return InstantNgpSpectraProject{std::move(created)};
     }
 
@@ -1234,7 +1150,6 @@ namespace instant_ngp::spectra_project {
             if (current_step >= state.training.target_steps) {
                 state.training_running = false;
                 state.training_complete = true;
-                push_log(state, "COMPLETE", std::format("step={}", current_step));
                 return;
             }
             const std::uint32_t remaining_steps = state.training.target_steps - current_step;
@@ -1259,22 +1174,9 @@ namespace instant_ngp::spectra_project {
                 refresh_debug_attachments(state);
                 if (previous_occupancy_revision != state.exported_occupancy_revision || previous_occupancy_visible != state.occupancy_grid.has_value()) ++state.scene_revision;
             }
-            state.scalar_time_seconds += static_cast<double>(stats->elapsed_ms) / 1000.0;
-            const float step_rate = stats->elapsed_ms > 0.0f ? static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms : 0.0f;
-            append_scalar_sample(state, "training_loss", stats->step, static_cast<double>(stats->loss));
-            append_scalar_sample(state, "sample_efficiency_percent", stats->step, static_cast<double>(stats->sample_efficiency_ratio) * 100.0);
-            append_scalar_sample(state, "occupancy_percent", stats->step, static_cast<double>(stats->density_grid_occupancy_ratio) * 100.0);
-            append_scalar_sample(state, "step_time_ms", stats->step, static_cast<double>(stats->elapsed_ms));
-            append_scalar_sample(state, "step_rate", stats->step, static_cast<double>(step_rate));
-            const bool should_log = state.last_logged_step == 0u || stats->step - state.last_logged_step >= state.training.log_every || reached_target;
-            if (should_log) {
-                push_log(state, "OPTIMIZE", std::format("frame_set={} step={}/{} loss={:.6f} chunk={:.3f}ms rate={:.2f} step/s sample_eff={:.2f}% occupancy={:.2f}%", state.training.frame_set, stats->step, state.training.target_steps, stats->loss, stats->elapsed_ms, step_rate, stats->sample_efficiency_ratio * 100.0f, stats->density_grid_occupancy_ratio * 100.0f));
-                state.last_logged_step = stats->step;
-            }
             if (reached_target) {
                 state.training_running = false;
                 state.training_complete = true;
-                push_log(state, "COMPLETE", std::format("step={} target_steps={}", stats->step, state.training.target_steps));
             }
         } catch (const std::exception& error) {
             set_project_error(state, error.what());
@@ -1291,11 +1193,9 @@ namespace instant_ngp::spectra_project {
             state.project_error.clear();
             state.training_complete = false;
             state.training_running = true;
-            push_log(state, "START", std::format("frame_set={} target_steps={} steps_per_update={} log_every={}", state.training.frame_set, state.training.target_steps, state.training.steps_per_update, state.training.log_every));
         } else if (action_id == action_pause_training_id) {
             if (!state.training_running) throw std::runtime_error("training is not running");
             state.training_running = false;
-            push_log(state, "PAUSE", std::format("step={}", current_training_step(state)));
         } else if (action_id == action_render_preview_id) {
             if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
             const PreviewOptions parsed = parse_preview_options(state, options);
@@ -1307,9 +1207,6 @@ namespace instant_ngp::spectra_project {
                 .refresh_acceleration = parsed.refresh_acceleration,
             });
             if (!preview) throw std::runtime_error(preview.error());
-            state.scalar_time_seconds += static_cast<double>(preview->elapsed_ms) / 1000.0;
-            append_scalar_sample(state, "preview_mse", preview->step, static_cast<double>(preview->mse));
-            append_scalar_sample(state, "preview_psnr", preview->step, static_cast<double>(preview->psnr));
             const std::uint64_t revision = state.next_preview_revision++;
             PreviewState next_preview{
                 .frame_set = preview->frame_set,
@@ -1326,7 +1223,6 @@ namespace instant_ngp::spectra_project {
             };
             state.latest_preview = std::move(next_preview);
             state.project_error.clear();
-            push_log(state, "PREVIEW", std::format("frame_set={} image={} step={} mse={:.8f} psnr={:.2f} elapsed={:.3f}ms", preview->frame_set, preview->image_index, preview->step, preview->mse, preview->psnr, preview->elapsed_ms));
         } else if (action_id == action_reset_training_id) {
             release_color_buffer(state);
             release_density_buffer(state);
@@ -1341,10 +1237,7 @@ namespace instant_ngp::spectra_project {
             state.training_running = false;
             state.training_complete = false;
             state.project_error.clear();
-            state.last_logged_step = 0u;
-            clear_scalar_histories(state);
             publish_density_grid_volume(state);
-            push_log(state, "RESET", "training state reset and initial density restored");
         } else {
             throw std::runtime_error(std::format("unknown project action '{}'", action_id));
         }
@@ -1395,7 +1288,6 @@ namespace instant_ngp::spectra_project {
         refresh_debug_attachments(state);
         ++state.scene_revision;
         state.project_error.clear();
-        push_log(state, "DEBUG", std::format("{}={}", key, value));
     }
 
     std::uint64_t InstantNgpSpectraProject::scene_revision() const {
@@ -1485,34 +1377,10 @@ namespace instant_ngp::spectra_project {
         return status;
     }
 
-    std::vector<ProjectLogEntry> InstantNgpSpectraProject::logs() const {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        return this->state->logs;
-    }
-
     std::span<const ProjectImage> InstantNgpSpectraProject::images() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         if (!this->state->latest_preview.has_value()) return {};
         return this->state->latest_preview->images;
-    }
-
-    std::vector<ProjectScalarSeries> InstantNgpSpectraProject::scalar_series() const {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        std::vector<ProjectScalarSeries> series{};
-        series.reserve(this->state->scalar_histories.size());
-        for (const ScalarHistory& history : this->state->scalar_histories) {
-            series.push_back(ProjectScalarSeries{
-                .id = history.id,
-                .label = history.label,
-                .description = history.description,
-                .unit = history.unit,
-                .color = history.color,
-                .section_id = history.section_id,
-                .revision = history.revision,
-                .samples = history.samples,
-            });
-        }
-        return series;
     }
 
     Document InstantNgpSpectraProject::document() const {
