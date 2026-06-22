@@ -18,9 +18,6 @@ namespace ngp::inspector {
         float mse = 0.0f;
         float psnr = 0.0f;
         float elapsed_ms = 0.0f;
-        std::vector<std::uint8_t> ground_truth_rgba8;
-        std::vector<std::uint8_t> prediction_rgba8;
-        std::vector<std::uint8_t> error_rgba8;
     };
 
     export enum class DensityGridEncoding : std::uint32_t {

@@ -94,7 +94,6 @@ namespace instant_ngp::spectra_project {
             float mse{};
             float psnr{};
             std::uint64_t revision{};
-            std::vector<ProjectImage> images{};
         };
 
         [[nodiscard]] OptionChoice choice(std::string value) {
@@ -939,29 +938,7 @@ namespace instant_ngp::spectra_project {
             return parsed;
         }
 
-        [[nodiscard]] ProjectImage make_project_image(std::string id, std::string label, std::string description, const std::uint32_t width, const std::uint32_t height, const std::uint64_t revision, std::vector<std::uint8_t> rgba8) {
-            if (id.empty()) throw std::runtime_error("project image id must not be empty");
-            if (label.empty()) throw std::runtime_error(std::format("project image '{}' label must not be empty", id));
-            if (width == 0u || height == 0u) throw std::runtime_error(std::format("project image '{}' dimensions must be non-zero", id));
-            const std::uint64_t width_64 = width;
-            const std::uint64_t height_64 = height;
-            if (width_64 > std::numeric_limits<std::uint64_t>::max() / height_64 / 4u) throw std::runtime_error(std::format("project image '{}' dimensions overflow RGBA8 byte count", id));
-            const std::uint64_t expected_byte_count = width_64 * height_64 * 4u;
-            if (rgba8.size() != expected_byte_count) throw std::runtime_error(std::format("project image '{}' RGBA8 byte count must be width * height * 4", id));
-            if (revision == 0u) throw std::runtime_error(std::format("project image '{}' revision must not be zero", id));
-            return ProjectImage{
-                .id = std::move(id),
-                .label = std::move(label),
-                .description = std::move(description),
-                .section_id = section_preview_id,
-                .width = width,
-                .height = height,
-                .revision = revision,
-                .rgba8 = std::move(rgba8),
-            };
-        }
-
-        void add_metric(ProjectStatus& status, std::string key, std::string label, std::string value, std::string section_id = section_diagnostics_id, const std::uint32_t placement_flags = ControlPlacementPanelDetail, const std::optional<std::array<float, 4u>> color = {}) {
+        void add_metric(ProjectControlState& control_state, std::string key, std::string label, std::string value, std::string section_id = section_diagnostics_id, const std::uint32_t placement_flags = ControlPlacementPanelDetail, const std::optional<std::array<float, 4u>> color = {}) {
             ProjectMetric metric{
                 .key = std::move(key),
                 .label = std::move(label),
@@ -973,11 +950,11 @@ namespace instant_ngp::spectra_project {
                 metric.has_color = true;
                 metric.color = *color;
             }
-            status.metrics.push_back(std::move(metric));
+            control_state.metrics.push_back(std::move(metric));
         }
 
-        void add_action_state(ProjectStatus& status, std::string action_id, const bool enabled, std::string disabled_reason = {}) {
-            status.action_states.push_back(ProjectActionState{.action_id = std::move(action_id), .enabled = enabled, .disabled_reason = std::move(disabled_reason)});
+        void add_action_state(ProjectControlState& control_state, std::string action_id, const bool enabled, std::string disabled_reason = {}) {
+            control_state.action_states.push_back(ProjectActionState{.action_id = std::move(action_id), .enabled = enabled, .disabled_reason = std::move(disabled_reason)});
         }
     }
 
@@ -1215,11 +1192,6 @@ namespace instant_ngp::spectra_project {
                 .mse = preview->mse,
                 .psnr = preview->psnr,
                 .revision = revision,
-                .images = {
-                    make_project_image("ground_truth", "Ground Truth", std::format("{} image {}", preview->frame_set, preview->image_index), preview->width, preview->height, revision, std::move(preview->ground_truth_rgba8)),
-                    make_project_image("prediction", "Prediction", std::format("Model render at step {}", preview->step), preview->width, preview->height, revision, std::move(preview->prediction_rgba8)),
-                    make_project_image("error", "Error", "Per-channel absolute prediction error", preview->width, preview->height, revision, std::move(preview->error_rgba8)),
-                },
             };
             state.latest_preview = std::move(next_preview);
             state.project_error.clear();
@@ -1241,25 +1213,6 @@ namespace instant_ngp::spectra_project {
         } else {
             throw std::runtime_error(std::format("unknown project action '{}'", action_id));
         }
-    }
-
-    std::vector<ProjectSettingValue> InstantNgpSpectraProject::settings() const {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        const State& state = *this->state;
-        return {
-            ProjectSettingValue{
-                .key = setting_show_occupancy_key,
-                .value = state.options.show_occupancy ? "true" : "false",
-            },
-            ProjectSettingValue{
-                .key = setting_occupancy_alpha_key,
-                .value = std::format("{:.9g}", state.options.occupancy_alpha),
-            },
-            ProjectSettingValue{
-                .key = setting_occupancy_cell_scale_key,
-                .value = std::format("{:.9g}", state.options.occupancy_cell_scale),
-            },
-        };
     }
 
     void InstantNgpSpectraProject::update_setting(const std::string_view key, const std::string_view value) {
@@ -1295,92 +1248,86 @@ namespace instant_ngp::spectra_project {
         return this->state->scene_revision;
     }
 
-    ProjectStatus InstantNgpSpectraProject::status() const {
+    ProjectControlState InstantNgpSpectraProject::control_state() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
-        ProjectStatus status{};
+        ProjectControlState control_state{};
         if (!state.project_error.empty()) {
-            status.phase = "Error";
-            status.headline = "Project error";
-            status.detail = state.project_error;
+            control_state.phase = "Error";
+            control_state.headline = "Project error";
+            control_state.detail = state.project_error;
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            status.phase = "Running";
-            status.headline = "Training running";
-            status.detail = std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set);
+            control_state.phase = "Running";
+            control_state.headline = "Training running";
+            control_state.detail = std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set);
         } else if (state.training_running) {
-            status.phase = "Paused";
-            status.headline = "Timeline paused";
-            status.detail = std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set);
+            control_state.phase = "Paused";
+            control_state.headline = "Timeline paused";
+            control_state.detail = std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set);
         } else if (state.training_complete) {
-            status.phase = "Complete";
-            status.headline = "Training complete";
-            status.detail = std::format("Reached target step {}.", state.training.target_steps);
+            control_state.phase = "Complete";
+            control_state.headline = "Training complete";
+            control_state.detail = std::format("Reached target step {}.", state.training.target_steps);
         } else if (state.latest_stats.has_value()) {
-            status.phase = "Paused";
-            status.headline = "Training paused";
-            status.detail = std::format("Current step {}.", current_training_step(state));
+            control_state.phase = "Paused";
+            control_state.headline = "Training paused";
+            control_state.detail = std::format("Current step {}.", current_training_step(state));
         } else {
-            status.phase = "Ready";
-            status.headline = "Dataset loaded";
-            status.detail = "Start training from the Scene controls.";
+            control_state.phase = "Ready";
+            control_state.headline = "Dataset loaded";
+            control_state.detail = "Start training from the Scene controls.";
         }
 
-        add_metric(status, "dataset", "Dataset", state.options.dataset_path.filename().string(), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(status, "format", "Format", state.options.format, section_diagnostics_id);
-        add_metric(status, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(status, "step", "Step", std::format("{}", current_training_step(state)), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
-        add_metric(status, "target_steps", "Target", std::format("{}", state.training.target_steps), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
-        add_metric(status, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden");
-        add_metric(status, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision));
-        add_metric(status, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision));
-        add_metric(status, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
-        add_metric(status, "color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None");
-        if (state.density_volume.has_value()) add_metric(status, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
-        if (state.exported_density_optical_thickness_step > 0.0f) add_metric(status, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
-        if (state.exported_volume_density_scale > 0.0f) add_metric(status, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));
-        add_metric(status, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden");
+        add_metric(control_state, "dataset", "Dataset", state.options.dataset_path.filename().string(), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
+        add_metric(control_state, "format", "Format", state.options.format, section_diagnostics_id);
+        add_metric(control_state, "frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
+        add_metric(control_state, "step", "Step", std::format("{}", current_training_step(state)), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+        add_metric(control_state, "target_steps", "Target", std::format("{}", state.training.target_steps), section_training_id, ControlPlacementPanelSummary | ControlPlacementPanelDetail);
+        add_metric(control_state, "density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden");
+        add_metric(control_state, "density_grid_revision", "Density Rev", std::format("{}", state.exported_density_revision));
+        add_metric(control_state, "color_grid_revision", "Color Rev", std::format("{}", state.exported_color_revision));
+        add_metric(control_state, "density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None");
+        add_metric(control_state, "color_grid_encoding", "Color Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32x3" : "None");
+        if (state.density_volume.has_value()) add_metric(control_state, "density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2]));
+        if (state.exported_density_optical_thickness_step > 0.0f) add_metric(control_state, "optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step));
+        if (state.exported_volume_density_scale > 0.0f) add_metric(control_state, "volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale));
+        add_metric(control_state, "occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden");
         if (state.latest_stats.has_value()) {
-            add_metric(status, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
-            add_metric(status, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
-            add_metric(status, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
-            add_metric(status, "occupancy_revision", "Occupancy Revision", std::format("{}", state.exported_occupancy_revision));
+            add_metric(control_state, "loss", "Loss", std::format("{:.6f}", state.latest_stats->loss), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{1.0f, 0.38f, 0.25f, 1.0f});
+            add_metric(control_state, "sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.25f, 0.75f, 1.0f, 1.0f});
+            add_metric(control_state, "occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f), section_training_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.16f, 0.86f, 0.55f, 1.0f});
+            add_metric(control_state, "occupancy_revision", "Occupancy Revision", std::format("{}", state.exported_occupancy_revision));
         }
         if (state.latest_preview.has_value()) {
-            add_metric(status, "preview_frame_set", "Preview Frame Set", state.latest_preview->frame_set, section_preview_id);
-            add_metric(status, "preview_image", "Preview Image", std::format("{}", state.latest_preview->image_index), section_preview_id);
-            add_metric(status, "preview_step", "Preview Step", std::format("{}", state.latest_preview->step), section_preview_id);
-            add_metric(status, "preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse), section_preview_id);
-            add_metric(status, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", section_preview_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
+            add_metric(control_state, "preview_frame_set", "Preview Frame Set", state.latest_preview->frame_set, section_preview_id);
+            add_metric(control_state, "preview_image", "Preview Image", std::format("{}", state.latest_preview->image_index), section_preview_id);
+            add_metric(control_state, "preview_step", "Preview Step", std::format("{}", state.latest_preview->step), section_preview_id);
+            add_metric(control_state, "preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse), section_preview_id);
+            add_metric(control_state, "preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf", section_preview_id, ControlPlacementViewportOverlay | ControlPlacementPanelSummary | ControlPlacementPanelDetail, std::array<float, 4u>{0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
-            add_action_state(status, action_start_training_id, false, "Resolve or reset the project error before starting training.");
-            add_action_state(status, action_pause_training_id, false, "Training is not running.");
-            add_action_state(status, action_render_preview_id, false, "Resolve or reset the project error before rendering a preview.");
-            add_action_state(status, action_reset_training_id, true);
+            add_action_state(control_state, action_start_training_id, false, "Resolve or reset the project error before starting training.");
+            add_action_state(control_state, action_pause_training_id, false, "Training is not running.");
+            add_action_state(control_state, action_render_preview_id, false, "Resolve or reset the project error before rendering a preview.");
+            add_action_state(control_state, action_reset_training_id, true);
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            add_action_state(status, action_start_training_id, false, "Training is already running.");
-            add_action_state(status, action_pause_training_id, true);
-            add_action_state(status, action_render_preview_id, false, "Pause the host timeline before rendering a preview.");
-            add_action_state(status, action_reset_training_id, true);
+            add_action_state(control_state, action_start_training_id, false, "Training is already running.");
+            add_action_state(control_state, action_pause_training_id, true);
+            add_action_state(control_state, action_render_preview_id, false, "Pause the host timeline before rendering a preview.");
+            add_action_state(control_state, action_reset_training_id, true);
         } else if (state.training_running) {
-            add_action_state(status, action_start_training_id, false, "Training is already running; resume with Space or stop it with Pause.");
-            add_action_state(status, action_pause_training_id, true);
-            add_action_state(status, action_render_preview_id, true);
-            add_action_state(status, action_reset_training_id, true);
+            add_action_state(control_state, action_start_training_id, false, "Training is already running; resume with Space or stop it with Pause.");
+            add_action_state(control_state, action_pause_training_id, true);
+            add_action_state(control_state, action_render_preview_id, true);
+            add_action_state(control_state, action_reset_training_id, true);
         } else {
-            add_action_state(status, action_start_training_id, true);
-            add_action_state(status, action_pause_training_id, false, "Training is not running.");
-            add_action_state(status, action_render_preview_id, true);
-            add_action_state(status, action_reset_training_id, true);
+            add_action_state(control_state, action_start_training_id, true);
+            add_action_state(control_state, action_pause_training_id, false, "Training is not running.");
+            add_action_state(control_state, action_render_preview_id, true);
+            add_action_state(control_state, action_reset_training_id, true);
         }
-        return status;
-    }
-
-    std::span<const ProjectImage> InstantNgpSpectraProject::images() const {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        if (!this->state->latest_preview.has_value()) return {};
-        return this->state->latest_preview->images;
+        return control_state;
     }
 
     Document InstantNgpSpectraProject::document() const {

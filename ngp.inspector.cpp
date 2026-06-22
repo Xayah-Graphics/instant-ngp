@@ -79,15 +79,10 @@ namespace ngp::inspector {
             if (request.image_index >= host_frame_set->frame_count) throw std::runtime_error{std::format("evaluation preview image_index {} is out of range for frame set '{}' with {} frames.", request.image_index, request.frame_set, host_frame_set->frame_count)};
             if (request.refresh_acceleration) this->trainer->host.density_grid_ema_step = 0u;
             if (this->trainer->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->trainer->device.params, this->trainer->device.sample_coords, this->trainer->device.density_input, this->trainer->device.network_output, this->trainer->device.density_grid_values, this->trainer->device.density_grid_scratch, this->trainer->device.density_grid_indices, this->trainer->device.density_grid_mean, this->trainer->device.density_grid_occupied_count, this->trainer->device.occupancy, this->trainer->host.density_grid_ema_step, true);
-            if (this->trainer->device.comparison_pixels == nullptr) throw std::runtime_error{"evaluation preview comparison image buffer is not initialized."};
-
             const auto evaluation_start = std::chrono::steady_clock::now();
             const std::uint64_t pixel_count_64 = static_cast<std::uint64_t>(host_frame_set->width) * host_frame_set->height;
-            if (pixel_count_64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 4u)) throw std::runtime_error{"evaluation preview image is too large."};
-            const std::size_t pixel_count = static_cast<std::size_t>(pixel_count_64);
-            std::vector<std::uint8_t> comparison_image(pixel_count * 2uz * 3uz);
             double image_loss_sum = 0.0;
-            cuda::run_evaluation(device_frame_set->pixels, device_frame_set->camera, host_frame_set->frame_count, request.image_index, 1u, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->trainer->device.occupancy, this->trainer->device.params, this->trainer->device.sample_coords, this->trainer->device.density_input, this->trainer->device.rgb_input, this->trainer->device.network_output, this->trainer->device.evaluation_numsteps, this->trainer->device.evaluation_sample_counter, this->trainer->device.evaluation_overflow_counter, this->trainer->device.evaluation_loss_sum, this->trainer->device.comparison_pixels, comparison_image.data(), image_loss_sum);
+            cuda::run_evaluation(device_frame_set->pixels, device_frame_set->camera, host_frame_set->frame_count, request.image_index, 1u, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->trainer->device.occupancy, this->trainer->device.params, this->trainer->device.sample_coords, this->trainer->device.density_input, this->trainer->device.rgb_input, this->trainer->device.network_output, this->trainer->device.evaluation_numsteps, this->trainer->device.evaluation_sample_counter, this->trainer->device.evaluation_overflow_counter, this->trainer->device.evaluation_loss_sum, nullptr, nullptr, image_loss_sum);
 
             EvaluationPreviewResult result{
                 .frame_set = std::string{host_frame_set->name},
@@ -96,35 +91,12 @@ namespace ngp::inspector {
                 .width = host_frame_set->width,
                 .height = host_frame_set->height,
                 .elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - evaluation_start).count(),
-                .ground_truth_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
-                .prediction_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
-                .error_rgba8 = std::vector<std::uint8_t>(pixel_count * 4uz),
             };
 
-            const double mse = image_loss_sum / (static_cast<double>(pixel_count) * 3.0);
+            const double mse = image_loss_sum / (static_cast<double>(pixel_count_64) * 3.0);
             if (!std::isfinite(mse)) throw std::runtime_error{"evaluation preview produced non-finite MSE."};
             result.mse = static_cast<float>(mse);
             result.psnr = mse > 0.0 ? static_cast<float>(-10.0 * std::log10(mse)) : std::numeric_limits<float>::infinity();
-
-            for (std::uint32_t y = 0u; y < host_frame_set->height; ++y) {
-                for (std::uint32_t x = 0u; x < host_frame_set->width; ++x) {
-                    const std::size_t pixel_index = static_cast<std::size_t>(y) * host_frame_set->width + x;
-                    const std::size_t source_row = static_cast<std::size_t>(y) * host_frame_set->width * 2uz * 3uz;
-                    const std::size_t target_base = source_row + static_cast<std::size_t>(x) * 3uz;
-                    const std::size_t prediction_base = source_row + (static_cast<std::size_t>(host_frame_set->width) + x) * 3uz;
-                    const std::size_t destination_base = pixel_index * 4uz;
-                    for (std::size_t channel = 0uz; channel < 3uz; ++channel) {
-                        const std::uint8_t target_value = comparison_image[target_base + channel];
-                        const std::uint8_t prediction_value = comparison_image[prediction_base + channel];
-                        result.ground_truth_rgba8[destination_base + channel] = target_value;
-                        result.prediction_rgba8[destination_base + channel] = prediction_value;
-                        result.error_rgba8[destination_base + channel] = static_cast<std::uint8_t>(std::abs(static_cast<int>(prediction_value) - static_cast<int>(target_value)));
-                    }
-                    result.ground_truth_rgba8[destination_base + 3uz] = 255u;
-                    result.prediction_rgba8[destination_base + 3uz] = 255u;
-                    result.error_rgba8[destination_base + 3uz] = 255u;
-                }
-            }
             return result;
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};

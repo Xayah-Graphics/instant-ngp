@@ -87,11 +87,6 @@ export namespace instant_ngp::spectra_project {
         std::vector<OptionSchema> options{};
     };
 
-    struct ProjectSettingValue {
-        std::string key{};
-        std::string value{};
-    };
-
     struct ProjectMetric {
         std::string key{};
         std::string label{};
@@ -108,7 +103,7 @@ export namespace instant_ngp::spectra_project {
         std::string disabled_reason{};
     };
 
-    struct ProjectStatus {
+    struct ProjectControlState {
         std::string phase{};
         std::string headline{};
         std::string detail{};
@@ -123,17 +118,6 @@ export namespace instant_ngp::spectra_project {
         std::uint64_t frame_index{};
         std::uint32_t timeline_mode{ControlTimelineModeLive};
         bool timeline_playing{};
-    };
-
-    struct ProjectImage {
-        std::string id{};
-        std::string label{};
-        std::string description{};
-        std::string section_id{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-        std::uint64_t revision{};
-        std::vector<std::uint8_t> rgba8{};
     };
 
     struct Transform {
@@ -324,12 +308,10 @@ export namespace instant_ngp::spectra_project {
 
         void update(const UpdateInfo& update);
         void execute_action(std::string_view action_id, std::span<const Option> options);
-        [[nodiscard]] std::vector<ProjectSettingValue> settings() const;
         void update_setting(std::string_view key, std::string_view value);
 
         [[nodiscard]] std::uint64_t scene_revision() const;
-        [[nodiscard]] ProjectStatus status() const;
-        [[nodiscard]] std::span<const ProjectImage> images() const;
+        [[nodiscard]] ProjectControlState control_state() const;
         [[nodiscard]] Document document() const;
 
     private:

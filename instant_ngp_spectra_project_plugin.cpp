@@ -7,7 +7,7 @@
 import instant_ngp.spectra_project;
 import std;
 
-constexpr std::uint32_t plugin_abi_version = 3u;
+constexpr std::uint32_t plugin_abi_version = 4u;
 typedef void SpectraSceneInstance;
 
 typedef std::uint32_t SpectraSceneResult;
@@ -76,16 +76,6 @@ struct SpectraSceneControlActionSpan {
     std::uint64_t count{};
 };
 
-struct SpectraSceneControlSettingValue {
-    const char* key{};
-    const char* value{};
-};
-
-struct SpectraSceneControlSettingValueSpan {
-    const SpectraSceneControlSettingValue* data{};
-    std::uint64_t count{};
-};
-
 struct SpectraSceneControlMetric {
     const char* key{};
     const char* label{};
@@ -112,37 +102,13 @@ struct SpectraSceneControlActionStateSpan {
     std::uint64_t count{};
 };
 
-struct SpectraSceneControlStatusView {
+struct SpectraSceneControlStateView {
     std::uint64_t struct_size{};
     const char* phase{};
     const char* headline{};
     const char* detail{};
     SpectraSceneControlMetricSpan metrics{};
     SpectraSceneControlActionStateSpan action_states{};
-};
-
-struct SpectraSceneControlImage {
-    const char* id{};
-    const char* label{};
-    const char* description{};
-    const char* section_id{};
-    const std::uint8_t* rgba8{};
-    std::uint64_t rgba8_size{};
-    std::uint64_t revision{};
-    std::uint32_t width{};
-    std::uint32_t height{};
-};
-
-struct SpectraSceneControlImageSpan {
-    const SpectraSceneControlImage* data{};
-    std::uint64_t count{};
-};
-
-struct SpectraSceneControlSnapshotView {
-    std::uint64_t struct_size{};
-    SpectraSceneControlSettingValueSpan settings{};
-    SpectraSceneControlStatusView status{};
-    SpectraSceneControlImageSpan images{};
 };
 
 struct SpectraSceneUpdateInfo {
@@ -493,7 +459,7 @@ typedef SpectraSceneResult (*SpectraSceneFrameFn)(SpectraSceneInstance* instance
 typedef SpectraSceneResult (*SpectraSceneRevisionFn)(SpectraSceneInstance* instance, std::uint64_t* revision);
 typedef SpectraSceneResult (*SpectraSceneControlActionFn)(SpectraSceneInstance* instance, const char* action_id, SpectraSceneOptionSpan options);
 typedef SpectraSceneResult (*SpectraSceneControlSettingUpdateFn)(SpectraSceneInstance* instance, const char* key, const char* value);
-typedef SpectraSceneResult (*SpectraSceneControlSnapshotFn)(SpectraSceneInstance* instance, SpectraSceneControlSnapshotView* snapshot);
+typedef SpectraSceneResult (*SpectraSceneControlStateFn)(SpectraSceneInstance* instance, SpectraSceneControlStateView* state);
 typedef const char* (*SpectraSceneLastErrorFn)(SpectraSceneInstance* instance);
 
 struct SpectraScenePlugin {
@@ -518,7 +484,7 @@ struct SpectraScenePlugin {
     SpectraSceneRevisionFn scene_revision{};
     SpectraSceneControlActionFn control_action{};
     SpectraSceneControlSettingUpdateFn control_setting_update{};
-    SpectraSceneControlSnapshotFn control_snapshot{};
+    SpectraSceneControlStateFn control_state{};
     SpectraSceneLastErrorFn last_error{};
 };
 
@@ -547,29 +513,17 @@ namespace {
         std::vector<SpectraSceneViewportCameraVisual> camera_visual_views{};
     };
 
-    struct ProjectStatusCache {
-        instant_ngp::spectra_project::ProjectStatus status{};
+    struct ProjectControlStateCache {
+        instant_ngp::spectra_project::ProjectControlState state{};
         std::vector<SpectraSceneControlMetric> metric_views{};
         std::vector<SpectraSceneControlActionState> action_state_views{};
-    };
-
-    struct ProjectSettingCache {
-        std::vector<instant_ngp::spectra_project::ProjectSettingValue> settings{};
-        std::vector<SpectraSceneControlSettingValue> setting_views{};
-    };
-
-    struct ProjectImageCache {
-        std::span<const instant_ngp::spectra_project::ProjectImage> images{};
-        std::vector<SpectraSceneControlImage> image_views{};
     };
 
     struct PluginInstance {
         instant_ngp::spectra_project::InstantNgpSpectraProject project{};
         std::string last_error{};
         SceneViewCache scene_cache{};
-        ProjectStatusCache status_cache{};
-        ProjectSettingCache setting_cache{};
-        ProjectImageCache image_cache{};
+        ProjectControlStateCache control_state_cache{};
     };
 
     std::string global_error{};
@@ -863,12 +817,12 @@ namespace {
         };
     }
 
-    [[nodiscard]] SpectraSceneControlStatusView make_status_view(ProjectStatusCache& cache) {
+    [[nodiscard]] SpectraSceneControlStateView make_control_state_view(ProjectControlStateCache& cache) {
         cache.metric_views.clear();
         cache.action_state_views.clear();
-        cache.metric_views.reserve(cache.status.metrics.size());
-        cache.action_state_views.reserve(cache.status.action_states.size());
-        for (const instant_ngp::spectra_project::ProjectMetric& metric : cache.status.metrics) {
+        cache.metric_views.reserve(cache.state.metrics.size());
+        cache.action_state_views.reserve(cache.state.action_states.size());
+        for (const instant_ngp::spectra_project::ProjectMetric& metric : cache.state.metrics) {
             cache.metric_views.push_back(SpectraSceneControlMetric{
                 .key = metric.key.c_str(),
                 .label = metric.label.c_str(),
@@ -880,52 +834,21 @@ namespace {
             });
             copy_array(cache.metric_views.back().color, metric.color);
         }
-        for (const instant_ngp::spectra_project::ProjectActionState& action_state : cache.status.action_states) {
+        for (const instant_ngp::spectra_project::ProjectActionState& action_state : cache.state.action_states) {
             cache.action_state_views.push_back(SpectraSceneControlActionState{
                 .action_id = action_state.action_id.c_str(),
                 .enabled = action_state.enabled ? 1u : 0u,
                 .disabled_reason = action_state.disabled_reason.c_str(),
             });
         }
-        return SpectraSceneControlStatusView{
-            .struct_size = sizeof(SpectraSceneControlStatusView),
-            .phase = cache.status.phase.c_str(),
-            .headline = cache.status.headline.c_str(),
-            .detail = cache.status.detail.c_str(),
+        return SpectraSceneControlStateView{
+            .struct_size = sizeof(SpectraSceneControlStateView),
+            .phase = cache.state.phase.c_str(),
+            .headline = cache.state.headline.c_str(),
+            .detail = cache.state.detail.c_str(),
             .metrics = SpectraSceneControlMetricSpan{.data = cache.metric_views.empty() ? nullptr : cache.metric_views.data(), .count = static_cast<std::uint64_t>(cache.metric_views.size())},
             .action_states = SpectraSceneControlActionStateSpan{.data = cache.action_state_views.empty() ? nullptr : cache.action_state_views.data(), .count = static_cast<std::uint64_t>(cache.action_state_views.size())},
         };
-    }
-
-    [[nodiscard]] std::span<const SpectraSceneControlSettingValue> make_setting_view(ProjectSettingCache& cache) {
-        cache.setting_views.clear();
-        cache.setting_views.reserve(cache.settings.size());
-        for (const instant_ngp::spectra_project::ProjectSettingValue& setting : cache.settings) {
-            cache.setting_views.push_back(SpectraSceneControlSettingValue{
-                .key = setting.key.c_str(),
-                .value = setting.value.c_str(),
-            });
-        }
-        return cache.setting_views;
-    }
-
-    [[nodiscard]] std::span<const SpectraSceneControlImage> make_image_view(ProjectImageCache& cache) {
-        cache.image_views.clear();
-        cache.image_views.reserve(cache.images.size());
-        for (const instant_ngp::spectra_project::ProjectImage& image : cache.images) {
-            cache.image_views.push_back(SpectraSceneControlImage{
-                .id = image.id.c_str(),
-                .label = image.label.c_str(),
-                .description = image.description.c_str(),
-                .section_id = image.section_id.c_str(),
-                .rgba8 = image.rgba8.empty() ? nullptr : image.rgba8.data(),
-                .rgba8_size = static_cast<std::uint64_t>(image.rgba8.size()),
-                .revision = image.revision,
-                .width = image.width,
-                .height = image.height,
-            });
-        }
-        return cache.image_views;
     }
 
     [[nodiscard]] PluginInstance& checked_instance(SpectraSceneInstance* instance, const std::string_view action) {
@@ -1119,23 +1042,13 @@ namespace {
         }
     }
 
-    [[nodiscard]] SpectraSceneResult control_snapshot(SpectraSceneInstance* instance, SpectraSceneControlSnapshotView* snapshot) noexcept {
+    [[nodiscard]] SpectraSceneResult control_state(SpectraSceneInstance* instance, SpectraSceneControlStateView* state) noexcept {
         try {
-            PluginInstance& plugin_instance = checked_instance(instance, "control_snapshot");
-            if (snapshot == nullptr) throw std::runtime_error("control_snapshot output pointer is null");
+            PluginInstance& plugin_instance = checked_instance(instance, "control_state");
+            if (state == nullptr) throw std::runtime_error("control_state output pointer is null");
             plugin_instance.last_error.clear();
-            plugin_instance.setting_cache.settings = plugin_instance.project.settings();
-            plugin_instance.status_cache.status = plugin_instance.project.status();
-            plugin_instance.image_cache.images = plugin_instance.project.images();
-            const std::span<const SpectraSceneControlSettingValue> settings = make_setting_view(plugin_instance.setting_cache);
-            const SpectraSceneControlStatusView status = make_status_view(plugin_instance.status_cache);
-            const std::span<const SpectraSceneControlImage> images = make_image_view(plugin_instance.image_cache);
-            *snapshot = SpectraSceneControlSnapshotView{
-                .struct_size = sizeof(SpectraSceneControlSnapshotView),
-                .settings = SpectraSceneControlSettingValueSpan{.data = settings.empty() ? nullptr : settings.data(), .count = static_cast<std::uint64_t>(settings.size())},
-                .status = status,
-                .images = SpectraSceneControlImageSpan{.data = images.empty() ? nullptr : images.data(), .count = static_cast<std::uint64_t>(images.size())},
-            };
+            plugin_instance.control_state_cache.state = plugin_instance.project.control_state();
+            *state = make_control_state_view(plugin_instance.control_state_cache);
             return SPECTRA_SCENE_RESULT_OK;
         } catch (const std::exception& error) {
             if (instance != nullptr) reinterpret_cast<PluginInstance*>(instance)->last_error = error.what();
@@ -1169,13 +1082,13 @@ namespace {
             .scene_revision = scene_revision,
             .control_action = control_action,
             .control_setting_update = control_setting_update,
-            .control_snapshot = control_snapshot,
+            .control_state = control_state,
             .last_error = last_error,
         };
         return value;
     }
 } // namespace
 
-extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v3(void) {
+extern "C" SPECTRA_SCENE_EXPORT const SpectraScenePlugin* spectra_scene_plugin_v4(void) {
     return &plugin();
 }
