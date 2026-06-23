@@ -738,7 +738,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 7u;
+    constexpr std::uint32_t plugin_abi_version = 8u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -1172,7 +1172,6 @@ namespace ngp::plugin {
 
     typedef SpectraSceneResult (*SpectraSceneCreateFn)(const SpectraSceneOpenInfo* open_info, SpectraSceneInstance** instance);
     typedef void (*SpectraSceneDestroyFn)(SpectraSceneInstance* instance);
-    typedef SpectraSceneResult (*SpectraSceneResetFn)(SpectraSceneInstance* instance);
     typedef SpectraSceneResult (*SpectraSceneUpdateFn)(SpectraSceneInstance* instance, const SpectraSceneUpdateInfo* update_info);
     typedef SpectraSceneResult (*SpectraSceneDocumentFn)(SpectraSceneInstance* instance, SpectraSceneDocumentView* document);
     typedef SpectraSceneResult (*SpectraSceneFrameFn)(SpectraSceneInstance* instance, SpectraSceneFrameInfo frame, SpectraSceneFrameView* snapshot);
@@ -1189,7 +1188,6 @@ namespace ngp::plugin {
         const char* title{};
         const char* open_action_label{};
         const char* open_action_description{};
-        const char* base_pbrt_path{};
         double frames_per_second{};
         SpectraSceneControlSectionSpan sections{};
         SpectraSceneControlOptionSchemaSpan open_options{};
@@ -1197,7 +1195,6 @@ namespace ngp::plugin {
         SpectraSceneControlOptionSchemaSpan control_settings{};
         SpectraSceneCreateFn create{};
         SpectraSceneDestroyFn destroy{};
-        SpectraSceneResetFn reset{};
         SpectraSceneUpdateFn update{};
         SpectraSceneDocumentFn document{};
         SpectraSceneFrameFn frame{};
@@ -1640,20 +1637,6 @@ namespace ngp::plugin {
             delete plugin_instance;
         }
 
-        [[nodiscard]] SpectraSceneResult scene_reset(SpectraSceneInstance* instance) noexcept {
-            try {
-                PluginInstance& plugin_instance = checked_instance(instance, "reset");
-                plugin_instance.last_error.clear();
-                return SPECTRA_SCENE_RESULT_OK;
-            } catch (const std::exception& error) {
-                if (instance != nullptr)
-                    static_cast<PluginInstance*>(instance)->last_error = error.what();
-                else
-                    PluginExportState::instance().export_error = error.what();
-                return SPECTRA_SCENE_RESULT_ERROR;
-            }
-        }
-
         [[nodiscard]] SpectraSceneResult scene_document(SpectraSceneInstance* instance, SpectraSceneDocumentView* document) noexcept {
             try {
                 PluginInstance& plugin_instance = checked_instance(instance, "document");
@@ -1802,7 +1785,6 @@ namespace ngp::plugin {
                                                                                                                         .title                   = plugin_definition.title.c_str(),
                                                                                                                         .open_action_label       = plugin_definition.open_action_label.c_str(),
                                                                                                                         .open_action_description = plugin_definition.open_action_description.c_str(),
-                                                                                                                        .base_pbrt_path          = "",
                                                                                                                         .frames_per_second       = plugin_definition.frames_per_second,
                                                                                                                         .sections                = SpectraSceneControlSectionSpan{.data = descriptor_storage.sections.empty() ? nullptr : descriptor_storage.sections.data(), .count = static_cast<std::uint64_t>(descriptor_storage.sections.size())},
                                                                                                                         .open_options            = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.open_options.schemas.empty() ? nullptr : descriptor_storage.open_options.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.open_options.schemas.size())},
@@ -1810,7 +1792,6 @@ namespace ngp::plugin {
                                                                                                                         .control_settings        = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.control_settings.schemas.empty() ? nullptr : descriptor_storage.control_settings.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.control_settings.schemas.size())},
                                                                                                                         .create                  = scene_create,
                                                                                                                         .destroy                 = scene_destroy,
-                                                                                                                        .reset                   = scene_reset,
                                                                                                                         .update                  = scene_update,
                                                                                                                         .document                = scene_document,
                                                                                                                         .frame                   = scene_frame,

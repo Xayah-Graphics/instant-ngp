@@ -326,7 +326,7 @@ namespace ngp::project {
         std::vector<plugin::Light> lights{};
         std::optional<plugin::VolumeGrid> density_volume{};
         plugin::DebugAttachmentSet debug_attachments{};
-        bool training_running{};
+        bool training_active{};
         bool training_complete{};
         bool host_timeline_playing{true};
         std::uint32_t host_timeline_mode{plugin::ControlTimelineModeLive};
@@ -708,7 +708,7 @@ namespace ngp::project {
 
         void set_project_error(Project::State& state, std::string message) {
             state.project_error = std::move(message);
-            state.training_running = false;
+            state.training_active = false;
             state.training_complete = false;
         }
 
@@ -847,7 +847,7 @@ namespace ngp::project {
         }, created->dataset);
 
         publish_density_grid_volume(*created);
-        created->training_running = true;
+        created->training_active = true;
         return Project{std::move(created)};
     }
 
@@ -860,13 +860,13 @@ namespace ngp::project {
         if (update.timeline_mode > plugin::ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
         state.host_timeline_playing = update.timeline_playing;
         state.host_timeline_mode = update.timeline_mode;
-        if (!state.training_running) return;
+        if (!state.training_active) return;
         if (update.scene_delta_seconds == 0.0) return;
         try {
             create_trainer_if_needed(state);
             const std::uint32_t current_step = current_training_step(state);
             if (current_step >= state.training.target_steps) {
-                state.training_running = false;
+                state.training_active = false;
                 state.training_complete = true;
                 return;
             }
@@ -893,7 +893,7 @@ namespace ngp::project {
                 if (previous_occupancy_revision != state.exported_occupancy_revision || previous_occupancy_visible != state.occupancy_grid.has_value()) ++state.scene_revision;
             }
             if (reached_target) {
-                state.training_running = false;
+                state.training_active = false;
                 state.training_complete = true;
             }
         } catch (const std::exception& error) {
@@ -904,7 +904,7 @@ namespace ngp::project {
     void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
+        if (state.training_active && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
         std::string frame_set{"train"};
         std::uint32_t image_index{};
         std::set<std::string> seen_options{};
@@ -991,9 +991,9 @@ namespace ngp::project {
         const State& state = *this->state;
         if (!state.project_error.empty()) {
             controls.phase("Error").headline("Project error").message(state.project_error);
-        } else if (state.training_running && host_timeline_advances_scene(state)) {
+        } else if (state.training_active && host_timeline_advances_scene(state)) {
             controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
-        } else if (state.training_running) {
+        } else if (state.training_active) {
             controls.phase("Paused").headline("Timeline paused").message(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
         } else if (state.training_complete) {
             controls.phase("Complete").headline("Training complete").message(std::format("Reached target step {}.", state.training.target_steps));
@@ -1035,9 +1035,9 @@ namespace ngp::project {
 
         if (!state.project_error.empty()) {
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
-        } else if (state.training_running && host_timeline_advances_scene(state)) {
+        } else if (state.training_active && host_timeline_advances_scene(state)) {
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
-        } else if (state.training_running) {
+        } else if (state.training_active) {
             controls.enable(action_render_preview_id);
         } else if (state.training_complete) {
             controls.enable(action_render_preview_id);
@@ -1061,6 +1061,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v7(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v8(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }
