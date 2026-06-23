@@ -15,6 +15,9 @@ export namespace ngp::plugin {
         UnsignedInteger = 6u,
     };
 
+    inline constexpr std::uint32_t ControlOptionPresentationDefault = 0u;
+    inline constexpr std::uint32_t ControlOptionPresentationSlider  = 1u;
+
     struct OptionChoice {
         std::string value{};
         std::string label{};
@@ -34,6 +37,11 @@ export namespace ngp::plugin {
         std::string default_value{};
         std::string section_id{};
         std::vector<OptionChoice> choices{};
+        std::uint32_t presentation{ControlOptionPresentationDefault};
+        bool has_numeric_range{};
+        float numeric_min{};
+        float numeric_max{};
+        float numeric_step{};
 
         OptionSchema& section(std::string value) & {
             this->section_id = std::move(value);
@@ -84,6 +92,24 @@ export namespace ngp::plugin {
             this->description = std::move(value);
             return std::move(*this);
         }
+
+        OptionSchema& slider(const float min, const float max, const float step) & {
+            this->presentation = ControlOptionPresentationSlider;
+            this->has_numeric_range = true;
+            this->numeric_min = min;
+            this->numeric_max = max;
+            this->numeric_step = step;
+            return *this;
+        }
+
+        [[nodiscard]] OptionSchema slider(const float min, const float max, const float step) && {
+            this->presentation = ControlOptionPresentationSlider;
+            this->has_numeric_range = true;
+            this->numeric_min = min;
+            this->numeric_max = max;
+            this->numeric_step = step;
+            return std::move(*this);
+        }
     };
 
     struct Option {
@@ -130,9 +156,7 @@ export namespace ngp::plugin {
         std::move_only_function<void(std::uint64_t)> release_gpu_buffer{};
     };
 
-    inline constexpr std::uint32_t ControlPlacementViewportOverlay = 1u << 0u;
-    inline constexpr std::uint32_t ControlPlacementPanelSummary    = 1u << 1u;
-    inline constexpr std::uint32_t ControlPlacementPanelDetail     = 1u << 2u;
+    inline constexpr std::uint32_t ControlMetricDisplayPrimary = 1u << 0u;
     inline constexpr std::uint32_t ControlActionStyleSecondary     = 0u;
     inline constexpr std::uint32_t ControlActionStylePrimary       = 1u;
     inline constexpr std::uint32_t ControlActionStyleDanger        = 2u;
@@ -154,7 +178,7 @@ export namespace ngp::plugin {
         std::string label{};
         std::string value{};
         std::string section_id{};
-        std::uint32_t placement_flags{ControlPlacementPanelDetail};
+        std::uint32_t display_flags{};
         bool has_color{};
         std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
@@ -365,18 +389,8 @@ export namespace ngp::plugin {
                 return *this;
             }
 
-            MetricHandle& summary() {
-                this->owner->value.metrics[this->index].placement_flags |= ControlPlacementPanelSummary;
-                return *this;
-            }
-
-            MetricHandle& overlay() {
-                this->owner->value.metrics[this->index].placement_flags |= ControlPlacementViewportOverlay;
-                return *this;
-            }
-
-            MetricHandle& detail() {
-                this->owner->value.metrics[this->index].placement_flags |= ControlPlacementPanelDetail;
+            MetricHandle& primary() {
+                this->owner->value.metrics[this->index].display_flags |= ControlMetricDisplayPrimary;
                 return *this;
             }
 
@@ -402,7 +416,7 @@ export namespace ngp::plugin {
             return *this;
         }
 
-        ControlBuilder& detail(std::string value) {
+        ControlBuilder& message(std::string value) {
             this->value.detail = std::move(value);
             return *this;
         }
@@ -579,6 +593,16 @@ export namespace ngp::plugin {
             this->schema.section_id = std::move(value);
             return std::move(*this);
         }
+
+        SettingBinding& slider(const float min, const float max, const float step) & {
+            this->schema.slider(min, max, step);
+            return *this;
+        }
+
+        [[nodiscard]] SettingBinding slider(const float min, const float max, const float step) && {
+            this->schema.slider(min, max, step);
+            return std::move(*this);
+        }
     };
 
     [[nodiscard]] bool parse_bool(const std::string_view text) {
@@ -714,7 +738,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 5u;
+    constexpr std::uint32_t plugin_abi_version = 7u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -722,6 +746,8 @@ namespace ngp::plugin {
     constexpr std::uint32_t SPECTRA_SCENE_RESULT_ERROR                   = 1u;
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL      = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID = 1u;
+    constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_DEFAULT    = 0u;
+    constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_SLIDER     = 1u;
 
     struct SpectraSceneOption {
         const char* key{};
@@ -762,6 +788,11 @@ namespace ngp::plugin {
         const char* default_value{};
         const char* section_id{};
         SpectraSceneControlOptionChoiceSpan choices{};
+        std::uint32_t presentation{};
+        std::uint32_t has_numeric_range{};
+        float numeric_min{};
+        float numeric_max{};
+        float numeric_step{};
     };
 
     struct SpectraSceneControlOptionSchemaSpan {
@@ -788,7 +819,7 @@ namespace ngp::plugin {
         const char* label{};
         const char* value{};
         const char* section_id{};
-        std::uint32_t placement_flags{};
+        std::uint32_t display_flags{};
         std::uint32_t has_color{};
         float color[4]{};
     };
@@ -1291,6 +1322,11 @@ namespace ngp::plugin {
                     .default_value = schema.default_value.c_str(),
                     .section_id    = schema.section_id.c_str(),
                     .choices       = SpectraSceneControlOptionChoiceSpan{.data = storage.choices[index].empty() ? nullptr : storage.choices[index].data(), .count = static_cast<std::uint64_t>(storage.choices[index].size())},
+                    .presentation  = schema.presentation,
+                    .has_numeric_range = schema.has_numeric_range ? 1u : 0u,
+                    .numeric_min   = schema.numeric_min,
+                    .numeric_max   = schema.numeric_max,
+                    .numeric_step  = schema.numeric_step,
                 });
             }
             return storage;
@@ -1505,7 +1541,7 @@ namespace ngp::plugin {
                     .label           = metric.label.c_str(),
                     .value           = metric.value.c_str(),
                     .section_id      = metric.section_id.c_str(),
-                    .placement_flags = metric.placement_flags,
+                    .display_flags   = metric.display_flags,
                     .has_color       = metric.has_color ? 1u : 0u,
                     .color           = {},
                 });

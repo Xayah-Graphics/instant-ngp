@@ -31,8 +31,6 @@ namespace ngp::project {
         constexpr std::uint32_t viewport_depth_tested = 0u;
         constexpr char spectra_y_up[] = "SpectraYUp";
         constexpr char opencv[] = "OpenCV";
-        constexpr char action_pause_training_id[] = "pause_training";
-        constexpr char action_resume_training_id[] = "resume_training";
         constexpr char action_render_preview_id[] = "render_preview";
         constexpr char open_option_training_frame_set_key[] = "training_frame_set";
         constexpr char open_option_target_steps_key[] = "target_steps";
@@ -79,7 +77,7 @@ namespace ngp::project {
         };
 
         struct DebugOptions {
-            bool show_occupancy{true};
+            bool show_occupancy{false};
             float occupancy_alpha{0.18f};
             float occupancy_cell_scale{0.75f};
         };
@@ -369,13 +367,6 @@ namespace ngp::project {
                 plugin::unsigned_integer(open_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id),
             },
             .actions = {
-                plugin::action(action_pause_training_id, "Pause", &Project::pause_training)
-                    .description("Pause optimization after the current GUI update.")
-                    .section(section_training_id),
-                plugin::action(action_resume_training_id, "Resume", &Project::resume_training)
-                    .description("Resume optimization with the Open Dataset training configuration.")
-                    .section(section_training_id)
-                    .primary(),
                 ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
                     .description("Render one loaded frame through the current model and publish preview metrics.")
                     .section(section_preview_id)
@@ -384,12 +375,14 @@ namespace ngp::project {
                     .option(plugin::unsigned_integer(preview_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id)),
             },
             .settings = {
-                plugin::toggle(setting_show_occupancy_key, "Show Occupancy", true, &Project::set_show_occupancy)
+                plugin::toggle(setting_show_occupancy_key, "Show Occupancy", false, &Project::set_show_occupancy)
                     .section(section_diagnostics_id),
                 plugin::float_value(setting_occupancy_alpha_key, "Occupancy Alpha", 0.18f, &Project::set_occupancy_alpha)
-                    .section(section_diagnostics_id),
+                    .section(section_diagnostics_id)
+                    .slider(0.0f, 1.0f, 0.01f),
                 plugin::float_value(setting_occupancy_cell_scale_key, "Cell Scale", 0.75f, &Project::set_occupancy_cell_scale)
-                    .section(section_diagnostics_id),
+                    .section(section_diagnostics_id)
+                    .slider(0.01f, 1.0f, 0.01f),
             },
         };
         return definition;
@@ -908,27 +901,6 @@ namespace ngp::project {
         }
     }
 
-    void Project::pause_training() {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        State& state = *this->state;
-        if (!state.training_running) throw std::runtime_error("training is not running");
-        state.training_running = false;
-    }
-
-    void Project::resume_training() {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        State& state = *this->state;
-        if (!state.project_error.empty()) throw std::runtime_error("project error must be resolved by reopening the dataset");
-        if (state.training_running) throw std::runtime_error("training is already running");
-        if (state.training_complete) throw std::runtime_error("training already reached the configured target step");
-        if (current_training_step(state) >= state.training.target_steps) {
-            state.training_complete = true;
-            throw std::runtime_error("training already reached the configured target step");
-        }
-        create_trainer_if_needed(state);
-        state.training_running = true;
-    }
-
     void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
@@ -1018,25 +990,25 @@ namespace ngp::project {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
         if (!state.project_error.empty()) {
-            controls.phase("Error").headline("Project error").detail(state.project_error);
+            controls.phase("Error").headline("Project error").message(state.project_error);
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            controls.phase("Running").headline("Training running").detail(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
+            controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
         } else if (state.training_running) {
-            controls.phase("Paused").headline("Timeline paused").detail(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
+            controls.phase("Paused").headline("Timeline paused").message(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
         } else if (state.training_complete) {
-            controls.phase("Complete").headline("Training complete").detail(std::format("Reached target step {}.", state.training.target_steps));
+            controls.phase("Complete").headline("Training complete").message(std::format("Reached target step {}.", state.training.target_steps));
         } else if (state.latest_stats.has_value()) {
-            controls.phase("Paused").headline("Training paused").detail(std::format("Current step {}.", current_training_step(state)));
+            controls.phase("Paused").headline("Training paused").message(std::format("Current step {}.", current_training_step(state)));
         } else {
-            controls.phase("Paused").headline("Training paused").detail("Training is paused at step 0.");
+            controls.phase("Paused").headline("Training paused").message("Training is paused at step 0.");
         }
 
-        controls.metric("dataset", "Dataset", state.dataset_options.dataset_path.filename().string()).section(section_training_id).summary();
+        controls.metric("dataset", "Dataset", state.dataset_options.dataset_path.filename().string()).section(section_training_id);
         controls.metric("format", "Format", state.dataset_options.format).section(section_diagnostics_id);
-        controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.dataset_options.frame_sets)).section(section_training_id).summary();
-        controls.metric("training_frame_set", "Training Set", state.training.frame_set).section(section_training_id).summary();
-        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).summary().overlay().color({0.55f, 0.85f, 1.0f, 1.0f});
-        controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id).summary();
+        controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.dataset_options.frame_sets)).section(section_training_id);
+        controls.metric("training_frame_set", "Training Set", state.training.frame_set).section(section_training_id);
+        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).primary().color({0.55f, 0.85f, 1.0f, 1.0f});
+        controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id);
         controls.metric("steps_per_update", "Steps/Update", state.training.steps_per_update).section(section_training_id);
         controls.metric("density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
         controls.metric("density_grid_revision", "Density Rev", state.exported_density_revision).section(section_diagnostics_id);
@@ -1048,9 +1020,9 @@ namespace ngp::project {
         if (state.exported_volume_density_scale > 0.0f) controls.metric("volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale)).section(section_diagnostics_id);
         controls.metric("occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
         if (state.latest_stats.has_value()) {
-            controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).summary().overlay().color({1.0f, 0.38f, 0.25f, 1.0f});
-            controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).summary().overlay().color({0.25f, 0.75f, 1.0f, 1.0f});
-            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).summary().overlay().color({0.16f, 0.86f, 0.55f, 1.0f});
+            controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).primary().color({1.0f, 0.38f, 0.25f, 1.0f});
+            controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).primary().color({0.25f, 0.75f, 1.0f, 1.0f});
+            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).primary().color({0.16f, 0.86f, 0.55f, 1.0f});
             controls.metric("occupancy_revision", "Occupancy Revision", state.exported_occupancy_revision).section(section_diagnostics_id);
         }
         if (state.latest_preview.has_value()) {
@@ -1058,28 +1030,18 @@ namespace ngp::project {
             controls.metric("preview_image", "Preview Image", state.latest_preview->image_index).section(section_preview_id);
             controls.metric("preview_step", "Preview Step", state.latest_preview->step).section(section_preview_id);
             controls.metric("preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse)).section(section_preview_id);
-            controls.metric("preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf").section(section_preview_id).summary().overlay().color({0.55f, 0.85f, 1.0f, 1.0f});
+            controls.metric("preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf").section(section_preview_id).primary().color({0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
-            controls.disable(action_pause_training_id, "Training is not running.");
-            controls.disable(action_resume_training_id, "Close and reopen the dataset to recover from this project error.");
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            controls.enable(action_pause_training_id);
-            controls.disable(action_resume_training_id, "Training is already running.");
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
         } else if (state.training_running) {
-            controls.enable(action_pause_training_id);
-            controls.disable(action_resume_training_id, "Training is already running.");
             controls.enable(action_render_preview_id);
         } else if (state.training_complete) {
-            controls.disable(action_pause_training_id, "Training is not running.");
-            controls.disable(action_resume_training_id, "Training already reached the configured target step.");
             controls.enable(action_render_preview_id);
         } else {
-            controls.disable(action_pause_training_id, "Training is not running.");
-            controls.enable(action_resume_training_id);
             controls.enable(action_render_preview_id);
         }
     }
@@ -1099,6 +1061,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v5(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v7(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }
