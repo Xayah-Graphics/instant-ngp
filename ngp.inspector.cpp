@@ -77,7 +77,6 @@ namespace ngp::inspector {
             }
             if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("evaluation preview frame set '{}' is not loaded.", request.frame_set)};
             if (request.image_index >= host_frame_set->frame_count) throw std::runtime_error{std::format("evaluation preview image_index {} is out of range for frame set '{}' with {} frames.", request.image_index, request.frame_set, host_frame_set->frame_count)};
-            if (request.refresh_acceleration) this->trainer->host.density_grid_ema_step = 0u;
             if (this->trainer->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->trainer->device.params, this->trainer->device.sample_coords, this->trainer->device.density_input, this->trainer->device.network_output, this->trainer->device.density_grid_values, this->trainer->device.density_grid_scratch, this->trainer->device.density_grid_indices, this->trainer->device.density_grid_mean, this->trainer->device.density_grid_occupied_count, this->trainer->device.occupancy, this->trainer->host.density_grid_ema_step, true);
             const auto evaluation_start        = std::chrono::steady_clock::now();
             const std::uint64_t pixel_count_64 = static_cast<std::uint64_t>(host_frame_set->width) * host_frame_set->height;

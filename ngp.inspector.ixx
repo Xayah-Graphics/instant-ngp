@@ -6,7 +6,6 @@ namespace ngp::inspector {
     export struct EvaluationPreviewRequest final {
         std::string_view frame_set;
         std::uint32_t image_index = 0u;
-        bool refresh_acceleration = false;
     };
 
     export struct EvaluationPreviewResult final {

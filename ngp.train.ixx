@@ -57,7 +57,6 @@ namespace ngp::train {
     export struct EvaluationRequest final {
         std::string_view frame_set;
         std::optional<std::filesystem::path> comparison_output_dir;
-        bool refresh_acceleration = false;
     };
 
     export struct OptimizationStats final {

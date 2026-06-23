@@ -31,15 +31,14 @@ namespace ngp::project {
         constexpr std::uint32_t viewport_depth_tested = 0u;
         constexpr char spectra_y_up[] = "SpectraYUp";
         constexpr char opencv[] = "OpenCV";
-        constexpr char action_start_training_id[] = "start_training";
         constexpr char action_pause_training_id[] = "pause_training";
-        constexpr char action_reset_training_id[] = "reset_training";
+        constexpr char action_resume_training_id[] = "resume_training";
         constexpr char action_render_preview_id[] = "render_preview";
-        constexpr char action_option_frame_set_key[] = "frame_set";
-        constexpr char action_option_target_steps_key[] = "target_steps";
-        constexpr char action_option_steps_per_update_key[] = "steps_per_update";
-        constexpr char action_option_image_index_key[] = "image_index";
-        constexpr char action_option_refresh_acceleration_key[] = "refresh_acceleration";
+        constexpr char open_option_training_frame_set_key[] = "training_frame_set";
+        constexpr char open_option_target_steps_key[] = "target_steps";
+        constexpr char open_option_steps_per_update_key[] = "steps_per_update";
+        constexpr char preview_option_frame_set_key[] = "frame_set";
+        constexpr char preview_option_image_index_key[] = "image_index";
         constexpr char setting_show_occupancy_key[] = "show_occupancy";
         constexpr char setting_occupancy_alpha_key[] = "occupancy_alpha";
         constexpr char setting_occupancy_cell_scale_key[] = "occupancy_cell_scale";
@@ -64,22 +63,30 @@ namespace ngp::project {
             float w{1.0f};
         };
 
-        struct SceneOptions {
+        struct DatasetOptions {
             std::filesystem::path dataset_path{};
             std::string format{"auto"};
             std::vector<std::string> frame_sets{"train"};
             float scene_scale{0.33f};
             std::uint64_t frame_stride{1u};
             std::uint64_t max_frames{};
-            bool show_occupancy{true};
-            float occupancy_alpha{0.18f};
-            float occupancy_cell_scale{0.75f};
         };
 
         struct TrainingOptions {
             std::string frame_set{"train"};
             std::uint32_t target_steps{200000u};
             std::uint32_t steps_per_update{1u};
+        };
+
+        struct DebugOptions {
+            bool show_occupancy{true};
+            float occupancy_alpha{0.18f};
+            float occupancy_cell_scale{0.75f};
+        };
+
+        struct ProjectOpenOptions {
+            DatasetOptions dataset{};
+            TrainingOptions training{};
         };
 
         struct PreviewState {
@@ -137,12 +144,6 @@ namespace ngp::project {
             return value;
         }
 
-        [[nodiscard]] bool parse_bool(const std::string& text, const std::string_view name) {
-            if (text == "true") return true;
-            if (text == "false") return false;
-            throw std::runtime_error(std::format("{} must be true or false", name));
-        }
-
         [[nodiscard]] std::vector<std::string> parse_frame_sets(const std::string& text) {
             if (text.empty()) throw std::runtime_error("frame_sets must not be empty");
             std::vector<std::string> frame_sets{};
@@ -161,27 +162,37 @@ namespace ngp::project {
             return frame_sets;
         }
 
-        [[nodiscard]] SceneOptions parse_scene_options(const std::span<const plugin::Option> options) {
-            SceneOptions parsed{};
+        [[nodiscard]] ProjectOpenOptions parse_project_open_options(const std::span<const plugin::Option> options) {
+            ProjectOpenOptions parsed{};
             std::optional<std::string> dataset_option{};
             std::set<std::string> seen_options{};
             for (const plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("scene plugin open option '{}' is duplicated", option.key));
                 if (option.key == "dataset") dataset_option = option.value;
-                else if (option.key == "format") parsed.format = option.value;
-                else if (option.key == "frame_sets") parsed.frame_sets = parse_frame_sets(option.value);
-                else if (option.key == "scene_scale") parsed.scene_scale = parse_float(option.value, "scene_scale");
-                else if (option.key == "frame_stride") parsed.frame_stride = parse_u64(option.value, "frame_stride");
-                else if (option.key == "max_frames") parsed.max_frames = parse_u64(option.value, "max_frames");
-                else throw std::runtime_error(std::format("unknown scene plugin open option '{}'", option.key));
+                else if (option.key == "format") parsed.dataset.format = option.value;
+                else if (option.key == "frame_sets") parsed.dataset.frame_sets = parse_frame_sets(option.value);
+                else if (option.key == "scene_scale") parsed.dataset.scene_scale = parse_float(option.value, "scene_scale");
+                else if (option.key == "frame_stride") parsed.dataset.frame_stride = parse_u64(option.value, "frame_stride");
+                else if (option.key == "max_frames") parsed.dataset.max_frames = parse_u64(option.value, "max_frames");
+                else if (option.key == open_option_training_frame_set_key) parsed.training.frame_set = option.value;
+                else if (option.key == open_option_target_steps_key) {
+                    const std::uint64_t value_u64 = parse_u64(option.value, open_option_target_steps_key);
+                    if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("target_steps must fit in uint32 and be positive");
+                    parsed.training.target_steps = static_cast<std::uint32_t>(value_u64);
+                } else if (option.key == open_option_steps_per_update_key) {
+                    const std::uint64_t value_u64 = parse_u64(option.value, open_option_steps_per_update_key);
+                    if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) throw std::runtime_error("steps_per_update must fit in int32 and be positive");
+                    parsed.training.steps_per_update = static_cast<std::uint32_t>(value_u64);
+                } else throw std::runtime_error(std::format("unknown scene plugin open option '{}'", option.key));
             }
 
             if (!dataset_option.has_value() || dataset_option->empty()) throw std::runtime_error("dataset option is required");
-            parsed.dataset_path = std::filesystem::absolute(std::filesystem::path{*dataset_option}).lexically_normal();
-            if (!std::filesystem::is_directory(parsed.dataset_path)) throw std::runtime_error(std::format("{}: dataset option must name an existing directory", parsed.dataset_path.string()));
-            if (parsed.format != "auto" && parsed.format != "nerf-synthetic" && parsed.format != "dd-nerf-dataset") throw std::runtime_error(std::format("format must be auto, nerf-synthetic, or dd-nerf-dataset; got '{}'", parsed.format));
-            if (!std::isfinite(parsed.scene_scale) || parsed.scene_scale <= 0.0f) throw std::runtime_error("scene_scale must be finite and positive");
-            if (parsed.frame_stride == 0u) throw std::runtime_error("frame_stride must be at least 1");
+            parsed.dataset.dataset_path = std::filesystem::absolute(std::filesystem::path{*dataset_option}).lexically_normal();
+            if (!std::filesystem::is_directory(parsed.dataset.dataset_path)) throw std::runtime_error(std::format("{}: dataset option must name an existing directory", parsed.dataset.dataset_path.string()));
+            if (parsed.dataset.format != "auto" && parsed.dataset.format != "nerf-synthetic" && parsed.dataset.format != "dd-nerf-dataset") throw std::runtime_error(std::format("format must be auto, nerf-synthetic, or dd-nerf-dataset; got '{}'", parsed.dataset.format));
+            if (!std::isfinite(parsed.dataset.scene_scale) || parsed.dataset.scene_scale <= 0.0f) throw std::runtime_error("scene_scale must be finite and positive");
+            if (parsed.dataset.frame_stride == 0u) throw std::runtime_error("frame_stride must be at least 1");
+            if (parsed.training.frame_set != "train" && parsed.training.frame_set != "validation" && parsed.training.frame_set != "test") throw std::runtime_error(std::format("training_frame_set must be train, validation, or test; got '{}'", parsed.training.frame_set));
             return parsed;
         }
 
@@ -293,11 +304,12 @@ namespace ngp::project {
     }
 
     struct Project::State {
-        SceneOptions options{};
+        DatasetOptions dataset_options{};
+        TrainingOptions training{};
+        DebugOptions debug{};
         std::shared_ptr<plugin::HostServices> host_services{};
         std::variant<std::monostate, dataset::nerf_synthetic::Dataset, dataset::dd_nerf::Dataset> dataset{};
         std::unique_ptr<train::InstantNGP> ngp{};
-        TrainingOptions training{};
         std::optional<train::OptimizationStats> latest_stats{};
         std::optional<PreviewState> latest_preview{};
         std::uint64_t next_preview_revision{1u};
@@ -352,29 +364,24 @@ namespace ngp::project {
                 plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
                 plugin::unsigned_integer("frame_stride", "Frame Stride", 1u).describe("Only every Nth frame is visualized.").section(section_dataset_id),
                 plugin::unsigned_integer("max_frames", "Max Frames", 0u).describe("0 means no frame count limit.").section(section_dataset_id),
+                plugin::choice(open_option_training_frame_set_key, "Training Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for optimization.").section(section_training_id).defaulted("train"),
+                plugin::unsigned_integer(open_option_target_steps_key, "Target Steps", 200000u).describe("Optimization stops when this global step is reached.").section(section_training_id),
+                plugin::unsigned_integer(open_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id),
             },
             .actions = {
-                ngp::plugin::action(action_start_training_id, "Start Training", &Project::start_training)
-                    .description("Start or resume optimization on the selected frame set.")
-                    .section(section_training_id)
-                    .primary()
-                    .option(plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for optimization.").section(section_training_id).defaulted("train"))
-                    .option(plugin::unsigned_integer(action_option_target_steps_key, "Target Steps", 200000u).describe("Optimization stops when this global step is reached.").section(section_training_id))
-                    .option(plugin::unsigned_integer(action_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id)),
                 plugin::action(action_pause_training_id, "Pause", &Project::pause_training)
                     .description("Pause optimization after the current GUI update.")
                     .section(section_training_id),
+                plugin::action(action_resume_training_id, "Resume", &Project::resume_training)
+                    .description("Resume optimization with the Open Dataset training configuration.")
+                    .section(section_training_id)
+                    .primary(),
                 ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
                     .description("Render one loaded frame through the current model and publish preview metrics.")
                     .section(section_preview_id)
                     .primary()
-                    .option(plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
-                    .option(plugin::unsigned_integer(action_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id))
-                    .option(plugin::toggle(action_option_refresh_acceleration_key, "Refresh Acceleration", false).describe("Rebuild the density-grid acceleration before rendering.").section(section_preview_id)),
-                plugin::action(action_reset_training_id, "Reset", &Project::reset_training)
-                    .description("Destroy the current optimizer state and keep the loaded dataset visualization.")
-                    .section(section_training_id)
-                    .danger(),
+                    .option(plugin::choice(preview_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
+                    .option(plugin::unsigned_integer(preview_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id)),
             },
             .settings = {
                 plugin::toggle(setting_show_occupancy_key, "Show Occupancy", true, &Project::set_show_occupancy)
@@ -390,7 +397,13 @@ namespace ngp::project {
 
     namespace {
         [[nodiscard]] bool frame_set_loaded(const Project::State& state, const std::string& frame_set) {
-            return std::ranges::any_of(state.options.frame_sets, [&frame_set](const std::string& loaded_frame_set) { return loaded_frame_set == frame_set; });
+            return std::visit([&frame_set](const auto& dataset) {
+                if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
+                    return false;
+                } else {
+                    return std::ranges::any_of(dataset.frame_sets, [&frame_set](const auto& loaded_frame_set) { return loaded_frame_set.name == frame_set; });
+                }
+            }, state.dataset);
         }
 
         [[nodiscard]] std::uint32_t current_training_step(const Project::State& state) {
@@ -537,7 +550,7 @@ namespace ngp::project {
         }
 
         void publish_occupancy_grid_if_ready(Project::State& state) {
-            if (!state.options.show_occupancy || state.ngp == nullptr || !state.density_volume.has_value()) {
+            if (!state.debug.show_occupancy || state.ngp == nullptr || !state.density_volume.has_value()) {
                 state.occupancy_grid.reset();
                 return;
             }
@@ -551,8 +564,8 @@ namespace ngp::project {
             if (view.bitfield == nullptr || view.bitfield_bytes == 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield view is empty."};
             if (view.bitfield_bytes % sizeof(std::uint32_t) != 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield byte size must be uint32 aligned for Spectra visualization."};
             if (state.exported_occupancy_revision == view.revision && state.occupancy_grid.has_value()) {
-                state.occupancy_grid->color = {0.12f, 0.78f, 1.0f, state.options.occupancy_alpha};
-                state.occupancy_grid->cell_scale = state.options.occupancy_cell_scale;
+                state.occupancy_grid->color = {0.12f, 0.78f, 1.0f, state.debug.occupancy_alpha};
+                state.occupancy_grid->cell_scale = state.debug.occupancy_cell_scale;
                 return;
             }
             state.occupancy_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield", "occupancy grid");
@@ -569,8 +582,8 @@ namespace ngp::project {
                 .origin = {0.0f, 0.0f, 0.0f},
                 .voxel_size = {voxel_size, voxel_size, voxel_size},
                 .transform = plugin::Transform{},
-                .color = {0.12f, 0.78f, 1.0f, state.options.occupancy_alpha},
-                .cell_scale = state.options.occupancy_cell_scale,
+                .color = {0.12f, 0.78f, 1.0f, state.debug.occupancy_alpha},
+                .cell_scale = state.debug.occupancy_cell_scale,
                 .depth_mode = viewport_depth_tested,
                 .source_kind = plugin::ViewportVoxelGridSourceKind::Bitfield,
                 .index_encoding = plugin::ViewportVoxelGridIndexEncoding::Morton3D,
@@ -706,58 +719,37 @@ namespace ngp::project {
             state.training_complete = false;
         }
 
-        [[nodiscard]] TrainingOptions parse_training_options(const Project::State& state, const std::span<const plugin::Option> options) {
-            TrainingOptions parsed{};
-            std::set<std::string> seen_options{};
-            for (const plugin::Option& option : options) {
-                if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
-                if (option.key == action_option_frame_set_key) parsed.frame_set = option.value;
-                else if (option.key == action_option_target_steps_key) {
-                    const std::uint64_t value_u64 = parse_u64(option.value, action_option_target_steps_key);
-                    if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("target_steps must fit in uint32 and be positive");
-                    parsed.target_steps = static_cast<std::uint32_t>(value_u64);
-                } else if (option.key == action_option_steps_per_update_key) {
-                    const std::uint64_t value_u64 = parse_u64(option.value, action_option_steps_per_update_key);
-                    if (value_u64 == 0u || value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) throw std::runtime_error("steps_per_update must fit in int32 and be positive");
-                    parsed.steps_per_update = static_cast<std::uint32_t>(value_u64);
-                } else {
-                    throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
-                }
-            }
-            if (parsed.frame_set != "train" && parsed.frame_set != "validation" && parsed.frame_set != "test") throw std::runtime_error(std::format("frame_set must be train, validation, or test; got '{}'", parsed.frame_set));
-            if (!frame_set_loaded(state, parsed.frame_set)) throw std::runtime_error(std::format("frame_set '{}' was not loaded by Open Dataset", parsed.frame_set));
-            if (parsed.target_steps <= current_training_step(state)) throw std::runtime_error(std::format("target_steps {} must be greater than current step {}", parsed.target_steps, current_training_step(state)));
-            return parsed;
-        }
-
     }
 
     Project Project::open(plugin::OpenContext context) {
         if (context.host_services == nullptr) throw std::runtime_error("host services are required to open the Instant NGP Spectra project");
         std::unique_ptr<State> created = std::make_unique<State>();
         created->host_services = std::move(context.host_services);
-        created->options = parse_scene_options(context.options);
+        ProjectOpenOptions open_options = parse_project_open_options(context.options);
+        created->dataset_options = std::move(open_options.dataset);
+        created->training = std::move(open_options.training);
 
-        const bool is_nerf_synthetic = dataset::nerf_synthetic::is_dataset(created->options.dataset_path);
-        const bool is_dd_nerf = dataset::dd_nerf::is_dataset(created->options.dataset_path);
-        if (created->options.format == "auto") {
-            if (is_nerf_synthetic == is_dd_nerf) throw std::runtime_error(std::format("{}: format=auto matched {} dataset providers", created->options.dataset_path.string(), is_nerf_synthetic ? 2 : 0));
-            created->options.format = is_nerf_synthetic ? "nerf-synthetic" : "dd-nerf-dataset";
-        } else if (created->options.format == "nerf-synthetic" && !is_nerf_synthetic) {
-            throw std::runtime_error(std::format("{}: format=nerf-synthetic does not match this dataset", created->options.dataset_path.string()));
-        } else if (created->options.format == "dd-nerf-dataset" && !is_dd_nerf) {
-            throw std::runtime_error(std::format("{}: format=dd-nerf-dataset does not match this dataset", created->options.dataset_path.string()));
+        const bool is_nerf_synthetic = dataset::nerf_synthetic::is_dataset(created->dataset_options.dataset_path);
+        const bool is_dd_nerf = dataset::dd_nerf::is_dataset(created->dataset_options.dataset_path);
+        if (created->dataset_options.format == "auto") {
+            if (is_nerf_synthetic == is_dd_nerf) throw std::runtime_error(std::format("{}: format=auto matched {} dataset providers", created->dataset_options.dataset_path.string(), is_nerf_synthetic ? 2 : 0));
+            created->dataset_options.format = is_nerf_synthetic ? "nerf-synthetic" : "dd-nerf-dataset";
+        } else if (created->dataset_options.format == "nerf-synthetic" && !is_nerf_synthetic) {
+            throw std::runtime_error(std::format("{}: format=nerf-synthetic does not match this dataset", created->dataset_options.dataset_path.string()));
+        } else if (created->dataset_options.format == "dd-nerf-dataset" && !is_dd_nerf) {
+            throw std::runtime_error(std::format("{}: format=dd-nerf-dataset does not match this dataset", created->dataset_options.dataset_path.string()));
         }
 
-        if (created->options.format == "nerf-synthetic") {
-            std::expected<dataset::nerf_synthetic::Dataset, std::string> loaded = dataset::nerf_synthetic::load(created->options.dataset_path, {.frame_sets = created->options.frame_sets, .scene_scale = created->options.scene_scale});
+        if (created->dataset_options.format == "nerf-synthetic") {
+            std::expected<dataset::nerf_synthetic::Dataset, std::string> loaded = dataset::nerf_synthetic::load(created->dataset_options.dataset_path, {.frame_sets = created->dataset_options.frame_sets, .scene_scale = created->dataset_options.scene_scale});
             if (!loaded) throw std::runtime_error(loaded.error());
             created->dataset = std::move(*loaded);
         } else {
-            std::expected<dataset::dd_nerf::Dataset, std::string> loaded = dataset::dd_nerf::load(created->options.dataset_path, {.frame_sets = created->options.frame_sets, .scene_scale = created->options.scene_scale});
+            std::expected<dataset::dd_nerf::Dataset, std::string> loaded = dataset::dd_nerf::load(created->dataset_options.dataset_path, {.frame_sets = created->dataset_options.frame_sets, .scene_scale = created->dataset_options.scene_scale});
             if (!loaded) throw std::runtime_error(loaded.error());
             created->dataset = std::move(*loaded);
         }
+        if (!frame_set_loaded(*created, created->training.frame_set)) throw std::runtime_error(std::format("training_frame_set '{}' was not loaded by Open Dataset", created->training.frame_set));
 
         std::visit([&](const auto& dataset) {
             if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
@@ -774,8 +766,8 @@ namespace ngp::project {
                 for (const auto& frame_set : dataset.frame_sets) {
                     if (done) break;
                     for (std::size_t frame_index = 0u; frame_index < frame_set.frames.size(); ++frame_index) {
-                        if ((frame_index % created->options.frame_stride) != 0u) continue;
-                        if (created->options.max_frames != 0u && selected_camera_count >= created->options.max_frames) {
+                        if ((frame_index % created->dataset_options.frame_stride) != 0u) continue;
+                        if (created->dataset_options.max_frames != 0u && selected_camera_count >= created->dataset_options.max_frames) {
                             done = true;
                             break;
                         }
@@ -813,8 +805,8 @@ namespace ngp::project {
                 for (const auto& frame_set : dataset.frame_sets) {
                     if (done) break;
                     for (std::size_t frame_index = 0u; frame_index < frame_set.frames.size(); ++frame_index) {
-                        if ((frame_index % created->options.frame_stride) != 0u) continue;
-                        if (created->options.max_frames != 0u && selected_index >= created->options.max_frames) {
+                        if ((frame_index % created->dataset_options.frame_stride) != 0u) continue;
+                        if (created->dataset_options.max_frames != 0u && selected_index >= created->dataset_options.max_frames) {
                             done = true;
                             break;
                         }
@@ -862,6 +854,7 @@ namespace ngp::project {
         }, created->dataset);
 
         publish_density_grid_volume(*created);
+        created->training_running = true;
         return Project{std::move(created)};
     }
 
@@ -915,22 +908,25 @@ namespace ngp::project {
         }
     }
 
-    void Project::start_training(plugin::ActionContext context) {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        State& state = *this->state;
-        const TrainingOptions parsed = parse_training_options(state, context.options);
-        create_trainer_if_needed(state);
-        state.training = parsed;
-        state.project_error.clear();
-        state.training_complete = false;
-        state.training_running = true;
-    }
-
     void Project::pause_training() {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (!state.training_running) throw std::runtime_error("training is not running");
         state.training_running = false;
+    }
+
+    void Project::resume_training() {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        if (!state.project_error.empty()) throw std::runtime_error("project error must be resolved by reopening the dataset");
+        if (state.training_running) throw std::runtime_error("training is already running");
+        if (state.training_complete) throw std::runtime_error("training already reached the configured target step");
+        if (current_training_step(state) >= state.training.target_steps) {
+            state.training_complete = true;
+            throw std::runtime_error("training already reached the configured target step");
+        }
+        create_trainer_if_needed(state);
+        state.training_running = true;
     }
 
     void Project::render_preview(plugin::ActionContext context) {
@@ -939,17 +935,14 @@ namespace ngp::project {
         if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
         std::string frame_set{"train"};
         std::uint32_t image_index{};
-        bool refresh_acceleration{};
         std::set<std::string> seen_options{};
         for (const plugin::Option& option : context.options) {
             if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
-            if (option.key == action_option_frame_set_key) frame_set = option.value;
-            else if (option.key == action_option_image_index_key) {
-                const std::uint64_t value_u64 = parse_u64(option.value, action_option_image_index_key);
+            if (option.key == preview_option_frame_set_key) frame_set = option.value;
+            else if (option.key == preview_option_image_index_key) {
+                const std::uint64_t value_u64 = parse_u64(option.value, preview_option_image_index_key);
                 if (value_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) throw std::runtime_error("image_index must fit in uint32");
                 image_index = static_cast<std::uint32_t>(value_u64);
-            } else if (option.key == action_option_refresh_acceleration_key) {
-                refresh_acceleration = parse_bool(option.value, action_option_refresh_acceleration_key);
             } else {
                 throw std::runtime_error(std::format("unknown project action option '{}'", option.key));
             }
@@ -961,7 +954,6 @@ namespace ngp::project {
         std::expected<inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(inspector::EvaluationPreviewRequest{
             .frame_set = frame_set,
             .image_index = image_index,
-            .refresh_acceleration = refresh_acceleration,
         });
         if (!preview) throw std::runtime_error(preview.error());
         const std::uint64_t revision = state.next_preview_revision++;
@@ -977,39 +969,12 @@ namespace ngp::project {
         state.project_error.clear();
     }
 
-    void Project::reset_training() {
-        if (this->state == nullptr) throw std::runtime_error("project is not open");
-        State& state = *this->state;
-        state.color_buffer.reset();
-        state.exported_color_revision = 0u;
-        state.density_buffer.reset();
-        state.exported_density_revision = 0u;
-        state.exported_density_dimensions = {};
-        state.exported_density_optical_thickness_step = 0.0f;
-        state.exported_volume_density_scale = 0.0f;
-        state.density_volume.reset();
-        state.occupancy_buffer.reset();
-        state.exported_occupancy_revision = 0u;
-        state.occupancy_grid.reset();
-        state.ngp.reset();
-        state.latest_stats.reset();
-        state.latest_preview.reset();
-        state.materials.clear();
-        state.lights.clear();
-        state.debug_attachments.viewport_voxel_grids.clear();
-        state.training = TrainingOptions{};
-        state.training_running = false;
-        state.training_complete = false;
-        state.project_error.clear();
-        publish_density_grid_volume(state);
-    }
-
     void Project::set_show_occupancy(const bool value) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        const bool changed = state.options.show_occupancy != value;
-        state.options.show_occupancy = value;
-        if (!state.options.show_occupancy) {
+        const bool changed = state.debug.show_occupancy != value;
+        state.debug.show_occupancy = value;
+        if (!state.debug.show_occupancy) {
             state.occupancy_buffer.reset();
             state.exported_occupancy_revision = 0u;
             state.occupancy_grid.reset();
@@ -1024,8 +989,8 @@ namespace ngp::project {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         if (value < 0.0f || value > 1.0f) throw std::runtime_error("occupancy_alpha must be in [0, 1]");
         State& state = *this->state;
-        const bool changed = state.options.occupancy_alpha != value;
-        state.options.occupancy_alpha = value;
+        const bool changed = state.debug.occupancy_alpha != value;
+        state.debug.occupancy_alpha = value;
         if (!changed) return;
         refresh_debug_attachments(state);
         ++state.scene_revision;
@@ -1036,8 +1001,8 @@ namespace ngp::project {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         if (!(value > 0.0f) || value > 1.0f) throw std::runtime_error("occupancy_cell_scale must be in (0, 1]");
         State& state = *this->state;
-        const bool changed = state.options.occupancy_cell_scale != value;
-        state.options.occupancy_cell_scale = value;
+        const bool changed = state.debug.occupancy_cell_scale != value;
+        state.debug.occupancy_cell_scale = value;
         if (!changed) return;
         refresh_debug_attachments(state);
         ++state.scene_revision;
@@ -1063,14 +1028,16 @@ namespace ngp::project {
         } else if (state.latest_stats.has_value()) {
             controls.phase("Paused").headline("Training paused").detail(std::format("Current step {}.", current_training_step(state)));
         } else {
-            controls.phase("Ready").headline("Dataset loaded").detail("Start training from the Scene controls.");
+            controls.phase("Paused").headline("Training paused").detail("Training is paused at step 0.");
         }
 
-        controls.metric("dataset", "Dataset", state.options.dataset_path.filename().string()).section(section_training_id).summary();
-        controls.metric("format", "Format", state.options.format).section(section_diagnostics_id);
-        controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.options.frame_sets)).section(section_training_id).summary();
+        controls.metric("dataset", "Dataset", state.dataset_options.dataset_path.filename().string()).section(section_training_id).summary();
+        controls.metric("format", "Format", state.dataset_options.format).section(section_diagnostics_id);
+        controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.dataset_options.frame_sets)).section(section_training_id).summary();
+        controls.metric("training_frame_set", "Training Set", state.training.frame_set).section(section_training_id).summary();
         controls.metric("step", "Step", current_training_step(state)).section(section_training_id).summary().overlay().color({0.55f, 0.85f, 1.0f, 1.0f});
         controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id).summary();
+        controls.metric("steps_per_update", "Steps/Update", state.training.steps_per_update).section(section_training_id);
         controls.metric("density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
         controls.metric("density_grid_revision", "Density Rev", state.exported_density_revision).section(section_diagnostics_id);
         controls.metric("color_grid_revision", "Color Rev", state.exported_color_revision).section(section_diagnostics_id);
@@ -1095,25 +1062,25 @@ namespace ngp::project {
         }
 
         if (!state.project_error.empty()) {
-            controls.disable(action_start_training_id, "Resolve or reset the project error before starting training.");
             controls.disable(action_pause_training_id, "Training is not running.");
-            controls.disable(action_render_preview_id, "Resolve or reset the project error before rendering a preview.");
-            controls.enable(action_reset_training_id);
+            controls.disable(action_resume_training_id, "Close and reopen the dataset to recover from this project error.");
+            controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
         } else if (state.training_running && host_timeline_advances_scene(state)) {
-            controls.disable(action_start_training_id, "Training is already running.");
             controls.enable(action_pause_training_id);
+            controls.disable(action_resume_training_id, "Training is already running.");
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
-            controls.enable(action_reset_training_id);
         } else if (state.training_running) {
-            controls.disable(action_start_training_id, "Training is already running; resume with Space or stop it with Pause.");
             controls.enable(action_pause_training_id);
+            controls.disable(action_resume_training_id, "Training is already running.");
             controls.enable(action_render_preview_id);
-            controls.enable(action_reset_training_id);
-        } else {
-            controls.enable(action_start_training_id);
+        } else if (state.training_complete) {
             controls.disable(action_pause_training_id, "Training is not running.");
+            controls.disable(action_resume_training_id, "Training already reached the configured target step.");
             controls.enable(action_render_preview_id);
-            controls.enable(action_reset_training_id);
+        } else {
+            controls.disable(action_pause_training_id, "Training is not running.");
+            controls.enable(action_resume_training_id);
+            controls.enable(action_render_preview_id);
         }
     }
 

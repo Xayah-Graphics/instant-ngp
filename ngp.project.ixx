@@ -23,10 +23,9 @@ export namespace ngp::project {
         void write_scene(plugin::SceneBuilder& scene) const;
         void write_controls(plugin::ControlBuilder& controls) const;
 
-        void start_training(plugin::ActionContext context);
         void pause_training();
+        void resume_training();
         void render_preview(plugin::ActionContext context);
-        void reset_training();
 
         void set_show_occupancy(bool value);
         void set_occupancy_alpha(float value);
