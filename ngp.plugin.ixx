@@ -159,10 +159,6 @@ export namespace ngp::plugin {
     inline constexpr std::uint32_t ControlMetricDisplayPrimary = 1u << 0u;
     inline constexpr std::uint32_t ControlActionStyleSecondary     = 0u;
     inline constexpr std::uint32_t ControlActionStylePrimary       = 1u;
-    inline constexpr std::uint32_t ControlActionStyleDanger        = 2u;
-    inline constexpr std::uint32_t ControlTimelineModeLive         = 0u;
-    inline constexpr std::uint32_t ControlTimelineModeRecord       = 1u;
-    inline constexpr std::uint32_t ControlTimelineModePlayback     = 2u;
 
     struct Action {
         std::string id{};
@@ -202,7 +198,6 @@ export namespace ngp::plugin {
         double scene_delta_seconds{};
         double time_seconds{};
         std::uint64_t frame_index{};
-        std::uint32_t timeline_mode{ControlTimelineModeLive};
         bool timeline_playing{};
     };
 
@@ -542,16 +537,6 @@ export namespace ngp::plugin {
             return std::move(*this);
         }
 
-        ActionBinding& danger() & {
-            this->schema.style = ControlActionStyleDanger;
-            return *this;
-        }
-
-        [[nodiscard]] ActionBinding danger() && {
-            this->schema.style = ControlActionStyleDanger;
-            return std::move(*this);
-        }
-
         ActionBinding& option(OptionSchema value) & {
             this->schema.options.push_back(std::move(value));
             return *this;
@@ -738,7 +723,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 8u;
+    constexpr std::uint32_t plugin_abi_version = 9u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -855,7 +840,6 @@ namespace ngp::plugin {
         double scene_delta_seconds{};
         double time_seconds{};
         std::uint64_t frame_index{};
-        std::uint32_t timeline_mode{};
         std::uint32_t timeline_playing{};
     };
 
@@ -1691,7 +1675,6 @@ namespace ngp::plugin {
                                                                                 .scene_delta_seconds = update_info->scene_delta_seconds,
                                                                                 .time_seconds        = update_info->time_seconds,
                                                                                 .frame_index         = update_info->frame_index,
-                                                                                .timeline_mode       = update_info->timeline_mode,
                                                                                 .timeline_playing    = update_info->timeline_playing != 0u,
                                                                             });
                 return SPECTRA_SCENE_RESULT_OK;

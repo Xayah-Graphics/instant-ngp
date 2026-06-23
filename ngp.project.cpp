@@ -329,7 +329,6 @@ namespace ngp::project {
         bool training_active{};
         bool training_complete{};
         bool host_timeline_playing{true};
-        std::uint32_t host_timeline_mode{plugin::ControlTimelineModeLive};
         std::string project_error{};
         std::uint64_t scene_revision{1u};
         std::vector<plugin::Camera> cameras{};
@@ -402,10 +401,6 @@ namespace ngp::project {
         [[nodiscard]] std::uint32_t current_training_step(const Project::State& state) {
             if (!state.latest_stats.has_value()) return 0u;
             return state.latest_stats->step;
-        }
-
-        [[nodiscard]] bool host_timeline_advances_scene(const Project::State& state) {
-            return state.host_timeline_playing && state.host_timeline_mode != plugin::ControlTimelineModePlayback;
         }
 
         [[nodiscard]] bool has_nonzero_bytes(const std::span<const std::uint8_t> bytes) {
@@ -857,9 +852,7 @@ namespace ngp::project {
         if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
         if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
         if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
-        if (update.timeline_mode > plugin::ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
         state.host_timeline_playing = update.timeline_playing;
-        state.host_timeline_mode = update.timeline_mode;
         if (!state.training_active) return;
         if (update.scene_delta_seconds == 0.0) return;
         try {
@@ -904,7 +897,7 @@ namespace ngp::project {
     void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        if (state.training_active && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
+        if (state.training_active && state.host_timeline_playing) throw std::runtime_error("pause the host timeline before rendering a preview");
         std::string frame_set{"train"};
         std::uint32_t image_index{};
         std::set<std::string> seen_options{};
@@ -991,7 +984,7 @@ namespace ngp::project {
         const State& state = *this->state;
         if (!state.project_error.empty()) {
             controls.phase("Error").headline("Project error").message(state.project_error);
-        } else if (state.training_active && host_timeline_advances_scene(state)) {
+        } else if (state.training_active && state.host_timeline_playing) {
             controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
         } else if (state.training_active) {
             controls.phase("Paused").headline("Timeline paused").message(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
@@ -1035,7 +1028,7 @@ namespace ngp::project {
 
         if (!state.project_error.empty()) {
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
-        } else if (state.training_active && host_timeline_advances_scene(state)) {
+        } else if (state.training_active && state.host_timeline_playing) {
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
         } else if (state.training_active) {
             controls.enable(action_render_preview_id);
@@ -1061,6 +1054,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v8(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v9(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }
