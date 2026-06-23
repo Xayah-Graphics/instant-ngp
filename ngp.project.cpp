@@ -346,7 +346,6 @@ namespace ngp::project {
             .id = "ngp.project",
             .title = "Instant NGP Project",
             .open_action_label = "Open Dataset",
-            .open_action_description = "Load the configured dataset and publish scene entities to Spectra.",
             .frames_per_second = 60.0,
             .sections = {
                 plugin::section(section_dataset_id, "Dataset"),
@@ -369,7 +368,6 @@ namespace ngp::project {
                 ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
                     .description("Render one loaded frame through the current model and publish preview metrics.")
                     .section(section_preview_id)
-                    .primary()
                     .option(plugin::choice(preview_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
                     .option(plugin::unsigned_integer(preview_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id)),
             },
@@ -1000,7 +998,7 @@ namespace ngp::project {
         controls.metric("format", "Format", state.dataset_options.format).section(section_diagnostics_id);
         controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.dataset_options.frame_sets)).section(section_training_id);
         controls.metric("training_frame_set", "Training Set", state.training.frame_set).section(section_training_id);
-        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).primary().color({0.55f, 0.85f, 1.0f, 1.0f});
+        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).display_primary().color({0.55f, 0.85f, 1.0f, 1.0f});
         controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id);
         controls.metric("steps_per_update", "Steps/Update", state.training.steps_per_update).section(section_training_id);
         controls.metric("density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
@@ -1013,9 +1011,9 @@ namespace ngp::project {
         if (state.exported_volume_density_scale > 0.0f) controls.metric("volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale)).section(section_diagnostics_id);
         controls.metric("occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
         if (state.latest_stats.has_value()) {
-            controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).primary().color({1.0f, 0.38f, 0.25f, 1.0f});
-            controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).primary().color({0.25f, 0.75f, 1.0f, 1.0f});
-            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).primary().color({0.16f, 0.86f, 0.55f, 1.0f});
+            controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).display_primary().color({1.0f, 0.38f, 0.25f, 1.0f});
+            controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).display_primary().color({0.25f, 0.75f, 1.0f, 1.0f});
+            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).display_primary().color({0.16f, 0.86f, 0.55f, 1.0f});
             controls.metric("occupancy_revision", "Occupancy Revision", state.exported_occupancy_revision).section(section_diagnostics_id);
         }
         if (state.latest_preview.has_value()) {
@@ -1023,7 +1021,7 @@ namespace ngp::project {
             controls.metric("preview_image", "Preview Image", state.latest_preview->image_index).section(section_preview_id);
             controls.metric("preview_step", "Preview Step", state.latest_preview->step).section(section_preview_id);
             controls.metric("preview_mse", "Preview MSE", std::format("{:.8f}", state.latest_preview->mse)).section(section_preview_id);
-            controls.metric("preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf").section(section_preview_id).primary().color({0.55f, 0.85f, 1.0f, 1.0f});
+            controls.metric("preview_psnr", "Preview PSNR", std::isfinite(state.latest_preview->psnr) ? std::format("{:.2f} dB", state.latest_preview->psnr) : "inf").section(section_preview_id).display_primary().color({0.55f, 0.85f, 1.0f, 1.0f});
         }
 
         if (!state.project_error.empty()) {
@@ -1054,6 +1052,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v9(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v10(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

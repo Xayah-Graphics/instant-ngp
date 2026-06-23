@@ -157,15 +157,12 @@ export namespace ngp::plugin {
     };
 
     inline constexpr std::uint32_t ControlMetricDisplayPrimary = 1u << 0u;
-    inline constexpr std::uint32_t ControlActionStyleSecondary     = 0u;
-    inline constexpr std::uint32_t ControlActionStylePrimary       = 1u;
 
     struct Action {
         std::string id{};
         std::string label{};
         std::string description{};
         std::string section_id{};
-        std::uint32_t style{ControlActionStyleSecondary};
         std::vector<OptionSchema> options{};
     };
 
@@ -384,7 +381,7 @@ export namespace ngp::plugin {
                 return *this;
             }
 
-            MetricHandle& primary() {
+            MetricHandle& display_primary() {
                 this->owner->value.metrics[this->index].display_flags |= ControlMetricDisplayPrimary;
                 return *this;
             }
@@ -527,16 +524,6 @@ export namespace ngp::plugin {
             return std::move(*this);
         }
 
-        ActionBinding& primary() & {
-            this->schema.style = ControlActionStylePrimary;
-            return *this;
-        }
-
-        [[nodiscard]] ActionBinding primary() && {
-            this->schema.style = ControlActionStylePrimary;
-            return std::move(*this);
-        }
-
         ActionBinding& option(OptionSchema value) & {
             this->schema.options.push_back(std::move(value));
             return *this;
@@ -643,7 +630,6 @@ export namespace ngp::plugin {
         std::string id{};
         std::string title{};
         std::string open_action_label{};
-        std::string open_action_description{};
         double frames_per_second{};
         std::vector<ControlSection> sections{};
         std::vector<OptionSchema> open_options{};
@@ -665,7 +651,6 @@ export namespace ngp::plugin {
         std::string id{};
         std::string title{};
         std::string open_action_label{};
-        std::string open_action_description{};
         double frames_per_second{};
         std::vector<ControlSection> sections{};
         std::vector<OptionSchema> open_options{};
@@ -685,7 +670,6 @@ export namespace ngp::plugin {
             .id                      = definition.id,
             .title                   = definition.title,
             .open_action_label       = definition.open_action_label,
-            .open_action_description = definition.open_action_description,
             .frames_per_second       = definition.frames_per_second,
             .sections                = definition.sections,
             .open_options            = definition.open_options,
@@ -723,7 +707,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 9u;
+    constexpr std::uint32_t plugin_abi_version = 10u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -790,7 +774,6 @@ namespace ngp::plugin {
         const char* label{};
         const char* description{};
         const char* section_id{};
-        std::uint32_t style{};
         SpectraSceneControlOptionSchemaSpan options{};
     };
 
@@ -1171,7 +1154,6 @@ namespace ngp::plugin {
         const char* id{};
         const char* title{};
         const char* open_action_label{};
-        const char* open_action_description{};
         double frames_per_second{};
         SpectraSceneControlSectionSpan sections{};
         SpectraSceneControlOptionSchemaSpan open_options{};
@@ -1333,7 +1315,6 @@ namespace ngp::plugin {
                     .label       = action.schema.label.c_str(),
                     .description = action.schema.description.c_str(),
                     .section_id  = action.schema.section_id.c_str(),
-                    .style       = action.schema.style,
                     .options     = SpectraSceneControlOptionSchemaSpan{.data = action_options.schemas.empty() ? nullptr : action_options.schemas.data(), .count = static_cast<std::uint64_t>(action_options.schemas.size())},
                 });
             }
@@ -1767,7 +1748,6 @@ namespace ngp::plugin {
                                                                                                                         .id                      = plugin_definition.id.c_str(),
                                                                                                                         .title                   = plugin_definition.title.c_str(),
                                                                                                                         .open_action_label       = plugin_definition.open_action_label.c_str(),
-                                                                                                                        .open_action_description = plugin_definition.open_action_description.c_str(),
                                                                                                                         .frames_per_second       = plugin_definition.frames_per_second,
                                                                                                                         .sections                = SpectraSceneControlSectionSpan{.data = descriptor_storage.sections.empty() ? nullptr : descriptor_storage.sections.data(), .count = static_cast<std::uint64_t>(descriptor_storage.sections.size())},
                                                                                                                         .open_options            = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.open_options.schemas.empty() ? nullptr : descriptor_storage.open_options.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.open_options.schemas.size())},
