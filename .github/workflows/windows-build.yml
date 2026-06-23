@@ -1,59 +1,100 @@
-name: Windows Build
+name: Windows
 
 on:
   workflow_dispatch:
   push:
+    paths:
+      - '**'
   pull_request:
+    paths:
+      - '**'
+
+permissions:
+  contents: read
 
 concurrency:
-  group: windows-build-${{ github.ref }}
+  group: windows-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  windows-build:
-    name: Build (Windows, CMake+Ninja)
-    runs-on: windows-latest
+  build:
+    name: Build (Windows, MSVC, CMake+Ninja)
+    runs-on: windows-2022
+    timeout-minutes: 180
 
     env:
       CMAKE_BUILD_TYPE: Release
+      INSTANT_NGP_BUILD_DIR: build
+      INSTANT_NGP_CMAKE_VERSION: '4.3.0'
+      INSTANT_NGP_CUDA_VERSION: '13.2.0'
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Install CMake
         uses: ssrobins/install-cmake@v1
+        with:
+          version: ${{ env.INSTANT_NGP_CMAKE_VERSION }}
+
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ninja -y --no-progress
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.34
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: "13.2.0"
+          cuda: ${{ env.INSTANT_NGP_CUDA_VERSION }}
 
       - name: Toolchain sanity
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          cl /Bv
+          $ErrorActionPreference = "Stop"
+
+          cl.exe
           cmake --version
           ninja --version
           if (-not $env:CUDA_PATH) { throw "CUDA_PATH is not set" }
           Get-Command nvcc | Select-Object -ExpandProperty Source
           nvcc --version
 
-      - name: Checkout
-        uses: actions/checkout@v4
+          $cmakeVersionLine = (cmake --version | Select-Object -First 1)
+          if ($cmakeVersionLine -notmatch "version ([0-9]+)\.([0-9]+)") {
+            throw "Unable to parse CMake version from: $cmakeVersionLine"
+          }
+          $cmakeMajor = [int]$Matches[1]
+          $cmakeMinor = [int]$Matches[2]
+          if ($cmakeMajor -lt 4 -or ($cmakeMajor -eq 4 -and $cmakeMinor -lt 3)) {
+            throw "CMake 4.3 or newer is required; found $cmakeVersionLine."
+          }
+
+          $nvccVersion = (nvcc --version) -join "`n"
+          if ($nvccVersion -notmatch "release 13\.2") {
+            throw "CUDA 13.2 is required; nvcc reported: $nvccVersion"
+          }
 
       - name: Configure
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          cmake -S . -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE="$env:CMAKE_BUILD_TYPE" `
+          $ErrorActionPreference = "Stop"
+          cmake -S . -B "$env:INSTANT_NGP_BUILD_DIR" -G Ninja `
+            "-DCMAKE_BUILD_TYPE=$($env:CMAKE_BUILD_TYPE)" `
             -DNGP_BUILD_APP=ON `
-            -DCUDAToolkit_ROOT="$env:CUDA_PATH"
+            -DNGP_BUILD_PROJECT_PLUGIN=ON `
+            "-DCUDAToolkit_ROOT=$($env:CUDA_PATH)"
 
       - name: Build
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          cmake --build build --target all --parallel 30
+          $ErrorActionPreference = "Stop"
+          cmake --build $env:INSTANT_NGP_BUILD_DIR --parallel 30

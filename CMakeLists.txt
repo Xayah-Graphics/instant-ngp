@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.3.0)
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-project(InstantNGP VERSION 1.0.0 LANGUAGES CXX CUDA)
+project(InstantNGP VERSION 1.2.0 LANGUAGES CXX CUDA)
 
 option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
 option(NGP_BUILD_PROJECT_PLUGIN "Build the Spectra scene project plugin" OFF)

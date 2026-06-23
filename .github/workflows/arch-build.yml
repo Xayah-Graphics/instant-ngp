@@ -1,20 +1,24 @@
-name: Linux Build (Arch)
+name: Arch Linux
 
 on:
   workflow_dispatch:
   push:
+    paths:
+      - '**'
   pull_request:
+    paths:
+      - '**'
 
 permissions:
   contents: read
 
 concurrency:
-  group: linux-build-${{ github.ref }}
+  group: archlinux-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  arch-build:
-    name: Build (Arch Linux, CMake+Ninja)
+  build:
+    name: Build (Arch Linux, GCC, CMake+Ninja)
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -42,7 +46,7 @@ jobs:
         run: |
           set -euxo pipefail
           pacman -S --noconfirm --needed \
-            git \
+            base-devel git \
             cmake ninja \
             gcc \
             ca-certificates \
@@ -75,6 +79,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Configure
         shell: bash
@@ -83,11 +90,12 @@ jobs:
           cmake -S . -B "${INSTANT_NGP_BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
             -DNGP_BUILD_APP=ON \
+            -DNGP_BUILD_PROJECT_PLUGIN=ON \
             -DCUDAToolkit_ROOT="${CUDAToolkit_ROOT}"
 
       - name: Build
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build "${INSTANT_NGP_BUILD_DIR}" --target all --parallel 30
+          cmake --build "${INSTANT_NGP_BUILD_DIR}" --parallel 30
 
