@@ -28,9 +28,7 @@ import ngp.plugin;
 
 namespace ngp::project {
     namespace {
-        constexpr std::uint32_t viewport_width_screen = 0u;
         constexpr std::uint32_t viewport_depth_tested = 0u;
-        constexpr std::uint32_t viewport_always_visible = 1u;
         constexpr char spectra_y_up[] = "SpectraYUp";
         constexpr char opencv[] = "OpenCV";
         constexpr char action_start_training_id[] = "start_training";
@@ -46,7 +44,6 @@ namespace ngp::project {
         constexpr char setting_occupancy_alpha_key[] = "occupancy_alpha";
         constexpr char setting_occupancy_cell_scale_key[] = "occupancy_cell_scale";
         constexpr char section_dataset_id[] = "dataset";
-        constexpr char section_camera_visuals_id[] = "camera_visuals";
         constexpr char section_training_id[] = "training";
         constexpr char section_preview_id[] = "preview";
         constexpr char section_diagnostics_id[] = "diagnostics";
@@ -74,9 +71,6 @@ namespace ngp::project {
             float scene_scale{0.33f};
             std::uint64_t frame_stride{1u};
             std::uint64_t max_frames{};
-            float visual_far{0.25f};
-            float image_alpha{0.35f};
-            float frustum_width{1.5f};
             bool show_occupancy{true};
             float occupancy_alpha{0.18f};
             float occupancy_cell_scale{0.75f};
@@ -179,9 +173,6 @@ namespace ngp::project {
                 else if (option.key == "scene_scale") parsed.scene_scale = parse_float(option.value, "scene_scale");
                 else if (option.key == "frame_stride") parsed.frame_stride = parse_u64(option.value, "frame_stride");
                 else if (option.key == "max_frames") parsed.max_frames = parse_u64(option.value, "max_frames");
-                else if (option.key == "visual_far") parsed.visual_far = parse_float(option.value, "visual_far");
-                else if (option.key == "image_alpha") parsed.image_alpha = parse_float(option.value, "image_alpha");
-                else if (option.key == "frustum_width") parsed.frustum_width = parse_float(option.value, "frustum_width");
                 else throw std::runtime_error(std::format("unknown scene plugin open option '{}'", option.key));
             }
 
@@ -191,9 +182,6 @@ namespace ngp::project {
             if (parsed.format != "auto" && parsed.format != "nerf-synthetic" && parsed.format != "dd-nerf-dataset") throw std::runtime_error(std::format("format must be auto, nerf-synthetic, or dd-nerf-dataset; got '{}'", parsed.format));
             if (!std::isfinite(parsed.scene_scale) || parsed.scene_scale <= 0.0f) throw std::runtime_error("scene_scale must be finite and positive");
             if (parsed.frame_stride == 0u) throw std::runtime_error("frame_stride must be at least 1");
-            if (!std::isfinite(parsed.visual_far) || parsed.visual_far <= 0.02f) throw std::runtime_error("visual_far must be finite and greater than visual_near");
-            if (!std::isfinite(parsed.image_alpha) || parsed.image_alpha < 0.0f || parsed.image_alpha > 1.0f) throw std::runtime_error("image_alpha must be in [0, 1]");
-            if (!std::isfinite(parsed.frustum_width) || parsed.frustum_width <= 0.0f) throw std::runtime_error("frustum_width must be finite and positive");
             return parsed;
         }
 
@@ -353,7 +341,6 @@ namespace ngp::project {
             .frames_per_second = 60.0,
             .sections = {
                 plugin::section(section_dataset_id, "Dataset"),
-                plugin::section(section_camera_visuals_id, "Camera Visuals"),
                 plugin::section(section_training_id, "Training"),
                 plugin::section(section_preview_id, "Preview"),
                 plugin::section(section_diagnostics_id, "Diagnostics"),
@@ -365,9 +352,6 @@ namespace ngp::project {
                 plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
                 plugin::unsigned_integer("frame_stride", "Frame Stride", 1u).describe("Only every Nth frame is visualized.").section(section_dataset_id),
                 plugin::unsigned_integer("max_frames", "Max Frames", 0u).describe("0 means no frame count limit.").section(section_dataset_id),
-                plugin::float_option("visual_far", "Visual Far", 0.25f).describe("Camera frustum visualization far plane.").section(section_camera_visuals_id),
-                plugin::float_option("image_alpha", "Image Alpha", 0.35f).describe("Camera image plane opacity in [0, 1].").section(section_camera_visuals_id),
-                plugin::float_option("frustum_width", "Frustum Width", 1.5f).describe("Screen-space frustum line width.").section(section_camera_visuals_id),
             },
             .actions = {
                 ngp::plugin::action(action_start_training_id, "Start Training", &Project::start_training)
@@ -803,7 +787,6 @@ namespace ngp::project {
         if (selected_camera_count == 0u) throw std::runtime_error("dataset selection produced no camera frames");
 
         created->cameras.reserve(selected_camera_count + 1u);
-        created->debug_attachments.viewport_camera_visuals.reserve(selected_camera_count);
         constexpr Vector3 overview_target{0.5f, 0.5f, 0.5f};
         constexpr Vector3 overview_eye{0.5f, 1.55f, -1.65f};
         constexpr Vector3 overview_up{0.0f, 1.0f, 0.0f};
@@ -848,7 +831,6 @@ namespace ngp::project {
                         if (frame.width == 0u || frame.height == 0u) throw std::runtime_error(std::format("dataset camera '{}' image dimensions must be non-zero", camera_name));
                         if (frame.rgba.empty()) throw std::runtime_error(std::format("dataset camera '{}' image is empty", camera_name));
                         if (static_cast<std::uint64_t>(frame.rgba.size()) != expected_bytes) throw std::runtime_error(std::format("dataset camera '{}' image byte count does not match width * height * 4", camera_name));
-                        const float t = selected_camera_count > 1u ? static_cast<float>(selected_index) / static_cast<float>(selected_camera_count - 1u) : 0.0f;
                         created->cameras.push_back(plugin::Camera{
                             .name = camera_name,
                             .local_coordinate_system = opencv,
@@ -865,23 +847,12 @@ namespace ngp::project {
                             .cy = frame.principal_y,
                             .near_plane = 0.01f,
                             .far_plane = 10.0f,
-                        });
-                        created->debug_attachments.viewport_camera_visuals.push_back(plugin::ViewportCameraVisual{
-                            .name = std::format("{} Visual", camera_name),
-                            .owner = plugin::SceneEntityRef{.kind = plugin::SceneEntityKind::Camera, .name = camera_name},
-                            .color = {0.12f + 0.72f * t, 0.82f, 1.0f - 0.55f * t, 0.52f},
-                            .width = created->options.frustum_width,
-                            .width_mode = viewport_width_screen,
-                            .depth_mode = viewport_always_visible,
-                            .visual_near = 0.02f,
-                            .visual_far = created->options.visual_far,
-                            .image = plugin::ViewportCameraVisualImage{
+                            .image = plugin::CameraImage{
                                 .rgba8 = frame.rgba.data(),
                                 .rgba8_size = expected_bytes,
                                 .revision = 1u,
                                 .width = frame.width,
                                 .height = frame.height,
-                                .tint = {1.0f, 1.0f, 1.0f, created->options.image_alpha},
                             },
                         });
                         ++selected_index;
@@ -1161,6 +1132,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v4(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v5(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

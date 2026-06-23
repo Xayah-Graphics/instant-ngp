@@ -207,6 +207,14 @@ export namespace ngp::plugin {
         Pinhole     = 1u,
     };
 
+    struct CameraImage {
+        const std::uint8_t* rgba8{};
+        std::uint64_t rgba8_size{};
+        std::uint64_t revision{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+
     struct Camera {
         std::string name{};
         std::string local_coordinate_system{};
@@ -223,6 +231,7 @@ export namespace ngp::plugin {
         float cy{};
         float near_plane{};
         float far_plane{};
+        std::optional<CameraImage> image{};
     };
 
     struct Material {
@@ -279,27 +288,6 @@ export namespace ngp::plugin {
         std::string material_name{};
     };
 
-    struct ViewportCameraVisualImage {
-        const std::uint8_t* rgba8{};
-        std::uint64_t rgba8_size{};
-        std::uint64_t revision{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-        std::array<float, 4u> tint{};
-    };
-
-    struct ViewportCameraVisual {
-        std::string name{};
-        SceneEntityRef owner{.kind = SceneEntityKind::Camera};
-        std::array<float, 4u> color{};
-        float width{};
-        std::uint32_t width_mode{};
-        std::uint32_t depth_mode{};
-        float visual_near{};
-        float visual_far{};
-        std::optional<ViewportCameraVisualImage> image{};
-    };
-
     enum class ViewportVoxelGridSourceKind : std::uint32_t {
         IndexList = 0u,
         Bitfield  = 1u,
@@ -329,7 +317,6 @@ export namespace ngp::plugin {
 
     struct DebugAttachmentSet {
         std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
-        std::vector<ViewportCameraVisual> viewport_camera_visuals{};
     };
 
     struct Document {
@@ -727,7 +714,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 4u;
+    constexpr std::uint32_t plugin_abi_version = 5u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -924,6 +911,14 @@ namespace ngp::plugin {
         std::uint64_t count{};
     };
 
+    struct SpectraSceneCameraImage {
+        const std::uint8_t* rgba8{};
+        std::uint64_t rgba8_size{};
+        std::uint64_t revision{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+
     struct SpectraSceneCamera {
         const char* name{};
         const char* local_coordinate_system{};
@@ -940,6 +935,8 @@ namespace ngp::plugin {
         float cy{};
         float near_plane{};
         float far_plane{};
+        std::uint32_t has_image{};
+        SpectraSceneCameraImage image{};
     };
 
     struct SpectraSceneCameraSpan {
@@ -1112,33 +1109,6 @@ namespace ngp::plugin {
         std::uint64_t count{};
     };
 
-    struct SpectraSceneViewportCameraVisualImage {
-        const std::uint8_t* rgba8{};
-        std::uint64_t rgba8_size{};
-        std::uint64_t revision{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-        float tint[4]{};
-    };
-
-    struct SpectraSceneViewportCameraVisual {
-        const char* name{};
-        SpectraSceneEntityRef owner{};
-        float color[4]{};
-        float width{};
-        std::uint32_t width_mode{};
-        std::uint32_t depth_mode{};
-        float visual_near{};
-        float visual_far{};
-        std::uint32_t has_image{};
-        SpectraSceneViewportCameraVisualImage image{};
-    };
-
-    struct SpectraSceneViewportCameraVisualSpan {
-        const SpectraSceneViewportCameraVisual* data{};
-        std::uint64_t count{};
-    };
-
     struct SpectraSceneItems {
         SpectraSceneMaterialSpan materials{};
         SpectraSceneLightSpan lights{};
@@ -1149,7 +1119,6 @@ namespace ngp::plugin {
         SpectraSceneVolumeSpan volumes{};
         SpectraSceneViewportSegmentSetSpan viewport_segment_sets{};
         SpectraSceneViewportVoxelGridSpan viewport_voxel_grids{};
-        SpectraSceneViewportCameraVisualSpan viewport_camera_visuals{};
     };
 
     struct SpectraSceneDocumentView {
@@ -1231,7 +1200,6 @@ namespace ngp::plugin {
             std::vector<SpectraSceneVolume> volume_views{};
             std::vector<SpectraSceneCamera> camera_views{};
             std::vector<SpectraSceneViewportVoxelGrid> voxel_grid_views{};
-            std::vector<SpectraSceneViewportCameraVisual> camera_visual_views{};
         };
 
         struct ControlStateAbiStorage {
@@ -1458,34 +1426,19 @@ namespace ngp::plugin {
                 .cy                      = camera.cy,
                 .near_plane              = camera.near_plane,
                 .far_plane               = camera.far_plane,
+                .has_image               = camera.image.has_value() ? 1u : 0u,
             };
             copy_array(view.target, camera.target);
             copy_array(view.up, camera.up);
-            return view;
-        }
-
-        [[nodiscard]] SpectraSceneViewportCameraVisual make_camera_visual_view(const ViewportCameraVisual& visual) {
-            SpectraSceneViewportCameraVisual view{
-                .name        = visual.name.c_str(),
-                .owner       = make_entity_ref_view(visual.owner),
-                .width       = visual.width,
-                .width_mode  = visual.width_mode,
-                .depth_mode  = visual.depth_mode,
-                .visual_near = visual.visual_near,
-                .visual_far  = visual.visual_far,
-                .has_image   = visual.image.has_value() ? 1u : 0u,
-            };
-            copy_array(view.color, visual.color);
-            if (visual.image.has_value()) {
-                const ViewportCameraVisualImage& image = *visual.image;
-                view.image                             = SpectraSceneViewportCameraVisualImage{
-                                                .rgba8      = image.rgba8,
-                                                .rgba8_size = image.rgba8_size,
-                                                .revision   = image.revision,
-                                                .width      = image.width,
-                                                .height     = image.height,
+            if (camera.image.has_value()) {
+                const CameraImage& image = *camera.image;
+                view.image = SpectraSceneCameraImage{
+                    .rgba8      = image.rgba8,
+                    .rgba8_size = image.rgba8_size,
+                    .revision   = image.revision,
+                    .width      = image.width,
+                    .height     = image.height,
                 };
-                copy_array(view.image.tint, image.tint);
             }
             return view;
         }
@@ -1526,9 +1479,6 @@ namespace ngp::plugin {
             cache.voxel_grid_views.clear();
             cache.voxel_grid_views.reserve(cache.document.debug_attachments.viewport_voxel_grids.size());
             for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
-            cache.camera_visual_views.clear();
-            cache.camera_visual_views.reserve(cache.document.debug_attachments.viewport_camera_visuals.size());
-            for (const ViewportCameraVisual& visual : cache.document.debug_attachments.viewport_camera_visuals) cache.camera_visual_views.push_back(make_camera_visual_view(visual));
             return SpectraSceneDocumentView{
                 .struct_size               = sizeof(SpectraSceneDocumentView),
                 .default_coordinate_system = cache.document.default_coordinate_system.c_str(),
@@ -1540,7 +1490,6 @@ namespace ngp::plugin {
                         .cameras                 = SpectraSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
                         .volumes                 = SpectraSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
                         .viewport_voxel_grids    = SpectraSceneViewportVoxelGridSpan{.data = cache.voxel_grid_views.empty() ? nullptr : cache.voxel_grid_views.data(), .count = static_cast<std::uint64_t>(cache.voxel_grid_views.size())},
-                        .viewport_camera_visuals = SpectraSceneViewportCameraVisualSpan{.data = cache.camera_visual_views.empty() ? nullptr : cache.camera_visual_views.data(), .count = static_cast<std::uint64_t>(cache.camera_visual_views.size())},
                     },
             };
         }
