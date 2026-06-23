@@ -106,7 +106,7 @@ namespace ngp::project {
             ExternalGpuBuffer& operator=(ExternalGpuBuffer&&) = delete;
             ~ExternalGpuBuffer() noexcept;
 
-            void ensure(std::shared_ptr<ngp::plugin::HostServices> host_services, std::uint32_t kind, std::uint64_t requested_byte_size, std::string_view debug_name, std::string_view label);
+            void ensure(std::shared_ptr<plugin::HostServices> host_services, std::uint32_t kind, std::uint64_t requested_byte_size, std::string_view debug_name, std::string_view label);
             void reset() noexcept;
 
             [[nodiscard]] bool has_capacity(std::uint64_t requested_byte_size) const noexcept;
@@ -118,8 +118,8 @@ namespace ngp::project {
             }
 
         private:
-            std::shared_ptr<ngp::plugin::HostServices> host_services{};
-            ngp::plugin::GpuBufferAllocation allocation{};
+            std::shared_ptr<plugin::HostServices> host_services{};
+            plugin::GpuBufferAllocation allocation{};
             cudaExternalMemory_t external_memory{};
             void* mapped_buffer{};
             std::uint64_t byte_size{};
@@ -167,11 +167,11 @@ namespace ngp::project {
             return frame_sets;
         }
 
-        [[nodiscard]] SceneOptions parse_scene_options(const std::span<const ngp::plugin::Option> options) {
+        [[nodiscard]] SceneOptions parse_scene_options(const std::span<const plugin::Option> options) {
             SceneOptions parsed{};
             std::optional<std::string> dataset_option{};
             std::set<std::string> seen_options{};
-            for (const ngp::plugin::Option& option : options) {
+            for (const plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("scene plugin open option '{}' is duplicated", option.key));
                 if (option.key == "dataset") dataset_option = option.value;
                 else if (option.key == "format") parsed.format = option.value;
@@ -306,11 +306,11 @@ namespace ngp::project {
 
     struct Project::State {
         SceneOptions options{};
-        std::shared_ptr<ngp::plugin::HostServices> host_services{};
+        std::shared_ptr<plugin::HostServices> host_services{};
         std::variant<std::monostate, dataset::nerf_synthetic::Dataset, dataset::dd_nerf::Dataset> dataset{};
-        std::unique_ptr<ngp::train::InstantNGP> ngp{};
+        std::unique_ptr<train::InstantNGP> ngp{};
         TrainingOptions training{};
-        std::optional<ngp::train::OptimizationStats> latest_stats{};
+        std::optional<train::OptimizationStats> latest_stats{};
         std::optional<PreviewState> latest_preview{};
         std::uint64_t next_preview_revision{1u};
         ExternalGpuBuffer density_buffer{};
@@ -323,18 +323,18 @@ namespace ngp::project {
         float exported_volume_density_scale{};
         ExternalGpuBuffer occupancy_buffer{};
         std::uint64_t exported_occupancy_revision{};
-        std::optional<ngp::plugin::ViewportVoxelGrid> occupancy_grid{};
-        std::vector<ngp::plugin::Material> materials{};
-        std::vector<ngp::plugin::Light> lights{};
-        std::optional<ngp::plugin::VolumeGrid> density_volume{};
-        ngp::plugin::DebugAttachmentSet debug_attachments{};
+        std::optional<plugin::ViewportVoxelGrid> occupancy_grid{};
+        std::vector<plugin::Material> materials{};
+        std::vector<plugin::Light> lights{};
+        std::optional<plugin::VolumeGrid> density_volume{};
+        plugin::DebugAttachmentSet debug_attachments{};
         bool training_running{};
         bool training_complete{};
         bool host_timeline_playing{true};
-        std::uint32_t host_timeline_mode{ngp::plugin::ControlTimelineModeLive};
+        std::uint32_t host_timeline_mode{plugin::ControlTimelineModeLive};
         std::string project_error{};
         std::uint64_t scene_revision{1u};
-        std::vector<ngp::plugin::Camera> cameras{};
+        std::vector<plugin::Camera> cameras{};
         std::string overview_camera_name{"Overview"};
     };
 
@@ -344,60 +344,60 @@ namespace ngp::project {
     Project& Project::operator=(Project&& other) noexcept = default;
     Project::~Project() noexcept = default;
 
-    const ngp::plugin::PluginDefinition<Project>& Project::plugin() {
-        static const ngp::plugin::PluginDefinition<Project> definition{
+    const plugin::PluginDefinition<Project>& Project::plugin() {
+        static const plugin::PluginDefinition<Project> definition{
             .id = "ngp.project",
             .title = "Instant NGP Project",
             .open_action_label = "Open Dataset",
             .open_action_description = "Load the configured dataset and publish scene entities to Spectra.",
             .frames_per_second = 60.0,
             .sections = {
-                ngp::plugin::section(section_dataset_id, "Dataset"),
-                ngp::plugin::section(section_camera_visuals_id, "Camera Visuals"),
-                ngp::plugin::section(section_training_id, "Training"),
-                ngp::plugin::section(section_preview_id, "Preview"),
-                ngp::plugin::section(section_diagnostics_id, "Diagnostics"),
+                plugin::section(section_dataset_id, "Dataset"),
+                plugin::section(section_camera_visuals_id, "Camera Visuals"),
+                plugin::section(section_training_id, "Training"),
+                plugin::section(section_preview_id, "Preview"),
+                plugin::section(section_diagnostics_id, "Diagnostics"),
             },
             .open_options = {
-                ngp::plugin::directory("dataset", "Dataset").describe("Dataset root directory.").section(section_dataset_id).required(),
-                ngp::plugin::choice("format", "Format", {"auto", "nerf-synthetic", "dd-nerf-dataset"}).describe("Dataset provider.").section(section_dataset_id).defaulted("auto"),
-                ngp::plugin::text("frame_sets", "Frame Sets").describe("Comma-separated frame sets: train, validation, test.").section(section_dataset_id).defaulted("train"),
-                ngp::plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
-                ngp::plugin::unsigned_integer("frame_stride", "Frame Stride", 1u).describe("Only every Nth frame is visualized.").section(section_dataset_id),
-                ngp::plugin::unsigned_integer("max_frames", "Max Frames", 0u).describe("0 means no frame count limit.").section(section_dataset_id),
-                ngp::plugin::float_option("visual_far", "Visual Far", 0.25f).describe("Camera frustum visualization far plane.").section(section_camera_visuals_id),
-                ngp::plugin::float_option("image_alpha", "Image Alpha", 0.35f).describe("Camera image plane opacity in [0, 1].").section(section_camera_visuals_id),
-                ngp::plugin::float_option("frustum_width", "Frustum Width", 1.5f).describe("Screen-space frustum line width.").section(section_camera_visuals_id),
+                plugin::directory("dataset", "Dataset").describe("Dataset root directory.").section(section_dataset_id).required(),
+                plugin::choice("format", "Format", {"auto", "nerf-synthetic", "dd-nerf-dataset"}).describe("Dataset provider.").section(section_dataset_id).defaulted("auto"),
+                plugin::text("frame_sets", "Frame Sets").describe("Comma-separated frame sets: train, validation, test.").section(section_dataset_id).defaulted("train"),
+                plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
+                plugin::unsigned_integer("frame_stride", "Frame Stride", 1u).describe("Only every Nth frame is visualized.").section(section_dataset_id),
+                plugin::unsigned_integer("max_frames", "Max Frames", 0u).describe("0 means no frame count limit.").section(section_dataset_id),
+                plugin::float_option("visual_far", "Visual Far", 0.25f).describe("Camera frustum visualization far plane.").section(section_camera_visuals_id),
+                plugin::float_option("image_alpha", "Image Alpha", 0.35f).describe("Camera image plane opacity in [0, 1].").section(section_camera_visuals_id),
+                plugin::float_option("frustum_width", "Frustum Width", 1.5f).describe("Screen-space frustum line width.").section(section_camera_visuals_id),
             },
             .actions = {
                 ngp::plugin::action(action_start_training_id, "Start Training", &Project::start_training)
                     .description("Start or resume optimization on the selected frame set.")
                     .section(section_training_id)
                     .primary()
-                    .option(ngp::plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for optimization.").section(section_training_id).defaulted("train"))
-                    .option(ngp::plugin::unsigned_integer(action_option_target_steps_key, "Target Steps", 200000u).describe("Optimization stops when this global step is reached.").section(section_training_id))
-                    .option(ngp::plugin::unsigned_integer(action_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id)),
-                ngp::plugin::action(action_pause_training_id, "Pause", &Project::pause_training)
+                    .option(plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for optimization.").section(section_training_id).defaulted("train"))
+                    .option(plugin::unsigned_integer(action_option_target_steps_key, "Target Steps", 200000u).describe("Optimization stops when this global step is reached.").section(section_training_id))
+                    .option(plugin::unsigned_integer(action_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id)),
+                plugin::action(action_pause_training_id, "Pause", &Project::pause_training)
                     .description("Pause optimization after the current GUI update.")
                     .section(section_training_id),
                 ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
                     .description("Render one loaded frame through the current model and publish preview metrics.")
                     .section(section_preview_id)
                     .primary()
-                    .option(ngp::plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
-                    .option(ngp::plugin::unsigned_integer(action_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id))
-                    .option(ngp::plugin::toggle(action_option_refresh_acceleration_key, "Refresh Acceleration", false).describe("Rebuild the density-grid acceleration before rendering.").section(section_preview_id)),
-                ngp::plugin::action(action_reset_training_id, "Reset", &Project::reset_training)
+                    .option(plugin::choice(action_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
+                    .option(plugin::unsigned_integer(action_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id))
+                    .option(plugin::toggle(action_option_refresh_acceleration_key, "Refresh Acceleration", false).describe("Rebuild the density-grid acceleration before rendering.").section(section_preview_id)),
+                plugin::action(action_reset_training_id, "Reset", &Project::reset_training)
                     .description("Destroy the current optimizer state and keep the loaded dataset visualization.")
                     .section(section_training_id)
                     .danger(),
             },
             .settings = {
-                ngp::plugin::toggle(setting_show_occupancy_key, "Show Occupancy", true, &Project::set_show_occupancy)
+                plugin::toggle(setting_show_occupancy_key, "Show Occupancy", true, &Project::set_show_occupancy)
                     .section(section_diagnostics_id),
-                ngp::plugin::float_value(setting_occupancy_alpha_key, "Occupancy Alpha", 0.18f, &Project::set_occupancy_alpha)
+                plugin::float_value(setting_occupancy_alpha_key, "Occupancy Alpha", 0.18f, &Project::set_occupancy_alpha)
                     .section(section_diagnostics_id),
-                ngp::plugin::float_value(setting_occupancy_cell_scale_key, "Cell Scale", 0.75f, &Project::set_occupancy_cell_scale)
+                plugin::float_value(setting_occupancy_cell_scale_key, "Cell Scale", 0.75f, &Project::set_occupancy_cell_scale)
                     .section(section_diagnostics_id),
             },
         };
@@ -415,16 +415,16 @@ namespace ngp::project {
         }
 
         [[nodiscard]] bool host_timeline_advances_scene(const Project::State& state) {
-            return state.host_timeline_playing && state.host_timeline_mode != ngp::plugin::ControlTimelineModePlayback;
+            return state.host_timeline_playing && state.host_timeline_mode != plugin::ControlTimelineModePlayback;
         }
 
         [[nodiscard]] bool has_nonzero_bytes(const std::span<const std::uint8_t> bytes) {
             return std::ranges::any_of(bytes, [](const std::uint8_t value) { return value != 0u; });
         }
 
-        void close_imported_handle(ngp::plugin::GpuBufferAllocation& allocation) noexcept {
+        void close_imported_handle(plugin::GpuBufferAllocation& allocation) noexcept {
 #if defined(_WIN32)
-            if (allocation.handle_kind == ngp::plugin::GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
+            if (allocation.handle_kind == plugin::GpuResourceHandleKind::OpaqueWin32 && allocation.handle != 0u) static_cast<void>(CloseHandle(reinterpret_cast<HANDLE>(allocation.handle)));
 #else
             if (allocation.handle_kind == ngp::plugin::GpuResourceHandleKind::OpaqueFileDescriptor && allocation.handle != 0u) static_cast<void>(close(static_cast<int>(allocation.handle)));
 #endif
@@ -447,7 +447,7 @@ namespace ngp::project {
                 } catch (...) {
                 }
             }
-            this->allocation = ngp::plugin::GpuBufferAllocation{};
+            this->allocation = plugin::GpuBufferAllocation{};
             this->byte_size = 0u;
             this->host_services.reset();
         }
@@ -460,7 +460,7 @@ namespace ngp::project {
             return this->allocation.resource_id;
         }
 
-        void validate_cuda_device_identity(const ngp::plugin::GpuDeviceIdentity& identity) {
+        void validate_cuda_device_identity(const plugin::GpuDeviceIdentity& identity) {
             int cuda_device = -1;
             if (const cudaError_t status = cudaGetDevice(&cuda_device); status != cudaSuccess) throw std::runtime_error{std::string{"cudaGetDevice failed: "} + cudaGetErrorString(status)};
             cudaDeviceProp device_properties{};
@@ -484,14 +484,14 @@ namespace ngp::project {
 #endif
         }
 
-        void ExternalGpuBuffer::ensure(std::shared_ptr<ngp::plugin::HostServices> next_host_services, const std::uint32_t kind, const std::uint64_t requested_byte_size, const std::string_view debug_name, const std::string_view label) {
+        void ExternalGpuBuffer::ensure(std::shared_ptr<plugin::HostServices> next_host_services, const std::uint32_t kind, const std::uint64_t requested_byte_size, const std::string_view debug_name, const std::string_view label) {
             if (this->has_capacity(requested_byte_size)) return;
             this->reset();
             if (next_host_services == nullptr) throw std::runtime_error{std::format("Spectra host services are required for {} visualization.", label)};
             if (requested_byte_size == 0u) throw std::runtime_error{std::format("{} byte size is invalid.", label)};
             if (!next_host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
             if (!next_host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            ngp::plugin::GpuBufferAllocation next_allocation = next_host_services->request_gpu_buffer(kind, requested_byte_size, debug_name);
+            plugin::GpuBufferAllocation next_allocation = next_host_services->request_gpu_buffer(kind, requested_byte_size, debug_name);
             if (next_allocation.resource_id == 0u) throw std::runtime_error{std::format("Spectra returned an invalid {} resource id.", label)};
             if (next_allocation.kind != kind) throw std::runtime_error{std::format("Spectra returned an unexpected GPU buffer kind for {}.", label)};
             if (next_allocation.byte_size < requested_byte_size) {
@@ -510,7 +510,7 @@ namespace ngp::project {
                 memory_desc.size = next_allocation.byte_size;
                 switch (next_allocation.handle_kind) {
 #if defined(_WIN32)
-                    case ngp::plugin::GpuResourceHandleKind::OpaqueWin32:
+                    case plugin::GpuResourceHandleKind::OpaqueWin32:
                         memory_desc.type = cudaExternalMemoryHandleTypeOpaqueWin32;
                         memory_desc.handle.win32.handle = reinterpret_cast<void*>(next_allocation.handle);
                         break;
@@ -557,13 +557,13 @@ namespace ngp::project {
                 state.occupancy_grid.reset();
                 return;
             }
-            const ngp::inspector::Inspector inspector{*state.ngp};
-            const ngp::inspector::OccupancyGridDeviceView view = inspector.occupancy_grid_device_view();
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::OccupancyGridDeviceView view = inspector.occupancy_grid_device_view();
             if (!view.initialized) {
                 state.occupancy_grid.reset();
                 return;
             }
-            if (view.encoding != ngp::inspector::OccupancyGridEncoding::MortonBitfield) throw std::runtime_error{"Unsupported Instant NGP occupancy grid encoding."};
+            if (view.encoding != inspector::OccupancyGridEncoding::MortonBitfield) throw std::runtime_error{"Unsupported Instant NGP occupancy grid encoding."};
             if (view.bitfield == nullptr || view.bitfield_bytes == 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield view is empty."};
             if (view.bitfield_bytes % sizeof(std::uint32_t) != 0u) throw std::runtime_error{"Instant NGP occupancy grid bitfield byte size must be uint32 aligned for Spectra visualization."};
             if (state.exported_occupancy_revision == view.revision && state.occupancy_grid.has_value()) {
@@ -571,25 +571,25 @@ namespace ngp::project {
                 state.occupancy_grid->cell_scale = state.options.occupancy_cell_scale;
                 return;
             }
-            state.occupancy_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield", "occupancy grid");
+            state.occupancy_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield", "occupancy grid");
             std::uint8_t* const occupancy_bitfield = state.occupancy_buffer.mapped_as<std::uint8_t>();
             if (occupancy_bitfield == nullptr) throw std::runtime_error{"Occupancy grid bitfield buffer was not mapped."};
             if (const cudaError_t status = cudaMemcpy(occupancy_bitfield, view.bitfield, view.bitfield_bytes, cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy occupancy grid bitfield failed: "} + cudaGetErrorString(status)};
             if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"cudaDeviceSynchronize after occupancy grid export failed: "} + cudaGetErrorString(status)};
             const float voxel_size = 1.0f / static_cast<float>(view.dimensions[0]);
             state.exported_occupancy_revision = view.revision;
-            state.occupancy_grid = ngp::plugin::ViewportVoxelGrid{
+            state.occupancy_grid = plugin::ViewportVoxelGrid{
                 .name = "NGP Occupancy Grid",
-                .owner = ngp::plugin::SceneEntityRef{.kind = ngp::plugin::SceneEntityKind::VolumeGrid, .name = density_volume_name},
+                .owner = plugin::SceneEntityRef{.kind = plugin::SceneEntityKind::VolumeGrid, .name = density_volume_name},
                 .dimensions = view.dimensions,
                 .origin = {0.0f, 0.0f, 0.0f},
                 .voxel_size = {voxel_size, voxel_size, voxel_size},
-                .transform = ngp::plugin::Transform{},
+                .transform = plugin::Transform{},
                 .color = {0.12f, 0.78f, 1.0f, state.options.occupancy_alpha},
                 .cell_scale = state.options.occupancy_cell_scale,
                 .depth_mode = viewport_depth_tested,
-                .source_kind = ngp::plugin::ViewportVoxelGridSourceKind::Bitfield,
-                .index_encoding = ngp::plugin::ViewportVoxelGridIndexEncoding::Morton3D,
+                .source_kind = plugin::ViewportVoxelGridSourceKind::Bitfield,
+                .index_encoding = plugin::ViewportVoxelGridIndexEncoding::Morton3D,
                 .buffer_id = state.occupancy_buffer.resource_id(),
                 .source_byte_size = view.bitfield_bytes,
                 .revision = view.revision,
@@ -602,7 +602,7 @@ namespace ngp::project {
                 if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
                     throw std::runtime_error("dataset must be loaded before training");
                 } else {
-                    state.ngp = std::make_unique<ngp::train::InstantNGP>(dataset);
+                    state.ngp = std::make_unique<train::InstantNGP>(dataset);
                 }
             }, state.dataset);
         }
@@ -615,10 +615,10 @@ namespace ngp::project {
 
         void publish_density_grid_volume(Project::State& state) {
             create_trainer_if_needed(state);
-            const ngp::inspector::Inspector inspector{*state.ngp};
-            const ngp::inspector::DensityGridDeviceView view = inspector.density_grid_device_view();
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::DensityGridDeviceView view = inspector.density_grid_device_view();
             if (!view.initialized) throw std::runtime_error("Instant NGP density grid has not been initialized");
-            if (view.encoding != ngp::inspector::DensityGridEncoding::MortonFloat32) throw std::runtime_error("Unsupported Instant NGP density grid encoding");
+            if (view.encoding != inspector::DensityGridEncoding::MortonFloat32) throw std::runtime_error("Unsupported Instant NGP density grid encoding");
             if (view.values == nullptr || view.byte_size == 0u) throw std::runtime_error("Instant NGP density grid values view is empty");
             if (view.dimensions[0] == 0u || view.dimensions[1] == 0u || view.dimensions[2] == 0u) throw std::runtime_error("Instant NGP density grid dimensions must be non-zero");
             if (static_cast<std::uint64_t>(view.dimensions[0]) > std::numeric_limits<std::uint64_t>::max() / view.dimensions[1] / view.dimensions[2]) throw std::runtime_error("Instant NGP density grid dimensions overflow cell count");
@@ -627,34 +627,34 @@ namespace ngp::project {
             if (value_count > std::numeric_limits<std::uint64_t>::max() / sizeof(float)) throw std::runtime_error("Instant NGP density grid byte size overflows uint64");
             const std::uint64_t byte_size = value_count * sizeof(float);
             if (view.byte_size < byte_size) throw std::runtime_error("Instant NGP density grid byte size is smaller than dimensions");
-            if (byte_size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error("Instant NGP density grid byte size exceeds host addressable size");
+            if (byte_size > std::numeric_limits<std::size_t>::max()) throw std::runtime_error("Instant NGP density grid byte size exceeds host addressable size");
             if (!std::isfinite(view.optical_thickness_step) || view.optical_thickness_step <= 0.0f) throw std::runtime_error("Instant NGP density grid optical thickness step must be finite and positive");
             if (value_count > std::numeric_limits<std::uint64_t>::max() / (3u * sizeof(float))) throw std::runtime_error("Instant NGP color grid byte size overflows uint64");
             const std::uint64_t color_byte_size = value_count * 3u * sizeof(float);
-            if (color_byte_size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) throw std::runtime_error("Instant NGP color grid byte size exceeds host addressable size");
-            state.density_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume", "density volume");
-            state.color_buffer.ensure(state.host_services, ngp::plugin::GpuBufferKindVolumeChannel, color_byte_size, "instant-ngp color grid volume", "color volume");
+            if (color_byte_size > std::numeric_limits<std::size_t>::max()) throw std::runtime_error("Instant NGP color grid byte size exceeds host addressable size");
+            state.density_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume", "density volume");
+            state.color_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, color_byte_size, "instant-ngp color grid volume", "color volume");
             float* const density_values = state.density_buffer.mapped_as<float>();
             float* const color_values = state.color_buffer.mapped_as<float>();
             if (density_values == nullptr) throw std::runtime_error("Density volume external buffer was not mapped");
             if (color_values == nullptr) throw std::runtime_error("Color volume external buffer was not mapped");
-            if (const cudaError_t status = cudaMemcpy(density_values, view.values, static_cast<std::size_t>(byte_size), cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy direct density grid failed: "} + cudaGetErrorString(status)};
-            const std::expected<ngp::inspector::ColorGridSampleStats, std::string> color_stats = inspector.sample_color_grid(ngp::inspector::ColorGridSampleRequest{
+            if (const cudaError_t status = cudaMemcpy(density_values, view.values, byte_size, cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy direct density grid failed: "} + cudaGetErrorString(status)};
+            const std::expected<inspector::ColorGridSampleStats, std::string> color_stats = inspector.sample_color_grid(inspector::ColorGridSampleRequest{
                 .dimensions = view.dimensions,
                 .output_rgb = color_values,
                 .byte_size = color_byte_size,
                 .reference_direction = state.color_reference_direction,
-                .encoding = ngp::inspector::ColorGridEncoding::MortonFloat32x3,
+                .encoding = inspector::ColorGridEncoding::MortonFloat32x3,
             });
             if (!color_stats) throw std::runtime_error(color_stats.error());
             if (color_stats->dimensions != view.dimensions) throw std::runtime_error("Instant NGP color grid sample dimensions do not match density grid dimensions");
             if (color_stats->byte_size < color_byte_size) throw std::runtime_error("Instant NGP color grid sample byte size is smaller than expected");
-            if (color_stats->encoding != ngp::inspector::ColorGridEncoding::MortonFloat32x3) throw std::runtime_error("Instant NGP color grid sample returned unsupported encoding");
+            if (color_stats->encoding != inspector::ColorGridEncoding::MortonFloat32x3) throw std::runtime_error("Instant NGP color grid sample returned unsupported encoding");
             if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) throw std::runtime_error{std::string{"cudaDeviceSynchronize after direct density grid export failed: "} + cudaGetErrorString(status)};
             const float volume_density_scale = 1.0f / view.optical_thickness_step;
 
             state.materials = {
-                ngp::plugin::Material{
+                plugin::Material{
                     .name = density_material_name,
                     .model = "volume",
                     .alpha_mode = "blend",
@@ -665,14 +665,14 @@ namespace ngp::project {
                 },
             };
             state.lights = {
-                ngp::plugin::Light{
+                plugin::Light{
                     .name = density_light_name,
                     .kind = "directional",
                     .color = {1.0f, 1.0f, 1.0f},
                     .intensity = 3.0f,
                 },
             };
-            state.density_volume = ngp::plugin::VolumeGrid{
+            state.density_volume = plugin::VolumeGrid{
                 .name = density_volume_name,
                 .dimensions = view.dimensions,
                 .origin = {0.0f, 0.0f, 0.0f},
@@ -682,23 +682,23 @@ namespace ngp::project {
                     1.0f / static_cast<float>(view.dimensions[2]),
                 },
                 .channels = {
-                    ngp::plugin::VolumeChannel{
+                    plugin::VolumeChannel{
                         .name = "density",
                         .dimensions = view.dimensions,
-                        .format = ngp::plugin::VolumeChannelFormat::Float32,
-                        .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
-                        .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
+                        .format = plugin::VolumeChannelFormat::Float32,
+                        .source_kind = plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
+                        .index_encoding = plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.density_buffer.resource_id(),
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(density_values),
                         .source_byte_size = byte_size,
                         .revision = view.revision,
                     },
-                    ngp::plugin::VolumeChannel{
+                    plugin::VolumeChannel{
                         .name = "color",
                         .dimensions = view.dimensions,
-                        .format = ngp::plugin::VolumeChannelFormat::Float32x3,
-                        .source_kind = ngp::plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
-                        .index_encoding = ngp::plugin::VolumeChannelIndexEncoding::Morton3D,
+                        .format = plugin::VolumeChannelFormat::Float32x3,
+                        .source_kind = plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
+                        .index_encoding = plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.color_buffer.resource_id(),
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(color_values),
                         .source_byte_size = color_byte_size,
@@ -722,10 +722,10 @@ namespace ngp::project {
             state.training_complete = false;
         }
 
-        [[nodiscard]] TrainingOptions parse_training_options(const Project::State& state, const std::span<const ngp::plugin::Option> options) {
+        [[nodiscard]] TrainingOptions parse_training_options(const Project::State& state, const std::span<const plugin::Option> options) {
             TrainingOptions parsed{};
             std::set<std::string> seen_options{};
-            for (const ngp::plugin::Option& option : options) {
+            for (const plugin::Option& option : options) {
                 if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
                 if (option.key == action_option_frame_set_key) parsed.frame_set = option.value;
                 else if (option.key == action_option_target_steps_key) {
@@ -748,7 +748,7 @@ namespace ngp::project {
 
     }
 
-    Project Project::open(ngp::plugin::OpenContext context) {
+    Project Project::open(plugin::OpenContext context) {
         if (context.host_services == nullptr) throw std::runtime_error("host services are required to open the Instant NGP Spectra project");
         std::unique_ptr<State> created = std::make_unique<State>();
         created->host_services = std::move(context.host_services);
@@ -790,7 +790,7 @@ namespace ngp::project {
                 for (const auto& frame_set : dataset.frame_sets) {
                     if (done) break;
                     for (std::size_t frame_index = 0u; frame_index < frame_set.frames.size(); ++frame_index) {
-                        if ((static_cast<std::uint64_t>(frame_index) % created->options.frame_stride) != 0u) continue;
+                        if ((frame_index % created->options.frame_stride) != 0u) continue;
                         if (created->options.max_frames != 0u && selected_camera_count >= created->options.max_frames) {
                             done = true;
                             break;
@@ -802,22 +802,22 @@ namespace ngp::project {
         }, created->dataset);
         if (selected_camera_count == 0u) throw std::runtime_error("dataset selection produced no camera frames");
 
-        created->cameras.reserve(static_cast<std::size_t>(selected_camera_count + 1u));
-        created->debug_attachments.viewport_camera_visuals.reserve(static_cast<std::size_t>(selected_camera_count));
-        const Vector3 overview_target{0.5f, 0.5f, 0.5f};
-        const Vector3 overview_eye{0.5f, 1.55f, -1.65f};
-        const Vector3 overview_up{0.0f, 1.0f, 0.0f};
+        created->cameras.reserve(selected_camera_count + 1u);
+        created->debug_attachments.viewport_camera_visuals.reserve(selected_camera_count);
+        constexpr Vector3 overview_target{0.5f, 0.5f, 0.5f};
+        constexpr Vector3 overview_eye{0.5f, 1.55f, -1.65f};
+        constexpr Vector3 overview_up{0.0f, 1.0f, 0.0f};
         const Vector3 overview_forward = normalize(subtract(overview_target, overview_eye), "overview camera forward");
         const Vector3 overview_right = normalize(cross(overview_up, overview_forward), "overview camera right");
         const Vector3 overview_camera_up = cross(overview_forward, overview_right);
         const Quaternion overview_rotation = quaternion_from_frame(overview_right, overview_camera_up, overview_forward, "overview camera");
-        created->cameras.push_back(ngp::plugin::Camera{
+        created->cameras.push_back(plugin::Camera{
             .name = created->overview_camera_name,
             .local_coordinate_system = spectra_y_up,
-            .transform = ngp::plugin::Transform{.position = {overview_eye.x, overview_eye.y, overview_eye.z}, .rotation = {overview_rotation.x, overview_rotation.y, overview_rotation.z, overview_rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
+            .transform = plugin::Transform{.position = {overview_eye.x, overview_eye.y, overview_eye.z}, .rotation = {overview_rotation.x, overview_rotation.y, overview_rotation.z, overview_rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
             .target = {overview_target.x, overview_target.y, overview_target.z},
             .up = {overview_up.x, overview_up.y, overview_up.z},
-            .projection = ngp::plugin::CameraProjection::Perspective,
+            .projection = plugin::CameraProjection::Perspective,
             .vertical_fov_degrees = 45.0f,
             .near_plane = 0.01f,
             .far_plane = 20.0f,
@@ -830,7 +830,7 @@ namespace ngp::project {
                 for (const auto& frame_set : dataset.frame_sets) {
                     if (done) break;
                     for (std::size_t frame_index = 0u; frame_index < frame_set.frames.size(); ++frame_index) {
-                        if ((static_cast<std::uint64_t>(frame_index) % created->options.frame_stride) != 0u) continue;
+                        if ((frame_index % created->options.frame_stride) != 0u) continue;
                         if (created->options.max_frames != 0u && selected_index >= created->options.max_frames) {
                             done = true;
                             break;
@@ -849,13 +849,13 @@ namespace ngp::project {
                         if (frame.rgba.empty()) throw std::runtime_error(std::format("dataset camera '{}' image is empty", camera_name));
                         if (static_cast<std::uint64_t>(frame.rgba.size()) != expected_bytes) throw std::runtime_error(std::format("dataset camera '{}' image byte count does not match width * height * 4", camera_name));
                         const float t = selected_camera_count > 1u ? static_cast<float>(selected_index) / static_cast<float>(selected_camera_count - 1u) : 0.0f;
-                        created->cameras.push_back(ngp::plugin::Camera{
+                        created->cameras.push_back(plugin::Camera{
                             .name = camera_name,
                             .local_coordinate_system = opencv,
-                            .transform = ngp::plugin::Transform{.position = {origin.x, origin.y, origin.z}, .rotation = {rotation.x, rotation.y, rotation.z, rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
+                            .transform = plugin::Transform{.position = {origin.x, origin.y, origin.z}, .rotation = {rotation.x, rotation.y, rotation.z, rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
                             .target = {focus.x, focus.y, focus.z},
                             .up = {navigation_up.x, navigation_up.y, navigation_up.z},
-                            .projection = ngp::plugin::CameraProjection::Pinhole,
+                            .projection = plugin::CameraProjection::Pinhole,
                             .vertical_fov_degrees = 45.0f,
                             .image_width = frame.width,
                             .image_height = frame.height,
@@ -866,16 +866,16 @@ namespace ngp::project {
                             .near_plane = 0.01f,
                             .far_plane = 10.0f,
                         });
-                        created->debug_attachments.viewport_camera_visuals.push_back(ngp::plugin::ViewportCameraVisual{
+                        created->debug_attachments.viewport_camera_visuals.push_back(plugin::ViewportCameraVisual{
                             .name = std::format("{} Visual", camera_name),
-                            .owner = ngp::plugin::SceneEntityRef{.kind = ngp::plugin::SceneEntityKind::Camera, .name = camera_name},
+                            .owner = plugin::SceneEntityRef{.kind = plugin::SceneEntityKind::Camera, .name = camera_name},
                             .color = {0.12f + 0.72f * t, 0.82f, 1.0f - 0.55f * t, 0.52f},
                             .width = created->options.frustum_width,
                             .width_mode = viewport_width_screen,
                             .depth_mode = viewport_always_visible,
                             .visual_near = 0.02f,
                             .visual_far = created->options.visual_far,
-                            .image = ngp::plugin::ViewportCameraVisualImage{
+                            .image = plugin::ViewportCameraVisualImage{
                                 .rgba8 = frame.rgba.data(),
                                 .rgba8_size = expected_bytes,
                                 .revision = 1u,
@@ -894,13 +894,13 @@ namespace ngp::project {
         return Project{std::move(created)};
     }
 
-    void Project::update(const ngp::plugin::UpdateInfo& update) {
+    void Project::update(const plugin::UpdateInfo& update) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
         if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
         if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
-        if (update.timeline_mode > ngp::plugin::ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
+        if (update.timeline_mode > plugin::ControlTimelineModePlayback) throw std::runtime_error("project update timeline mode is invalid");
         state.host_timeline_playing = update.timeline_playing;
         state.host_timeline_mode = update.timeline_mode;
         if (!state.training_running) return;
@@ -915,7 +915,7 @@ namespace ngp::project {
             }
             const std::uint32_t remaining_steps = state.training.target_steps - current_step;
             const std::uint32_t requested_steps = std::min(state.training.steps_per_update, remaining_steps);
-            const std::expected<ngp::train::OptimizationStats, std::string> stats = state.ngp->optimize(ngp::train::OptimizationRequest{
+            const std::expected<train::OptimizationStats, std::string> stats = state.ngp->optimize(train::OptimizationRequest{
                 .frame_set = state.training.frame_set,
                 .iterations = static_cast<std::int32_t>(requested_steps),
             });
@@ -925,8 +925,8 @@ namespace ngp::project {
             }
             state.latest_stats = *stats;
             const bool reached_target = stats->step >= state.training.target_steps;
-            const ngp::inspector::Inspector inspector{*state.ngp};
-            const ngp::inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
             if (density_view.initialized && density_view.revision != state.exported_density_revision) {
                 publish_density_grid_volume(state);
             } else {
@@ -944,7 +944,7 @@ namespace ngp::project {
         }
     }
 
-    void Project::start_training(ngp::plugin::ActionContext context) {
+    void Project::start_training(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         const TrainingOptions parsed = parse_training_options(state, context.options);
@@ -962,7 +962,7 @@ namespace ngp::project {
         state.training_running = false;
     }
 
-    void Project::render_preview(ngp::plugin::ActionContext context) {
+    void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (state.training_running && host_timeline_advances_scene(state)) throw std::runtime_error("pause the host timeline before rendering a preview");
@@ -970,7 +970,7 @@ namespace ngp::project {
         std::uint32_t image_index{};
         bool refresh_acceleration{};
         std::set<std::string> seen_options{};
-        for (const ngp::plugin::Option& option : context.options) {
+        for (const plugin::Option& option : context.options) {
             if (!seen_options.insert(option.key).second) throw std::runtime_error(std::format("project action option '{}' is duplicated", option.key));
             if (option.key == action_option_frame_set_key) frame_set = option.value;
             else if (option.key == action_option_image_index_key) {
@@ -986,8 +986,8 @@ namespace ngp::project {
         if (frame_set != "train" && frame_set != "validation" && frame_set != "test") throw std::runtime_error(std::format("frame_set must be train, validation, or test; got '{}'", frame_set));
         if (!frame_set_loaded(state, frame_set)) throw std::runtime_error(std::format("frame_set '{}' was not loaded by Open Dataset", frame_set));
         create_trainer_if_needed(state);
-        const ngp::inspector::Inspector inspector{*state.ngp};
-        std::expected<ngp::inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(ngp::inspector::EvaluationPreviewRequest{
+        const inspector::Inspector inspector{*state.ngp};
+        std::expected<inspector::EvaluationPreviewResult, std::string> preview = inspector.evaluate_preview(inspector::EvaluationPreviewRequest{
             .frame_set = frame_set,
             .image_index = image_index,
             .refresh_acceleration = refresh_acceleration,
@@ -1078,7 +1078,7 @@ namespace ngp::project {
         return this->state->scene_revision;
     }
 
-    void Project::write_controls(ngp::plugin::ControlBuilder& controls) const {
+    void Project::write_controls(plugin::ControlBuilder& controls) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
         if (!state.project_error.empty()) {
@@ -1146,15 +1146,15 @@ namespace ngp::project {
         }
     }
 
-    void Project::write_scene(ngp::plugin::SceneBuilder& scene) const {
+    void Project::write_scene(plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
-        scene.set_document(ngp::plugin::Document{
+        scene.set_document(plugin::Document{
             .default_coordinate_system = spectra_y_up,
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
             .materials = this->state->materials,
             .lights = this->state->lights,
-            .volumes = this->state->density_volume.has_value() ? std::vector<ngp::plugin::VolumeGrid>{*this->state->density_volume} : std::vector<ngp::plugin::VolumeGrid>{},
+            .volumes = this->state->density_volume.has_value() ? std::vector<plugin::VolumeGrid>{*this->state->density_volume} : std::vector<plugin::VolumeGrid>{},
             .debug_attachments = this->state->debug_attachments,
         });
     }

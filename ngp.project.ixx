@@ -15,17 +15,17 @@ export namespace ngp::project {
         Project& operator=(Project&& other) noexcept;
         ~Project() noexcept;
 
-        [[nodiscard]] static const ngp::plugin::PluginDefinition<Project>& plugin();
-        [[nodiscard]] static Project open(ngp::plugin::OpenContext context);
+        [[nodiscard]] static const plugin::PluginDefinition<Project>& plugin();
+        [[nodiscard]] static Project open(plugin::OpenContext context);
 
-        void update(const ngp::plugin::UpdateInfo& update);
+        void update(const plugin::UpdateInfo& update);
         [[nodiscard]] std::uint64_t revision() const;
-        void write_scene(ngp::plugin::SceneBuilder& scene) const;
-        void write_controls(ngp::plugin::ControlBuilder& controls) const;
+        void write_scene(plugin::SceneBuilder& scene) const;
+        void write_controls(plugin::ControlBuilder& controls) const;
 
-        void start_training(ngp::plugin::ActionContext context);
+        void start_training(plugin::ActionContext context);
         void pause_training();
-        void render_preview(ngp::plugin::ActionContext context);
+        void render_preview(plugin::ActionContext context);
         void reset_training();
 
         void set_show_occupancy(bool value);
