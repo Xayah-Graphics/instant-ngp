@@ -973,10 +973,6 @@ namespace ngp::project {
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
         } else if (state.training_active && state.host_timeline_playing) {
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
-        } else if (state.training_active) {
-            controls.enable(action_render_preview_id);
-        } else if (state.training_complete) {
-            controls.enable(action_render_preview_id);
         } else {
             controls.enable(action_render_preview_id);
         }
