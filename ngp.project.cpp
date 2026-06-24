@@ -29,8 +29,6 @@ import ngp.plugin;
 namespace ngp::project {
     namespace {
         constexpr std::uint32_t viewport_depth_tested = 0u;
-        constexpr char spectra_y_up[] = "SpectraYUp";
-        constexpr char opencv[] = "OpenCV";
         constexpr char action_render_preview_id[] = "render_preview";
         constexpr char open_option_training_frame_set_key[] = "training_frame_set";
         constexpr char open_option_target_steps_key[] = "target_steps";
@@ -52,13 +50,6 @@ namespace ngp::project {
             float x{};
             float y{};
             float z{};
-        };
-
-        struct Quaternion {
-            float x{};
-            float y{};
-            float z{};
-            float w{1.0f};
         };
 
         struct DatasetOptions {
@@ -194,10 +185,6 @@ namespace ngp::project {
             return parsed;
         }
 
-        [[nodiscard]] Vector3 add(const Vector3 a, const Vector3 b) {
-            return Vector3{a.x + b.x, a.y + b.y, a.z + b.z};
-        }
-
         [[nodiscard]] Vector3 subtract(const Vector3 a, const Vector3 b) {
             return Vector3{a.x - b.x, a.y - b.y, a.z - b.z};
         }
@@ -224,52 +211,13 @@ namespace ngp::project {
             return multiply(value, 1.0f / std::sqrt(length_squared));
         }
 
-        [[nodiscard]] Quaternion quaternion_from_frame(Vector3 right, Vector3 up, Vector3 forward, const std::string_view context) {
+        [[nodiscard]] std::array<Vector3, 3u> spectra_image_down_camera_basis(Vector3 right, Vector3 down, Vector3 forward, const std::string_view context) {
             right = normalize(right, std::format("{} right", context));
-            up = normalize(up, std::format("{} up", context));
+            down = normalize(down, std::format("{} down", context));
             forward = normalize(forward, std::format("{} forward", context));
-            if (std::abs(dot(right, up)) > 1.0e-3f || std::abs(dot(right, forward)) > 1.0e-3f || std::abs(dot(up, forward)) > 1.0e-3f) throw std::runtime_error(std::format("{} basis is not orthogonal", context));
-            if (dot(cross(right, up), forward) <= 0.0f) throw std::runtime_error(std::format("{} basis must be right-handed", context));
-            const float m00 = right.x;
-            const float m01 = up.x;
-            const float m02 = forward.x;
-            const float m10 = right.y;
-            const float m11 = up.y;
-            const float m12 = forward.y;
-            const float m20 = right.z;
-            const float m21 = up.z;
-            const float m22 = forward.z;
-            Quaternion result{};
-            const float trace = m00 + m11 + m22;
-            if (trace > 0.0f) {
-                const float s = std::sqrt(trace + 1.0f) * 2.0f;
-                result.w = 0.25f * s;
-                result.x = (m21 - m12) / s;
-                result.y = (m02 - m20) / s;
-                result.z = (m10 - m01) / s;
-            } else if (m00 > m11 && m00 > m22) {
-                const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
-                result.w = (m21 - m12) / s;
-                result.x = 0.25f * s;
-                result.y = (m01 + m10) / s;
-                result.z = (m02 + m20) / s;
-            } else if (m11 > m22) {
-                const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
-                result.w = (m02 - m20) / s;
-                result.x = (m01 + m10) / s;
-                result.y = 0.25f * s;
-                result.z = (m12 + m21) / s;
-            } else {
-                const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
-                result.w = (m10 - m01) / s;
-                result.x = (m02 + m20) / s;
-                result.y = (m12 + m21) / s;
-                result.z = 0.25f * s;
-            }
-            const float quaternion_length_squared = result.x * result.x + result.y * result.y + result.z * result.z + result.w * result.w;
-            if (!std::isfinite(quaternion_length_squared) || quaternion_length_squared <= 1.0e-12f) throw std::runtime_error(std::format("{} quaternion is invalid", context));
-            const float inverse_length = 1.0f / std::sqrt(quaternion_length_squared);
-            return Quaternion{result.x * inverse_length, result.y * inverse_length, result.z * inverse_length, result.w * inverse_length};
+            if (std::abs(dot(right, down)) > 1.0e-3f || std::abs(dot(right, forward)) > 1.0e-3f || std::abs(dot(down, forward)) > 1.0e-3f) throw std::runtime_error(std::format("{} basis is not orthogonal", context));
+            if (dot(cross(right, down), forward) <= 0.0f) throw std::runtime_error(std::format("{} basis must satisfy cross(right, down) == forward in Spectra image-down camera space", context));
+            return {right, down, forward};
         }
 
         [[nodiscard]] std::string joined_frame_sets(const std::vector<std::string>& frame_sets) {
@@ -567,7 +515,6 @@ namespace ngp::project {
                 .dimensions = view.dimensions,
                 .origin = {0.0f, 0.0f, 0.0f},
                 .voxel_size = {voxel_size, voxel_size, voxel_size},
-                .transform = plugin::Transform{},
                 .color = {0.12f, 0.78f, 1.0f, state.debug.occupancy_alpha},
                 .cell_scale = state.debug.occupancy_cell_scale,
                 .depth_mode = viewport_depth_tested,
@@ -769,15 +716,16 @@ namespace ngp::project {
         constexpr Vector3 overview_eye{0.5f, 1.55f, -1.65f};
         constexpr Vector3 overview_up{0.0f, 1.0f, 0.0f};
         const Vector3 overview_forward = normalize(subtract(overview_target, overview_eye), "overview camera forward");
-        const Vector3 overview_right = normalize(cross(overview_up, overview_forward), "overview camera right");
-        const Vector3 overview_camera_up = cross(overview_forward, overview_right);
-        const Quaternion overview_rotation = quaternion_from_frame(overview_right, overview_camera_up, overview_forward, "overview camera");
+        const Vector3 overview_down = multiply(overview_up, -1.0f);
+        const Vector3 overview_right = normalize(cross(overview_down, overview_forward), "overview camera right");
+        const Vector3 overview_camera_down = cross(overview_forward, overview_right);
+        const std::array<Vector3, 3u> overview_basis = spectra_image_down_camera_basis(overview_right, overview_camera_down, overview_forward, "overview camera");
         created->cameras.push_back(plugin::Camera{
             .name = created->overview_camera_name,
-            .local_coordinate_system = spectra_y_up,
-            .transform = plugin::Transform{.position = {overview_eye.x, overview_eye.y, overview_eye.z}, .rotation = {overview_rotation.x, overview_rotation.y, overview_rotation.z, overview_rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
-            .target = {overview_target.x, overview_target.y, overview_target.z},
-            .up = {overview_up.x, overview_up.y, overview_up.z},
+            .position = {overview_eye.x, overview_eye.y, overview_eye.z},
+            .right = {overview_basis[0].x, overview_basis[0].y, overview_basis[0].z},
+            .down = {overview_basis[1].x, overview_basis[1].y, overview_basis[1].z},
+            .forward = {overview_basis[2].x, overview_basis[2].y, overview_basis[2].z},
             .projection = plugin::CameraProjection::Perspective,
             .vertical_fov_degrees = 45.0f,
             .near_plane = 0.01f,
@@ -802,19 +750,17 @@ namespace ngp::project {
                         const Vector3 camera_y{frame.camera.at(3u), frame.camera.at(4u), frame.camera.at(5u)};
                         const Vector3 camera_z{frame.camera.at(6u), frame.camera.at(7u), frame.camera.at(8u)};
                         const Vector3 origin{frame.camera.at(9u), frame.camera.at(10u), frame.camera.at(11u)};
-                        const Quaternion rotation = quaternion_from_frame(camera_x, camera_y, camera_z, std::format("dataset camera '{}'", camera_name));
-                        const Vector3 focus = add(origin, normalize(camera_z, std::format("dataset camera '{}' forward", camera_name)));
-                        const Vector3 navigation_up = multiply(normalize(camera_y, std::format("dataset camera '{}' visual up", camera_name)), -1.0f);
+                        const std::array<Vector3, 3u> basis = spectra_image_down_camera_basis(camera_x, camera_y, camera_z, std::format("dataset camera '{}'", camera_name));
                         const std::uint64_t expected_bytes = static_cast<std::uint64_t>(frame.width) * static_cast<std::uint64_t>(frame.height) * 4u;
                         if (frame.width == 0u || frame.height == 0u) throw std::runtime_error(std::format("dataset camera '{}' image dimensions must be non-zero", camera_name));
                         if (frame.rgba.empty()) throw std::runtime_error(std::format("dataset camera '{}' image is empty", camera_name));
                         if (static_cast<std::uint64_t>(frame.rgba.size()) != expected_bytes) throw std::runtime_error(std::format("dataset camera '{}' image byte count does not match width * height * 4", camera_name));
                         created->cameras.push_back(plugin::Camera{
                             .name = camera_name,
-                            .local_coordinate_system = opencv,
-                            .transform = plugin::Transform{.position = {origin.x, origin.y, origin.z}, .rotation = {rotation.x, rotation.y, rotation.z, rotation.w}, .scale = {1.0f, 1.0f, 1.0f}},
-                            .target = {focus.x, focus.y, focus.z},
-                            .up = {navigation_up.x, navigation_up.y, navigation_up.z},
+                            .position = {origin.x, origin.y, origin.z},
+                            .right = {basis[0].x, basis[0].y, basis[0].z},
+                            .down = {basis[1].x, basis[1].y, basis[1].z},
+                            .forward = {basis[2].x, basis[2].y, basis[2].z},
                             .projection = plugin::CameraProjection::Pinhole,
                             .vertical_fov_degrees = 45.0f,
                             .image_width = frame.width,
@@ -1040,7 +986,6 @@ namespace ngp::project {
     void Project::write_scene(plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         scene.set_document(plugin::Document{
-            .default_coordinate_system = spectra_y_up,
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
             .materials = this->state->materials,
@@ -1052,6 +997,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v10(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v12(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

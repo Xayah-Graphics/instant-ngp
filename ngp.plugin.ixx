@@ -233,10 +233,10 @@ export namespace ngp::plugin {
 
     struct Camera {
         std::string name{};
-        std::string local_coordinate_system{};
-        Transform transform{};
-        std::array<float, 3u> target{};
-        std::array<float, 3u> up{};
+        std::array<float, 3u> position{};
+        std::array<float, 3u> right{1.0f, 0.0f, 0.0f};
+        std::array<float, 3u> down{0.0f, 1.0f, 0.0f};
+        std::array<float, 3u> forward{0.0f, 0.0f, 1.0f};
         CameraProjection projection{CameraProjection::Perspective};
         float vertical_fov_degrees{};
         std::uint32_t image_width{};
@@ -320,7 +320,6 @@ export namespace ngp::plugin {
         std::array<std::uint32_t, 3u> dimensions{};
         std::array<float, 3u> origin{};
         std::array<float, 3u> voxel_size{1.0f, 1.0f, 1.0f};
-        Transform transform{};
         std::array<float, 4u> color{};
         float cell_scale{1.0f};
         std::uint32_t depth_mode{};
@@ -336,7 +335,6 @@ export namespace ngp::plugin {
     };
 
     struct Document {
-        std::string default_coordinate_system{};
         std::string active_camera_name{};
         std::vector<Camera> cameras{};
         std::vector<Material> materials{};
@@ -347,11 +345,6 @@ export namespace ngp::plugin {
 
     class SceneBuilder final {
     public:
-        SceneBuilder& coordinate_system(std::string value) {
-            this->value.default_coordinate_system = std::move(value);
-            return *this;
-        }
-
         SceneBuilder& active_camera(std::string value) {
             this->value.active_camera_name = std::move(value);
             return *this;
@@ -707,7 +700,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 10u;
+    constexpr std::uint32_t plugin_abi_version = 12u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -919,10 +912,10 @@ namespace ngp::plugin {
 
     struct SpectraSceneCamera {
         const char* name{};
-        const char* local_coordinate_system{};
-        SpectraSceneTransform transform{};
-        float target[3]{};
-        float up[3]{};
+        float position[3]{};
+        float right[3]{};
+        float down[3]{};
+        float forward[3]{};
         std::uint32_t projection{};
         float vertical_fov_degrees{};
         std::uint32_t image_width{};
@@ -1090,7 +1083,6 @@ namespace ngp::plugin {
         std::uint32_t dimensions[3]{};
         float origin[3]{};
         float voxel_size[3]{};
-        SpectraSceneTransform transform{};
         float color[4]{};
         float cell_scale{};
         std::uint32_t depth_mode{};
@@ -1121,7 +1113,6 @@ namespace ngp::plugin {
 
     struct SpectraSceneDocumentView {
         std::uint64_t struct_size{};
-        const char* default_coordinate_system{};
         const char* active_camera_name{};
         SpectraSceneItems items{};
     };
@@ -1411,23 +1402,23 @@ namespace ngp::plugin {
 
         [[nodiscard]] SpectraSceneCamera make_camera_view(const Camera& camera) {
             SpectraSceneCamera view{
-                .name                    = camera.name.c_str(),
-                .local_coordinate_system = camera.local_coordinate_system.c_str(),
-                .transform               = make_transform_view(camera.transform),
-                .projection              = static_cast<std::uint32_t>(camera.projection),
-                .vertical_fov_degrees    = camera.vertical_fov_degrees,
-                .image_width             = camera.image_width,
-                .image_height            = camera.image_height,
-                .fx                      = camera.fx,
-                .fy                      = camera.fy,
-                .cx                      = camera.cx,
-                .cy                      = camera.cy,
-                .near_plane              = camera.near_plane,
-                .far_plane               = camera.far_plane,
-                .has_image               = camera.image.has_value() ? 1u : 0u,
+                .name                 = camera.name.c_str(),
+                .projection           = static_cast<std::uint32_t>(camera.projection),
+                .vertical_fov_degrees = camera.vertical_fov_degrees,
+                .image_width          = camera.image_width,
+                .image_height         = camera.image_height,
+                .fx                   = camera.fx,
+                .fy                   = camera.fy,
+                .cx                   = camera.cx,
+                .cy                   = camera.cy,
+                .near_plane           = camera.near_plane,
+                .far_plane            = camera.far_plane,
+                .has_image            = camera.image.has_value() ? 1u : 0u,
             };
-            copy_array(view.target, camera.target);
-            copy_array(view.up, camera.up);
+            copy_array(view.position, camera.position);
+            copy_array(view.right, camera.right);
+            copy_array(view.down, camera.down);
+            copy_array(view.forward, camera.forward);
             if (camera.image.has_value()) {
                 const CameraImage& image = *camera.image;
                 view.image = SpectraSceneCameraImage{
@@ -1445,7 +1436,6 @@ namespace ngp::plugin {
             SpectraSceneViewportVoxelGrid view{
                 .name             = grid.name.c_str(),
                 .owner            = make_entity_ref_view(grid.owner),
-                .transform        = make_transform_view(grid.transform),
                 .cell_scale       = grid.cell_scale,
                 .depth_mode       = grid.depth_mode,
                 .source_kind      = static_cast<std::uint32_t>(grid.source_kind),
@@ -1479,7 +1469,6 @@ namespace ngp::plugin {
             for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
             return SpectraSceneDocumentView{
                 .struct_size               = sizeof(SpectraSceneDocumentView),
-                .default_coordinate_system = cache.document.default_coordinate_system.c_str(),
                 .active_camera_name        = cache.document.active_camera_name.c_str(),
                 .items =
                     SpectraSceneItems{
