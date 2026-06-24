@@ -334,7 +334,20 @@ export namespace ngp::plugin {
         std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
     };
 
+    enum class TimelineKind : std::uint32_t {
+        Static  = 0u,
+        Live    = 1u,
+        Indexed = 2u,
+    };
+
+    struct TimelineDescriptor {
+        TimelineKind kind{TimelineKind::Static};
+        double frame_rate{24.0};
+        std::uint64_t frame_count{};
+    };
+
     struct Document {
+        TimelineDescriptor timeline{};
         std::string active_camera_name{};
         std::vector<Camera> cameras{};
         std::vector<Material> materials{};
@@ -623,7 +636,6 @@ export namespace ngp::plugin {
         std::string id{};
         std::string title{};
         std::string open_action_label{};
-        double frames_per_second{};
         std::vector<ControlSection> sections{};
         std::vector<OptionSchema> open_options{};
         std::vector<ActionBinding<Project>> actions{};
@@ -644,7 +656,6 @@ export namespace ngp::plugin {
         std::string id{};
         std::string title{};
         std::string open_action_label{};
-        double frames_per_second{};
         std::vector<ControlSection> sections{};
         std::vector<OptionSchema> open_options{};
         std::vector<TypeErasedAction> actions{};
@@ -663,7 +674,6 @@ export namespace ngp::plugin {
             .id                      = definition.id,
             .title                   = definition.title,
             .open_action_label       = definition.open_action_label,
-            .frames_per_second       = definition.frames_per_second,
             .sections                = definition.sections,
             .open_options            = definition.open_options,
             .open                    = [](OpenContext context) -> void* { return new Project{Project::open(std::move(context))}; },
@@ -700,7 +710,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 12u;
+    constexpr std::uint32_t plugin_abi_version = 13u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -708,6 +718,9 @@ namespace ngp::plugin {
     constexpr std::uint32_t SPECTRA_SCENE_RESULT_ERROR                   = 1u;
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL      = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID = 1u;
+    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_STATIC                = 0u;
+    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_LIVE                  = 1u;
+    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_INDEXED               = 2u;
     constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_DEFAULT    = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_SLIDER     = 1u;
 
@@ -1111,8 +1124,15 @@ namespace ngp::plugin {
         SpectraSceneViewportVoxelGridSpan viewport_voxel_grids{};
     };
 
+    struct SpectraSceneTimeline {
+        std::uint32_t kind{};
+        double frame_rate{};
+        std::uint64_t frame_count{};
+    };
+
     struct SpectraSceneDocumentView {
         std::uint64_t struct_size{};
+        SpectraSceneTimeline timeline{};
         const char* active_camera_name{};
         SpectraSceneItems items{};
     };
@@ -1145,7 +1165,6 @@ namespace ngp::plugin {
         const char* id{};
         const char* title{};
         const char* open_action_label{};
-        double frames_per_second{};
         SpectraSceneControlSectionSpan sections{};
         SpectraSceneControlOptionSchemaSpan open_options{};
         SpectraSceneControlActionSpan control_actions{};
@@ -1453,6 +1472,20 @@ namespace ngp::plugin {
             return view;
         }
 
+        [[nodiscard]] SpectraSceneTimeline make_timeline_view(const TimelineDescriptor& timeline) {
+            std::uint32_t kind{};
+            switch (timeline.kind) {
+            case TimelineKind::Static: kind = SPECTRA_SCENE_TIMELINE_STATIC; break;
+            case TimelineKind::Live: kind = SPECTRA_SCENE_TIMELINE_LIVE; break;
+            case TimelineKind::Indexed: kind = SPECTRA_SCENE_TIMELINE_INDEXED; break;
+            }
+            return SpectraSceneTimeline{
+                .kind = kind,
+                .frame_rate = timeline.frame_rate,
+                .frame_count = timeline.frame_count,
+            };
+        }
+
         [[nodiscard]] SpectraSceneDocumentView make_document_abi_view(SceneAbiStorage& cache) {
             cache.material_views.clear();
             cache.material_views.reserve(cache.document.materials.size());
@@ -1469,6 +1502,7 @@ namespace ngp::plugin {
             for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
             return SpectraSceneDocumentView{
                 .struct_size               = sizeof(SpectraSceneDocumentView),
+                .timeline                  = make_timeline_view(cache.document.timeline),
                 .active_camera_name        = cache.document.active_camera_name.c_str(),
                 .items =
                     SpectraSceneItems{
@@ -1737,7 +1771,6 @@ namespace ngp::plugin {
                                                                                                                         .id                      = plugin_definition.id.c_str(),
                                                                                                                         .title                   = plugin_definition.title.c_str(),
                                                                                                                         .open_action_label       = plugin_definition.open_action_label.c_str(),
-                                                                                                                        .frames_per_second       = plugin_definition.frames_per_second,
                                                                                                                         .sections                = SpectraSceneControlSectionSpan{.data = descriptor_storage.sections.empty() ? nullptr : descriptor_storage.sections.data(), .count = static_cast<std::uint64_t>(descriptor_storage.sections.size())},
                                                                                                                         .open_options            = SpectraSceneControlOptionSchemaSpan{.data = descriptor_storage.open_options.schemas.empty() ? nullptr : descriptor_storage.open_options.schemas.data(), .count = static_cast<std::uint64_t>(descriptor_storage.open_options.schemas.size())},
                                                                                                                         .control_actions         = SpectraSceneControlActionSpan{.data = descriptor_storage.control_actions.empty() ? nullptr : descriptor_storage.control_actions.data(), .count = static_cast<std::uint64_t>(descriptor_storage.control_actions.size())},

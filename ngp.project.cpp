@@ -294,7 +294,6 @@ namespace ngp::project {
             .id = "ngp.project",
             .title = "Instant NGP Project",
             .open_action_label = "Open Dataset",
-            .frames_per_second = 60.0,
             .sections = {
                 plugin::section(section_dataset_id, "Dataset"),
                 plugin::section(section_training_id, "Training"),
@@ -986,6 +985,10 @@ namespace ngp::project {
     void Project::write_scene(plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         scene.set_document(plugin::Document{
+            .timeline = plugin::TimelineDescriptor{
+                .kind = plugin::TimelineKind::Live,
+                .frame_rate = 60.0,
+            },
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
             .materials = this->state->materials,
@@ -997,6 +1000,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v12(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v13(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }
