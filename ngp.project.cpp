@@ -35,16 +35,27 @@ namespace ngp::project {
         constexpr char open_option_steps_per_update_key[] = "steps_per_update";
         constexpr char preview_option_frame_set_key[] = "frame_set";
         constexpr char preview_option_image_index_key[] = "image_index";
+        constexpr char setting_show_volume_key[] = "show_volume";
         constexpr char setting_show_occupancy_key[] = "show_occupancy";
         constexpr char setting_occupancy_alpha_key[] = "occupancy_alpha";
         constexpr char setting_occupancy_cell_scale_key[] = "occupancy_cell_scale";
+        constexpr char setting_show_sampler_key[] = "show_sampler";
+        constexpr char setting_show_sampler_points_key[] = "show_sampler_points";
+        constexpr char setting_show_sampler_rays_key[] = "show_sampler_rays";
+        constexpr char setting_sampler_point_radius_key[] = "sampler_point_radius";
+        constexpr char setting_sampler_ray_width_key[] = "sampler_ray_width";
         constexpr char section_dataset_id[] = "dataset";
         constexpr char section_training_id[] = "training";
         constexpr char section_preview_id[] = "preview";
+        constexpr char section_field_id[] = "field";
+        constexpr char section_sampler_id[] = "sampler";
         constexpr char section_diagnostics_id[] = "diagnostics";
         constexpr char density_volume_name[] = "Reconstructed Density";
         constexpr char density_material_name[] = "Reconstructed Density Material";
         constexpr char density_light_name[] = "Reconstructed Density Key Light";
+        constexpr char sampler_point_cloud_name[] = "NGP Sampler Samples";
+        constexpr char sampler_ray_segments_name[] = "NGP Sampler Rays";
+        constexpr char sampler_material_name[] = "NGP Sampler Point Material";
 
         struct Vector3 {
             float x{};
@@ -68,9 +79,15 @@ namespace ngp::project {
         };
 
         struct DebugOptions {
+            bool show_volume{true};
             bool show_occupancy{false};
             float occupancy_alpha{0.18f};
             float occupancy_cell_scale{0.75f};
+            bool show_sampler{false};
+            bool show_sampler_points{true};
+            bool show_sampler_rays{true};
+            float sampler_point_radius{0.002f};
+            float sampler_ray_width{1.5f};
         };
 
         struct ProjectOpenOptions {
@@ -270,6 +287,13 @@ namespace ngp::project {
         ExternalGpuBuffer occupancy_buffer{};
         std::uint64_t exported_occupancy_revision{};
         std::optional<plugin::ViewportVoxelGrid> occupancy_grid{};
+        ExternalGpuBuffer sampler_points_buffer{};
+        ExternalGpuBuffer sampler_segments_buffer{};
+        std::uint64_t exported_sampler_revision{};
+        std::uint32_t exported_sampler_point_count{};
+        std::uint32_t exported_sampler_ray_count{};
+        std::optional<plugin::PointCloud> sampler_point_cloud{};
+        std::optional<plugin::ViewportSegmentSet> sampler_ray_segments{};
         std::vector<plugin::Material> materials{};
         std::vector<plugin::Light> lights{};
         std::optional<plugin::VolumeGrid> density_volume{};
@@ -282,6 +306,43 @@ namespace ngp::project {
         std::vector<plugin::Camera> cameras{};
         std::string overview_camera_name{"Overview"};
     };
+
+    namespace {
+        [[nodiscard]] bool density_volume_visible(const Project::State& state) {
+            return state.debug.show_volume && state.density_volume.has_value();
+        }
+
+        struct VisualizationSnapshot final {
+            std::uint64_t density_revision{};
+            std::uint64_t color_revision{};
+            bool density_visible{};
+            bool occupancy_visible{};
+            std::uint64_t occupancy_revision{};
+            bool sampler_points_visible{};
+            bool sampler_rays_visible{};
+            std::uint64_t sampler_revision{};
+            std::uint32_t sampler_point_count{};
+            std::uint32_t sampler_ray_count{};
+
+            friend bool operator==(const VisualizationSnapshot&, const VisualizationSnapshot&) = default;
+        };
+
+        [[nodiscard]] VisualizationSnapshot visualization_snapshot(const Project::State& state) {
+            const bool volume_visible = density_volume_visible(state);
+            return VisualizationSnapshot{
+                .density_revision = state.exported_density_revision,
+                .color_revision = state.exported_color_revision,
+                .density_visible = volume_visible,
+                .occupancy_visible = volume_visible && state.occupancy_grid.has_value(),
+                .occupancy_revision = state.exported_occupancy_revision,
+                .sampler_points_visible = state.sampler_point_cloud.has_value(),
+                .sampler_rays_visible = state.sampler_ray_segments.has_value(),
+                .sampler_revision = state.exported_sampler_revision,
+                .sampler_point_count = state.exported_sampler_point_count,
+                .sampler_ray_count = state.exported_sampler_ray_count,
+            };
+        }
+    }
 
     Project::Project() = default;
     Project::Project(std::unique_ptr<State> state) : state(std::move(state)) {}
@@ -298,10 +359,12 @@ namespace ngp::project {
                 plugin::section(section_dataset_id, "Dataset"),
                 plugin::section(section_training_id, "Training"),
                 plugin::section(section_preview_id, "Preview"),
+                plugin::section(section_field_id, "Field"),
+                plugin::section(section_sampler_id, "Sampler"),
                 plugin::section(section_diagnostics_id, "Diagnostics"),
             },
             .open_options = {
-                plugin::directory("dataset", "Dataset").describe("Dataset root directory.").section(section_dataset_id).required(),
+                plugin::directory("dataset", "Dataset").describe("Dataset root directory.").section(section_dataset_id).defaulted(R"(C:\Users\xayah\Desktop\instant-ngp-new\data\nerf-synthetic\lego)").required(),
                 plugin::choice("format", "Format", {"auto", "nerf-synthetic", "dd-nerf-dataset"}).describe("Dataset provider.").section(section_dataset_id).defaulted("auto"),
                 plugin::text("frame_sets", "Frame Sets").describe("Comma-separated frame sets: train, validation, test.").section(section_dataset_id).defaulted("train"),
                 plugin::float_option("scene_scale", "Scene Scale", 0.33f).describe("Dataset scene scale passed to the dataset loader.").section(section_dataset_id),
@@ -319,14 +382,28 @@ namespace ngp::project {
                     .option(plugin::unsigned_integer(preview_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id)),
             },
             .settings = {
+                plugin::toggle(setting_show_volume_key, "Show Volume", true, &Project::set_show_volume)
+                    .section(section_field_id),
                 plugin::toggle(setting_show_occupancy_key, "Show Occupancy", false, &Project::set_show_occupancy)
-                    .section(section_diagnostics_id),
+                    .section(section_field_id),
                 plugin::float_value(setting_occupancy_alpha_key, "Occupancy Alpha", 0.18f, &Project::set_occupancy_alpha)
-                    .section(section_diagnostics_id)
+                    .section(section_field_id)
                     .slider(0.0f, 1.0f, 0.01f),
                 plugin::float_value(setting_occupancy_cell_scale_key, "Cell Scale", 0.75f, &Project::set_occupancy_cell_scale)
-                    .section(section_diagnostics_id)
+                    .section(section_field_id)
                     .slider(0.01f, 1.0f, 0.01f),
+                plugin::toggle(setting_show_sampler_key, "Show Sampler", false, &Project::set_show_sampler)
+                    .section(section_sampler_id),
+                plugin::toggle(setting_show_sampler_points_key, "Show Sampler Points", true, &Project::set_show_sampler_points)
+                    .section(section_sampler_id),
+                plugin::toggle(setting_show_sampler_rays_key, "Show Sampler Rays", true, &Project::set_show_sampler_rays)
+                    .section(section_sampler_id),
+                plugin::float_value(setting_sampler_point_radius_key, "Point Radius", 0.002f, &Project::set_sampler_point_radius)
+                    .section(section_sampler_id)
+                    .slider(0.0001f, 0.01f, 0.0001f),
+                plugin::float_value(setting_sampler_ray_width_key, "Ray Width", 1.5f, &Project::set_sampler_ray_width)
+                    .section(section_sampler_id)
+                    .slider(0.5f, 8.0f, 0.1f),
             },
         };
         return definition;
@@ -483,7 +560,7 @@ namespace ngp::project {
         }
 
         void publish_occupancy_grid_if_ready(Project::State& state) {
-            if (!state.debug.show_occupancy || state.ngp == nullptr || !state.density_volume.has_value()) {
+            if (!state.debug.show_volume || !state.debug.show_occupancy || state.ngp == nullptr || !state.density_volume.has_value()) {
                 state.occupancy_grid.reset();
                 return;
             }
@@ -525,6 +602,108 @@ namespace ngp::project {
             };
         }
 
+        void reset_sampler_visualization(Project::State& state, const bool release_buffers) noexcept {
+            state.sampler_point_cloud.reset();
+            state.sampler_ray_segments.reset();
+            state.exported_sampler_revision = 0u;
+            state.exported_sampler_point_count = 0u;
+            state.exported_sampler_ray_count = 0u;
+            if (release_buffers) {
+                state.sampler_points_buffer.reset();
+                state.sampler_segments_buffer.reset();
+            }
+        }
+
+        void publish_sampler_visualization_if_ready(Project::State& state) {
+            if (!state.debug.show_sampler || state.ngp == nullptr || (!state.debug.show_sampler_points && !state.debug.show_sampler_rays)) {
+                reset_sampler_visualization(state, true);
+                return;
+            }
+
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::SamplerBatchDeviceView view = inspector.sampler_batch_device_view();
+            if (!view.initialized) {
+                reset_sampler_visualization(state, true);
+                return;
+            }
+            if (view.compacted_sample_count == 0u || view.ray_count == 0u) throw std::runtime_error{"Sampler visualization last batch is empty."};
+            if (view.compacted_sample_count > std::numeric_limits<std::uint64_t>::max() / inspector::SamplerPointInstanceBytes) throw std::runtime_error{"Sampler point visualization byte size overflows uint64."};
+            if (view.ray_count > std::numeric_limits<std::uint64_t>::max() / inspector::SamplerSegmentInstanceBytes) throw std::runtime_error{"Sampler ray visualization byte size overflows uint64."};
+
+            const std::uint64_t point_byte_size = static_cast<std::uint64_t>(view.compacted_sample_count) * inspector::SamplerPointInstanceBytes;
+            const std::uint64_t segment_byte_size = static_cast<std::uint64_t>(view.ray_count) * inspector::SamplerSegmentInstanceBytes;
+            std::byte* point_instances = nullptr;
+            std::byte* segment_instances = nullptr;
+            std::uint64_t requested_point_bytes{};
+            std::uint64_t requested_segment_bytes{};
+            const bool needs_point_cloud = state.debug.show_sampler_points;
+
+            if (needs_point_cloud) {
+                state.sampler_points_buffer.ensure(state.host_services, plugin::GpuBufferKindPointCloud, point_byte_size, "instant-ngp sampler compacted samples", "sampler point cloud");
+                point_instances = state.sampler_points_buffer.mapped_as<std::byte>();
+                if (point_instances == nullptr) throw std::runtime_error{"Sampler point cloud external buffer was not mapped."};
+                requested_point_bytes = point_byte_size;
+            } else {
+                state.sampler_points_buffer.reset();
+                state.sampler_point_cloud.reset();
+            }
+
+            if (state.debug.show_sampler_rays) {
+                state.sampler_segments_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportSegmentSet, segment_byte_size, "instant-ngp sampler ray segments", "sampler ray segments");
+                segment_instances = state.sampler_segments_buffer.mapped_as<std::byte>();
+                if (segment_instances == nullptr) throw std::runtime_error{"Sampler ray segment external buffer was not mapped."};
+                requested_segment_bytes = segment_byte_size;
+            } else {
+                state.sampler_segments_buffer.reset();
+                state.sampler_ray_segments.reset();
+            }
+
+            const std::expected<inspector::SamplerVisualizationStats, std::string> stats = inspector.write_sampler_visualization(inspector::SamplerVisualizationRequest{
+                .point_instances = point_instances,
+                .point_byte_size = requested_point_bytes,
+                .segment_instances = segment_instances,
+                .segment_byte_size = requested_segment_bytes,
+                .point_radius = state.debug.sampler_point_radius,
+                .ray_width = state.debug.sampler_ray_width,
+                .width_mode = static_cast<std::uint32_t>(plugin::ViewportSegmentWidthMode::Screen),
+            });
+            if (!stats) throw std::runtime_error(stats.error());
+
+            state.exported_sampler_revision = stats->revision;
+            state.exported_sampler_point_count = needs_point_cloud ? stats->point_count : 0u;
+            state.exported_sampler_ray_count = state.debug.show_sampler_rays ? stats->ray_count : 0u;
+            if (needs_point_cloud) {
+                state.sampler_point_cloud = plugin::PointCloud{
+                    .name = sampler_point_cloud_name,
+                    .source_kind = plugin::PointCloudSourceKind::ExternalGpuBuffer,
+                    .point_count = stats->point_count,
+                    .buffer_id = state.sampler_points_buffer.resource_id(),
+                    .source_byte_size = stats->point_byte_size,
+                    .revision = stats->revision,
+                    .material_name = sampler_material_name,
+                    .transform = {},
+                    .bounds = plugin::Bounds{
+                        .minimum = {0.0f, 0.0f, 0.0f},
+                        .maximum = {1.0f, 1.0f, 1.0f},
+                    },
+                };
+            }
+            if (state.debug.show_sampler_rays) {
+                state.sampler_ray_segments = plugin::ViewportSegmentSet{
+                    .name = sampler_ray_segments_name,
+                    .owner = needs_point_cloud ? plugin::SceneEntityRef{.kind = plugin::SceneEntityKind::PointCloud, .name = sampler_point_cloud_name} : plugin::SceneEntityRef{.kind = plugin::SceneEntityKind::Camera, .name = state.overview_camera_name},
+                    .source_kind = plugin::ViewportSegmentSourceKind::ExternalGpuBuffer,
+                    .segment_count = stats->ray_count,
+                    .buffer_id = state.sampler_segments_buffer.resource_id(),
+                    .source_byte_size = stats->segment_byte_size,
+                    .revision = stats->revision,
+                    .width = state.debug.sampler_ray_width,
+                    .width_mode = plugin::ViewportSegmentWidthMode::Screen,
+                    .depth_mode = plugin::ViewportSegmentDepthMode::DepthTested,
+                };
+            }
+        }
+
         void create_trainer_if_needed(Project::State& state) {
             if (state.ngp != nullptr) return;
             std::visit([&](const auto& dataset) {
@@ -538,8 +717,11 @@ namespace ngp::project {
 
         void refresh_debug_attachments(Project::State& state) {
             publish_occupancy_grid_if_ready(state);
+            publish_sampler_visualization_if_ready(state);
             state.debug_attachments.viewport_voxel_grids.clear();
             if (state.occupancy_grid.has_value()) state.debug_attachments.viewport_voxel_grids.push_back(*state.occupancy_grid);
+            state.debug_attachments.viewport_segment_sets.clear();
+            if (state.sampler_ray_segments.has_value()) state.debug_attachments.viewport_segment_sets.push_back(*state.sampler_ray_segments);
         }
 
         void publish_density_grid_volume(Project::State& state) {
@@ -641,8 +823,6 @@ namespace ngp::project {
             state.exported_density_dimensions = view.dimensions;
             state.exported_density_optical_thickness_step = view.optical_thickness_step;
             state.exported_volume_density_scale = volume_density_scale;
-            refresh_debug_attachments(state);
-            ++state.scene_revision;
         }
 
         void set_project_error(Project::State& state, std::string message) {
@@ -785,6 +965,7 @@ namespace ngp::project {
         }, created->dataset);
 
         publish_density_grid_volume(*created);
+        refresh_debug_attachments(*created);
         created->training_active = true;
         return Project{std::move(created)};
     }
@@ -818,16 +999,12 @@ namespace ngp::project {
             }
             state.latest_stats = *stats;
             const bool reached_target = stats->step >= state.training.target_steps;
+            const VisualizationSnapshot previous_visualization = visualization_snapshot(state);
             const inspector::Inspector inspector{*state.ngp};
             const inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
-            if (density_view.initialized && density_view.revision != state.exported_density_revision) {
-                publish_density_grid_volume(state);
-            } else {
-                const std::uint64_t previous_occupancy_revision = state.exported_occupancy_revision;
-                const bool previous_occupancy_visible = state.occupancy_grid.has_value();
-                refresh_debug_attachments(state);
-                if (previous_occupancy_revision != state.exported_occupancy_revision || previous_occupancy_visible != state.occupancy_grid.has_value()) ++state.scene_revision;
-            }
+            if (state.debug.show_volume && density_view.initialized && density_view.revision != state.exported_density_revision) publish_density_grid_volume(state);
+            refresh_debug_attachments(state);
+            if (!(previous_visualization == visualization_snapshot(state))) ++state.scene_revision;
             if (reached_target) {
                 state.training_active = false;
                 state.training_complete = true;
@@ -877,6 +1054,22 @@ namespace ngp::project {
         state.project_error.clear();
     }
 
+    void Project::set_show_volume(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.debug.show_volume != value;
+        state.debug.show_volume = value;
+        if (!changed) return;
+        if (state.debug.show_volume && state.ngp != nullptr) {
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
+            if (density_view.initialized && density_view.revision != state.exported_density_revision) publish_density_grid_volume(state);
+        }
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
     void Project::set_show_occupancy(const bool value) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
@@ -917,6 +1110,76 @@ namespace ngp::project {
         state.project_error.clear();
     }
 
+    void Project::set_show_sampler(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.debug.show_sampler != value;
+        state.debug.show_sampler = value;
+        if (!state.debug.show_sampler) reset_sampler_visualization(state, true);
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    void Project::set_show_sampler_points(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.debug.show_sampler_points != value;
+        state.debug.show_sampler_points = value;
+        if (!state.debug.show_sampler_points) {
+            state.sampler_points_buffer.reset();
+            state.sampler_point_cloud.reset();
+            state.exported_sampler_revision = 0u;
+        }
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    void Project::set_show_sampler_rays(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.debug.show_sampler_rays != value;
+        state.debug.show_sampler_rays = value;
+        if (!state.debug.show_sampler_rays) {
+            state.sampler_segments_buffer.reset();
+            state.sampler_ray_segments.reset();
+            state.exported_sampler_revision = 0u;
+        }
+        if (!changed) return;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    void Project::set_sampler_point_radius(const float value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        if (!std::isfinite(value) || value <= 0.0f) throw std::runtime_error("sampler_point_radius must be finite and positive");
+        State& state = *this->state;
+        const bool changed = state.debug.sampler_point_radius != value;
+        state.debug.sampler_point_radius = value;
+        if (!changed) return;
+        state.exported_sampler_revision = 0u;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
+    void Project::set_sampler_ray_width(const float value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        if (!std::isfinite(value) || value <= 0.0f) throw std::runtime_error("sampler_ray_width must be finite and positive");
+        State& state = *this->state;
+        const bool changed = state.debug.sampler_ray_width != value;
+        state.debug.sampler_ray_width = value;
+        if (!changed) return;
+        state.exported_sampler_revision = 0u;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
+        state.project_error.clear();
+    }
+
     std::uint64_t Project::revision() const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         return this->state->scene_revision;
@@ -946,7 +1209,8 @@ namespace ngp::project {
         controls.metric("step", "Step", current_training_step(state)).section(section_training_id).display_primary().color({0.55f, 0.85f, 1.0f, 1.0f});
         controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id);
         controls.metric("steps_per_update", "Steps/Update", state.training.steps_per_update).section(section_training_id);
-        controls.metric("density_visible", "Density", state.density_volume.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
+        const bool volume_visible = density_volume_visible(state);
+        controls.metric("density_visible", "Density", volume_visible ? "visible" : "hidden").section(section_field_id);
         controls.metric("density_grid_revision", "Density Rev", state.exported_density_revision).section(section_diagnostics_id);
         controls.metric("color_grid_revision", "Color Rev", state.exported_color_revision).section(section_diagnostics_id);
         controls.metric("density_grid_encoding", "Density Grid Encoding", state.density_volume.has_value() ? "Morton3D Float32" : "None").section(section_diagnostics_id);
@@ -954,7 +1218,12 @@ namespace ngp::project {
         if (state.density_volume.has_value()) controls.metric("density_grid_dimensions", "Density Grid Dimensions", std::format("{}x{}x{}", state.exported_density_dimensions[0], state.exported_density_dimensions[1], state.exported_density_dimensions[2])).section(section_diagnostics_id);
         if (state.exported_density_optical_thickness_step > 0.0f) controls.metric("optical_thickness_step", "Optical Thickness Step", std::format("{:.8g}", state.exported_density_optical_thickness_step)).section(section_diagnostics_id);
         if (state.exported_volume_density_scale > 0.0f) controls.metric("volume_density_scale", "Volume Density Scale", std::format("{:.8g}", state.exported_volume_density_scale)).section(section_diagnostics_id);
-        controls.metric("occupancy_visible", "Occupancy", state.occupancy_grid.has_value() ? "visible" : "hidden").section(section_diagnostics_id);
+        controls.metric("occupancy_visible", "Occupancy", volume_visible && state.occupancy_grid.has_value() ? "visible" : "hidden").section(section_field_id);
+        controls.metric("sampler_points_visible", "Points", state.debug.show_sampler_points && state.sampler_point_cloud.has_value() ? "visible" : "hidden").section(section_sampler_id);
+        controls.metric("sampler_rays_visible", "Rays", state.sampler_ray_segments.has_value() ? "visible" : "hidden").section(section_sampler_id);
+        controls.metric("sampler_revision", "Sampler Rev", state.exported_sampler_revision).section(section_sampler_id);
+        controls.metric("sampler_point_count", "Sampler Points", state.exported_sampler_point_count).section(section_sampler_id);
+        controls.metric("sampler_ray_count", "Sampler Rays", state.exported_sampler_ray_count).section(section_sampler_id);
         if (state.latest_stats.has_value()) {
             controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).display_primary().color({1.0f, 0.38f, 0.25f, 1.0f});
             controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).display_primary().color({0.25f, 0.75f, 1.0f, 1.0f});
@@ -980,6 +1249,21 @@ namespace ngp::project {
 
     void Project::write_scene(plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
+        const bool volume_visible = density_volume_visible(*this->state);
+        std::vector<plugin::Material> materials = volume_visible ? this->state->materials : std::vector<plugin::Material>{};
+        std::vector<plugin::PointCloud> point_clouds{};
+        if (this->state->debug.show_sampler_points && this->state->sampler_point_cloud.has_value()) {
+            materials.push_back(plugin::Material{
+                .name = sampler_material_name,
+                .model = "point_sprite",
+                .alpha_mode = "blend",
+                .base_color = {1.0f, 0.58f, 0.16f, 1.0f},
+                .roughness = 0.2f,
+            });
+            point_clouds.push_back(*this->state->sampler_point_cloud);
+        }
+        plugin::DebugAttachmentSet debug_attachments = this->state->debug_attachments;
+        if (!volume_visible) debug_attachments.viewport_voxel_grids.clear();
         scene.set_document(plugin::Document{
             .timeline = plugin::TimelineDescriptor{
                 .kind = plugin::TimelineKind::Live,
@@ -987,15 +1271,16 @@ namespace ngp::project {
             },
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
-            .materials = this->state->materials,
-            .lights = this->state->lights,
-            .volumes = this->state->density_volume.has_value() ? std::vector<plugin::VolumeGrid>{*this->state->density_volume} : std::vector<plugin::VolumeGrid>{},
-            .debug_attachments = this->state->debug_attachments,
+            .materials = std::move(materials),
+            .lights = volume_visible ? this->state->lights : std::vector<plugin::Light>{},
+            .point_clouds = std::move(point_clouds),
+            .volumes = volume_visible ? std::vector<plugin::VolumeGrid>{*this->state->density_volume} : std::vector<plugin::VolumeGrid>{},
+            .debug_attachments = std::move(debug_attachments),
         });
     }
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v13(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v14(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

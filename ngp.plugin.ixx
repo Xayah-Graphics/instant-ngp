@@ -139,8 +139,10 @@ export namespace ngp::plugin {
         std::uint32_t device_node_mask{};
     };
 
-    inline constexpr std::uint32_t GpuBufferKindVolumeChannel     = 0u;
-    inline constexpr std::uint32_t GpuBufferKindViewportVoxelGrid = 1u;
+    inline constexpr std::uint32_t GpuBufferKindVolumeChannel      = 0u;
+    inline constexpr std::uint32_t GpuBufferKindViewportVoxelGrid  = 1u;
+    inline constexpr std::uint32_t GpuBufferKindPointCloud         = 2u;
+    inline constexpr std::uint32_t GpuBufferKindViewportSegmentSet = 3u;
 
     struct GpuBufferAllocation {
         std::uint64_t resource_id{};
@@ -202,6 +204,11 @@ export namespace ngp::plugin {
         std::array<float, 3u> position{};
         std::array<float, 4u> rotation{0.0f, 0.0f, 0.0f, 1.0f};
         std::array<float, 3u> scale{1.0f, 1.0f, 1.0f};
+    };
+
+    struct Bounds {
+        std::array<float, 3u> minimum{};
+        std::array<float, 3u> maximum{};
     };
 
     enum class SceneEntityKind : std::uint32_t {
@@ -268,6 +275,31 @@ export namespace ngp::plugin {
         float intensity{1.0f};
     };
 
+    enum class PointCloudSourceKind : std::uint32_t {
+        Values            = 0u,
+        ExternalGpuBuffer = 1u,
+    };
+
+    struct Point {
+        std::array<float, 3u> position{};
+        std::array<float, 3u> normal{0.0f, 0.0f, 1.0f};
+        std::array<float, 4u> color{1.0f, 1.0f, 1.0f, 1.0f};
+        float radius{0.01f};
+    };
+
+    struct PointCloud {
+        std::string name{};
+        std::vector<Point> points{};
+        PointCloudSourceKind source_kind{PointCloudSourceKind::Values};
+        std::uint64_t point_count{};
+        std::uint64_t buffer_id{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
+        std::string material_name{};
+        Transform transform{};
+        std::optional<Bounds> bounds{};
+    };
+
     enum class VolumeChannelSourceKind : std::uint32_t {
         Values            = 0u,
         ExternalGpuBuffer = 1u,
@@ -330,8 +362,50 @@ export namespace ngp::plugin {
         std::uint64_t revision{};
     };
 
+    enum class ViewportSegmentSourceKind : std::uint32_t {
+        Values            = 0u,
+        ExternalGpuBuffer = 1u,
+    };
+
+    enum class ViewportSegmentWidthMode : std::uint32_t {
+        Screen = 0u,
+        World  = 1u,
+    };
+
+    enum class ViewportSegmentDepthMode : std::uint32_t {
+        DepthTested = 0u,
+        Overlay     = 1u,
+    };
+
+    struct ViewportSegment {
+        std::array<float, 3u> start{};
+        std::array<float, 3u> end{};
+    };
+
+    struct Color {
+        std::array<float, 4u> value{};
+    };
+
+    struct ViewportSegmentSet {
+        std::string name{};
+        SceneEntityRef owner{};
+        std::vector<ViewportSegment> segments{};
+        std::vector<Color> colors{};
+        std::vector<float> widths{};
+        ViewportSegmentSourceKind source_kind{ViewportSegmentSourceKind::Values};
+        std::uint64_t segment_count{};
+        std::uint64_t buffer_id{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
+        float width{1.0f};
+        ViewportSegmentWidthMode width_mode{ViewportSegmentWidthMode::Screen};
+        ViewportSegmentDepthMode depth_mode{ViewportSegmentDepthMode::DepthTested};
+        Transform transform{};
+    };
+
     struct DebugAttachmentSet {
         std::vector<ViewportVoxelGrid> viewport_voxel_grids{};
+        std::vector<ViewportSegmentSet> viewport_segment_sets{};
     };
 
     enum class TimelineKind : std::uint32_t {
@@ -352,6 +426,7 @@ export namespace ngp::plugin {
         std::vector<Camera> cameras{};
         std::vector<Material> materials{};
         std::vector<Light> lights{};
+        std::vector<PointCloud> point_clouds{};
         std::vector<VolumeGrid> volumes{};
         DebugAttachmentSet debug_attachments{};
     };
@@ -710,14 +785,16 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 13u;
+    constexpr std::uint32_t plugin_abi_version = 14u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
     constexpr std::uint32_t SPECTRA_SCENE_RESULT_OK                      = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_RESULT_ERROR                   = 1u;
-    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL      = 0u;
-    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID = 1u;
+    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL       = 0u;
+    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID  = 1u;
+    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_POINT_CLOUD          = 2u;
+    constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_SEGMENT_SET = 3u;
     constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_STATIC                = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_LIVE                  = 1u;
     constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_INDEXED               = 2u;
@@ -1003,8 +1080,16 @@ namespace ngp::plugin {
     struct SpectraScenePointCloud {
         const char* name{};
         SpectraScenePointSpan points{};
+        std::uint32_t source_kind{};
+        std::uint64_t point_count{};
+        std::uint64_t buffer_id{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
         const char* material_name{};
         SpectraSceneTransform transform{};
+        float bounds_min[3]{};
+        float bounds_max[3]{};
+        std::uint32_t bounds_valid{};
     };
 
     struct SpectraScenePointCloudSpan {
@@ -1079,6 +1164,11 @@ namespace ngp::plugin {
         SpectraSceneViewportSegmentSpan segments{};
         SpectraSceneColorSpan colors{};
         SpectraSceneFloatSpan widths{};
+        std::uint32_t source_kind{};
+        std::uint64_t segment_count{};
+        std::uint64_t buffer_id{};
+        std::uint64_t source_byte_size{};
+        std::uint64_t revision{};
         float width{};
         std::uint32_t width_mode{};
         std::uint32_t depth_mode{};
@@ -1200,9 +1290,15 @@ namespace ngp::plugin {
             Document document{};
             std::vector<SpectraSceneMaterial> material_views{};
             std::vector<SpectraSceneLight> light_views{};
+            std::vector<std::vector<SpectraScenePoint>> point_storage{};
+            std::vector<SpectraScenePointCloud> point_cloud_views{};
             std::vector<std::vector<SpectraSceneVolumeChannel>> volume_channel_storage{};
             std::vector<SpectraSceneVolume> volume_views{};
             std::vector<SpectraSceneCamera> camera_views{};
+            std::vector<std::vector<SpectraSceneViewportSegment>> segment_storage{};
+            std::vector<std::vector<SpectraSceneColor>> segment_color_storage{};
+            std::vector<std::vector<float>> segment_width_storage{};
+            std::vector<SpectraSceneViewportSegmentSet> segment_set_views{};
             std::vector<SpectraSceneViewportVoxelGrid> voxel_grid_views{};
         };
 
@@ -1380,6 +1476,44 @@ namespace ngp::plugin {
             return view;
         }
 
+        void make_point_cloud_abi_views(SceneAbiStorage& cache, const std::vector<PointCloud>& point_clouds) {
+            cache.point_storage.clear();
+            cache.point_cloud_views.clear();
+            cache.point_storage.resize(point_clouds.size());
+            cache.point_cloud_views.reserve(point_clouds.size());
+            for (std::size_t cloud_index = 0u; cloud_index < point_clouds.size(); ++cloud_index) {
+                const PointCloud& point_cloud = point_clouds[cloud_index];
+                cache.point_storage[cloud_index].reserve(point_cloud.points.size());
+                for (const Point& point : point_cloud.points) {
+                    SpectraScenePoint point_view{
+                        .radius = point.radius,
+                    };
+                    copy_array(point_view.position, point.position);
+                    copy_array(point_view.normal, point.normal);
+                    copy_array(point_view.color, point.color);
+                    cache.point_storage[cloud_index].push_back(point_view);
+                }
+                cache.point_cloud_views.push_back(SpectraScenePointCloud{
+                    .name             = point_cloud.name.c_str(),
+                    .points           = SpectraScenePointSpan{.data = cache.point_storage[cloud_index].empty() ? nullptr : cache.point_storage[cloud_index].data(), .count = static_cast<std::uint64_t>(cache.point_storage[cloud_index].size())},
+                    .source_kind      = static_cast<std::uint32_t>(point_cloud.source_kind),
+                    .point_count      = point_cloud.point_count,
+                    .buffer_id        = point_cloud.buffer_id,
+                    .source_byte_size = point_cloud.source_byte_size,
+                    .revision         = point_cloud.revision,
+                    .material_name    = point_cloud.material_name.c_str(),
+                    .transform        = make_transform_view(point_cloud.transform),
+                    .bounds_min       = {},
+                    .bounds_max       = {},
+                    .bounds_valid     = point_cloud.bounds.has_value() ? 1u : 0u,
+                });
+                if (point_cloud.bounds.has_value()) {
+                    copy_array(cache.point_cloud_views.back().bounds_min, point_cloud.bounds->minimum);
+                    copy_array(cache.point_cloud_views.back().bounds_max, point_cloud.bounds->maximum);
+                }
+            }
+        }
+
         void make_volume_abi_views(SceneAbiStorage& cache, const std::vector<VolumeGrid>& volumes) {
             cache.volume_channel_storage.clear();
             cache.volume_views.clear();
@@ -1472,6 +1606,50 @@ namespace ngp::plugin {
             return view;
         }
 
+        void make_viewport_segment_abi_views(SceneAbiStorage& cache, const std::vector<ViewportSegmentSet>& segment_sets) {
+            cache.segment_storage.clear();
+            cache.segment_color_storage.clear();
+            cache.segment_width_storage.clear();
+            cache.segment_set_views.clear();
+            cache.segment_storage.resize(segment_sets.size());
+            cache.segment_color_storage.resize(segment_sets.size());
+            cache.segment_width_storage.resize(segment_sets.size());
+            cache.segment_set_views.reserve(segment_sets.size());
+            for (std::size_t set_index = 0u; set_index < segment_sets.size(); ++set_index) {
+                const ViewportSegmentSet& segment_set = segment_sets[set_index];
+                cache.segment_storage[set_index].reserve(segment_set.segments.size());
+                for (const ViewportSegment& segment : segment_set.segments) {
+                    SpectraSceneViewportSegment segment_view{};
+                    copy_array(segment_view.start, segment.start);
+                    copy_array(segment_view.end, segment.end);
+                    cache.segment_storage[set_index].push_back(segment_view);
+                }
+                cache.segment_color_storage[set_index].reserve(segment_set.colors.size());
+                for (const Color& color : segment_set.colors) {
+                    SpectraSceneColor color_view{};
+                    copy_array(color_view.value, color.value);
+                    cache.segment_color_storage[set_index].push_back(color_view);
+                }
+                cache.segment_width_storage[set_index] = segment_set.widths;
+                cache.segment_set_views.push_back(SpectraSceneViewportSegmentSet{
+                    .name             = segment_set.name.c_str(),
+                    .owner            = make_entity_ref_view(segment_set.owner),
+                    .segments         = SpectraSceneViewportSegmentSpan{.data = cache.segment_storage[set_index].empty() ? nullptr : cache.segment_storage[set_index].data(), .count = static_cast<std::uint64_t>(cache.segment_storage[set_index].size())},
+                    .colors           = SpectraSceneColorSpan{.data = cache.segment_color_storage[set_index].empty() ? nullptr : cache.segment_color_storage[set_index].data(), .count = static_cast<std::uint64_t>(cache.segment_color_storage[set_index].size())},
+                    .widths           = SpectraSceneFloatSpan{.data = cache.segment_width_storage[set_index].empty() ? nullptr : cache.segment_width_storage[set_index].data(), .count = static_cast<std::uint64_t>(cache.segment_width_storage[set_index].size())},
+                    .source_kind      = static_cast<std::uint32_t>(segment_set.source_kind),
+                    .segment_count    = segment_set.segment_count,
+                    .buffer_id        = segment_set.buffer_id,
+                    .source_byte_size = segment_set.source_byte_size,
+                    .revision         = segment_set.revision,
+                    .width            = segment_set.width,
+                    .width_mode       = static_cast<std::uint32_t>(segment_set.width_mode),
+                    .depth_mode       = static_cast<std::uint32_t>(segment_set.depth_mode),
+                    .transform        = make_transform_view(segment_set.transform),
+                });
+            }
+        }
+
         [[nodiscard]] SpectraSceneTimeline make_timeline_view(const TimelineDescriptor& timeline) {
             switch (timeline.kind) {
             case TimelineKind::Static:
@@ -1503,10 +1681,12 @@ namespace ngp::plugin {
             cache.light_views.clear();
             cache.light_views.reserve(cache.document.lights.size());
             for (const Light& light : cache.document.lights) cache.light_views.push_back(make_light_view(light));
+            make_point_cloud_abi_views(cache, cache.document.point_clouds);
             make_volume_abi_views(cache, cache.document.volumes);
             cache.camera_views.clear();
             cache.camera_views.reserve(cache.document.cameras.size());
             for (const Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
+            make_viewport_segment_abi_views(cache, cache.document.debug_attachments.viewport_segment_sets);
             cache.voxel_grid_views.clear();
             cache.voxel_grid_views.reserve(cache.document.debug_attachments.viewport_voxel_grids.size());
             for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
@@ -1519,7 +1699,9 @@ namespace ngp::plugin {
                         .materials               = SpectraSceneMaterialSpan{.data = cache.material_views.empty() ? nullptr : cache.material_views.data(), .count = static_cast<std::uint64_t>(cache.material_views.size())},
                         .lights                  = SpectraSceneLightSpan{.data = cache.light_views.empty() ? nullptr : cache.light_views.data(), .count = static_cast<std::uint64_t>(cache.light_views.size())},
                         .cameras                 = SpectraSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
+                        .point_clouds            = SpectraScenePointCloudSpan{.data = cache.point_cloud_views.empty() ? nullptr : cache.point_cloud_views.data(), .count = static_cast<std::uint64_t>(cache.point_cloud_views.size())},
                         .volumes                 = SpectraSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
+                        .viewport_segment_sets   = SpectraSceneViewportSegmentSetSpan{.data = cache.segment_set_views.empty() ? nullptr : cache.segment_set_views.data(), .count = static_cast<std::uint64_t>(cache.segment_set_views.size())},
                         .viewport_voxel_grids    = SpectraSceneViewportVoxelGridSpan{.data = cache.voxel_grid_views.empty() ? nullptr : cache.voxel_grid_views.data(), .count = static_cast<std::uint64_t>(cache.voxel_grid_views.size())},
                     },
             };
@@ -1591,6 +1773,8 @@ namespace ngp::plugin {
                     switch (kind) {
                     case GpuBufferKindVolumeChannel: abi_kind = SPECTRA_SCENE_GPU_BUFFER_VOLUME_CHANNEL; break;
                     case GpuBufferKindViewportVoxelGrid: abi_kind = SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_VOXEL_GRID; break;
+                    case GpuBufferKindPointCloud: abi_kind = SPECTRA_SCENE_GPU_BUFFER_POINT_CLOUD; break;
+                    case GpuBufferKindViewportSegmentSet: abi_kind = SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_SEGMENT_SET; break;
                     default: throw std::runtime_error(std::format("unknown scene plugin GPU buffer kind {}", kind));
                     }
                     const SpectraSceneGpuBufferRequest request{

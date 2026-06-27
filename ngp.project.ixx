@@ -25,9 +25,15 @@ export namespace ngp::project {
 
         void render_preview(plugin::ActionContext context);
 
+        void set_show_volume(bool value);
         void set_show_occupancy(bool value);
         void set_occupancy_alpha(float value);
         void set_occupancy_cell_scale(float value);
+        void set_show_sampler(bool value);
+        void set_show_sampler_points(bool value);
+        void set_show_sampler_rays(bool value);
+        void set_sampler_point_radius(float value);
+        void set_sampler_ray_width(float value);
 
     private:
         explicit Project(std::unique_ptr<State> state);
