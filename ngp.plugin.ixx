@@ -194,10 +194,16 @@ export namespace ngp::plugin {
 
     struct UpdateInfo {
         double wall_delta_seconds{};
-        double scene_delta_seconds{};
+        double update_delta_seconds{};
+        double timeline_time_seconds{};
+        std::uint64_t timeline_frame_index{};
+        bool update_running{};
+    };
+
+    struct FrameInfo {
+        double delta_seconds{};
         double time_seconds{};
         std::uint64_t frame_index{};
-        bool timeline_playing{};
     };
 
     struct Transform {
@@ -410,19 +416,24 @@ export namespace ngp::plugin {
 
     enum class TimelineKind : std::uint32_t {
         Static  = 0u,
-        Live    = 1u,
-        Indexed = 2u,
+        Indexed = 1u,
     };
 
     struct TimelineDescriptor {
         TimelineKind kind{TimelineKind::Static};
         double frame_rate{};
         std::uint64_t frame_count{};
-        bool initial_playing{true};
+    };
+
+    struct UpdateDescriptor {
+        bool enabled{};
+        bool initial_running{};
+        double step_delta_seconds{1.0 / 60.0};
     };
 
     struct Document {
         TimelineDescriptor timeline{};
+        UpdateDescriptor update{};
         std::string active_camera_name{};
         std::vector<Camera> cameras{};
         std::vector<Material> materials{};
@@ -740,7 +751,8 @@ export namespace ngp::plugin {
         std::function<void(void*)> destroy{};
         std::function<void(void*, const UpdateInfo&)> update{};
         std::function<std::uint64_t(void*)> revision{};
-        std::function<void(void*, SceneBuilder&)> write_scene{};
+        std::function<void(void*, SceneBuilder&)> write_document{};
+        std::function<void(void*, SceneBuilder&, const FrameInfo&)> write_frame{};
         std::function<void(void*, ControlBuilder&)> write_controls{};
     };
 
@@ -756,7 +768,8 @@ export namespace ngp::plugin {
             .destroy                 = [](void* project) { delete static_cast<Project*>(project); },
             .update                  = [](void* project, const UpdateInfo& update) { static_cast<Project*>(project)->update(update); },
             .revision                = [](void* project) -> std::uint64_t { return static_cast<Project*>(project)->revision(); },
-            .write_scene             = [](void* project, SceneBuilder& scene) { static_cast<Project*>(project)->write_scene(scene); },
+            .write_document          = [](void* project, SceneBuilder& scene) { static_cast<Project*>(project)->write_document(scene); },
+            .write_frame             = [](void* project, SceneBuilder& scene, const FrameInfo& frame) { static_cast<Project*>(project)->write_frame(scene, frame); },
             .write_controls          = [](void* project, ControlBuilder& controls) { static_cast<Project*>(project)->write_controls(controls); },
         };
         erased.actions.reserve(definition.actions.size());
@@ -786,7 +799,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 14u;
+    constexpr std::uint32_t plugin_abi_version = 16u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -797,8 +810,7 @@ namespace ngp::plugin {
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_POINT_CLOUD          = 2u;
     constexpr std::uint32_t SPECTRA_SCENE_GPU_BUFFER_VIEWPORT_SEGMENT_SET = 3u;
     constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_STATIC                = 0u;
-    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_LIVE                  = 1u;
-    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_INDEXED               = 2u;
+    constexpr std::uint32_t SPECTRA_SCENE_TIMELINE_INDEXED               = 1u;
     constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_DEFAULT    = 0u;
     constexpr std::uint32_t SPECTRA_SCENE_OPTION_PRESENTATION_SLIDER     = 1u;
 
@@ -904,10 +916,10 @@ namespace ngp::plugin {
     struct SpectraSceneUpdateInfo {
         std::uint64_t struct_size{};
         double wall_delta_seconds{};
-        double scene_delta_seconds{};
-        double time_seconds{};
-        std::uint64_t frame_index{};
-        std::uint32_t timeline_playing{};
+        double update_delta_seconds{};
+        double timeline_time_seconds{};
+        std::uint64_t timeline_frame_index{};
+        std::uint32_t update_running{};
     };
 
     struct SpectraSceneGpuDeviceIdentity {
@@ -1219,12 +1231,18 @@ namespace ngp::plugin {
         std::uint32_t kind{};
         double frame_rate{};
         std::uint64_t frame_count{};
-        std::uint32_t initial_playing{};
+    };
+
+    struct SpectraSceneUpdateDescriptor {
+        std::uint32_t enabled{};
+        std::uint32_t initial_running{};
+        double step_delta_seconds{};
     };
 
     struct SpectraSceneDocumentView {
         std::uint64_t struct_size{};
         SpectraSceneTimeline timeline{};
+        SpectraSceneUpdateDescriptor update{};
         const char* active_camera_name{};
         SpectraSceneItems items{};
     };
@@ -1659,24 +1677,23 @@ namespace ngp::plugin {
                     .kind = SPECTRA_SCENE_TIMELINE_STATIC,
                     .frame_rate = timeline.frame_rate,
                     .frame_count = timeline.frame_count,
-                    .initial_playing = timeline.initial_playing ? 1u : 0u,
-                };
-            case TimelineKind::Live:
-                return SpectraSceneTimeline{
-                    .kind = SPECTRA_SCENE_TIMELINE_LIVE,
-                    .frame_rate = timeline.frame_rate,
-                    .frame_count = timeline.frame_count,
-                    .initial_playing = timeline.initial_playing ? 1u : 0u,
                 };
             case TimelineKind::Indexed:
                 return SpectraSceneTimeline{
                     .kind = SPECTRA_SCENE_TIMELINE_INDEXED,
                     .frame_rate = timeline.frame_rate,
                     .frame_count = timeline.frame_count,
-                    .initial_playing = timeline.initial_playing ? 1u : 0u,
                 };
             }
             throw std::runtime_error("plugin timeline kind is invalid");
+        }
+
+        [[nodiscard]] SpectraSceneUpdateDescriptor make_update_view(const UpdateDescriptor& update) {
+            return SpectraSceneUpdateDescriptor{
+                .enabled = update.enabled ? 1u : 0u,
+                .initial_running = update.initial_running ? 1u : 0u,
+                .step_delta_seconds = update.step_delta_seconds,
+            };
         }
 
         [[nodiscard]] SpectraSceneDocumentView make_document_abi_view(SceneAbiStorage& cache) {
@@ -1698,11 +1715,35 @@ namespace ngp::plugin {
             return SpectraSceneDocumentView{
                 .struct_size               = sizeof(SpectraSceneDocumentView),
                 .timeline                  = make_timeline_view(cache.document.timeline),
+                .update                    = make_update_view(cache.document.update),
                 .active_camera_name        = cache.document.active_camera_name.c_str(),
                 .items =
                     SpectraSceneItems{
                         .materials               = SpectraSceneMaterialSpan{.data = cache.material_views.empty() ? nullptr : cache.material_views.data(), .count = static_cast<std::uint64_t>(cache.material_views.size())},
                         .lights                  = SpectraSceneLightSpan{.data = cache.light_views.empty() ? nullptr : cache.light_views.data(), .count = static_cast<std::uint64_t>(cache.light_views.size())},
+                        .cameras                 = SpectraSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
+                        .point_clouds            = SpectraScenePointCloudSpan{.data = cache.point_cloud_views.empty() ? nullptr : cache.point_cloud_views.data(), .count = static_cast<std::uint64_t>(cache.point_cloud_views.size())},
+                        .volumes                 = SpectraSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
+                        .viewport_segment_sets   = SpectraSceneViewportSegmentSetSpan{.data = cache.segment_set_views.empty() ? nullptr : cache.segment_set_views.data(), .count = static_cast<std::uint64_t>(cache.segment_set_views.size())},
+                        .viewport_voxel_grids    = SpectraSceneViewportVoxelGridSpan{.data = cache.voxel_grid_views.empty() ? nullptr : cache.voxel_grid_views.data(), .count = static_cast<std::uint64_t>(cache.voxel_grid_views.size())},
+                    },
+            };
+        }
+
+        [[nodiscard]] SpectraSceneFrameView make_frame_abi_view(SceneAbiStorage& cache) {
+            make_point_cloud_abi_views(cache, cache.document.point_clouds);
+            make_volume_abi_views(cache, cache.document.volumes);
+            cache.camera_views.clear();
+            cache.camera_views.reserve(cache.document.cameras.size());
+            for (const Camera& camera : cache.document.cameras) cache.camera_views.push_back(make_camera_view(camera));
+            make_viewport_segment_abi_views(cache, cache.document.debug_attachments.viewport_segment_sets);
+            cache.voxel_grid_views.clear();
+            cache.voxel_grid_views.reserve(cache.document.debug_attachments.viewport_voxel_grids.size());
+            for (const ViewportVoxelGrid& grid : cache.document.debug_attachments.viewport_voxel_grids) cache.voxel_grid_views.push_back(make_voxel_grid_view(grid));
+            return SpectraSceneFrameView{
+                .struct_size = sizeof(SpectraSceneFrameView),
+                .items =
+                    SpectraSceneItems{
                         .cameras                 = SpectraSceneCameraSpan{.data = cache.camera_views.empty() ? nullptr : cache.camera_views.data(), .count = static_cast<std::uint64_t>(cache.camera_views.size())},
                         .point_clouds            = SpectraScenePointCloudSpan{.data = cache.point_cloud_views.empty() ? nullptr : cache.point_cloud_views.data(), .count = static_cast<std::uint64_t>(cache.point_cloud_views.size())},
                         .volumes                 = SpectraSceneVolumeSpan{.data = cache.volume_views.empty() ? nullptr : cache.volume_views.data(), .count = static_cast<std::uint64_t>(cache.volume_views.size())},
@@ -1830,7 +1871,7 @@ namespace ngp::plugin {
                 if (document == nullptr) throw std::runtime_error("document output pointer is null");
                 plugin_instance.last_error.clear();
                 SceneBuilder builder{};
-                plugin_instance.definition->write_scene(plugin_instance.project, builder);
+                plugin_instance.definition->write_document(plugin_instance.project, builder);
                 plugin_instance.scene_abi.document = builder.document();
                 *document                          = make_document_abi_view(plugin_instance.scene_abi);
                 return SPECTRA_SCENE_RESULT_OK;
@@ -1846,12 +1887,12 @@ namespace ngp::plugin {
         [[nodiscard]] SpectraSceneResult scene_frame(SpectraSceneInstance* instance, const SpectraSceneFrameInfo frame, SpectraSceneFrameView* snapshot) noexcept {
             try {
                 PluginInstance& plugin_instance = checked_instance(instance, "frame");
-                static_cast<void>(frame);
                 if (snapshot == nullptr) throw std::runtime_error("frame output pointer is null");
                 plugin_instance.last_error.clear();
-                *snapshot = SpectraSceneFrameView{
-                    .struct_size = sizeof(SpectraSceneFrameView),
-                };
+                SceneBuilder builder{};
+                plugin_instance.definition->write_frame(plugin_instance.project, builder, FrameInfo{.delta_seconds = frame.delta_seconds, .time_seconds = frame.time_seconds, .frame_index = frame.frame_index});
+                plugin_instance.scene_abi.document = builder.document();
+                *snapshot = make_frame_abi_view(plugin_instance.scene_abi);
                 return SPECTRA_SCENE_RESULT_OK;
             } catch (const std::exception& error) {
                 if (instance != nullptr)
@@ -1874,11 +1915,11 @@ namespace ngp::plugin {
                 if (update_info->struct_size != sizeof(SpectraSceneUpdateInfo)) throw std::runtime_error("scene_update info ABI size mismatch");
                 plugin_instance.last_error.clear();
                 plugin_instance.definition->update(plugin_instance.project, UpdateInfo{
-                                                                                .wall_delta_seconds  = update_info->wall_delta_seconds,
-                                                                                .scene_delta_seconds = update_info->scene_delta_seconds,
-                                                                                .time_seconds        = update_info->time_seconds,
-                                                                                .frame_index         = update_info->frame_index,
-                                                                                .timeline_playing    = update_info->timeline_playing != 0u,
+                                                                                .wall_delta_seconds    = update_info->wall_delta_seconds,
+                                                                                .update_delta_seconds  = update_info->update_delta_seconds,
+                                                                                .timeline_time_seconds = update_info->timeline_time_seconds,
+                                                                                .timeline_frame_index  = update_info->timeline_frame_index,
+                                                                                .update_running        = update_info->update_running != 0u,
                                                                             });
                 return SPECTRA_SCENE_RESULT_OK;
             } catch (const std::exception& error) {

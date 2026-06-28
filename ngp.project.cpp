@@ -300,7 +300,7 @@ namespace ngp::project {
         std::vector<plugin::Light> lights{};
         std::optional<plugin::VolumeGrid> density_volume{};
         plugin::DebugAttachmentSet debug_attachments{};
-        bool host_timeline_playing{};
+        bool host_update_running{};
         std::string project_error{};
         std::uint64_t scene_revision{1u};
         std::vector<plugin::Camera> cameras{};
@@ -993,10 +993,11 @@ namespace ngp::project {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
         if (!std::isfinite(update.wall_delta_seconds) || update.wall_delta_seconds < 0.0f) throw std::runtime_error("project update wall delta time is invalid");
-        if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
-        if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
-        state.host_timeline_playing = update.timeline_playing;
-        if (update.scene_delta_seconds == 0.0) return;
+        if (!std::isfinite(update.update_delta_seconds) || update.update_delta_seconds < 0.0f) throw std::runtime_error("project update delta time is invalid");
+        if (!std::isfinite(update.timeline_time_seconds) || update.timeline_time_seconds < 0.0f) throw std::runtime_error("project timeline time is invalid");
+        if (update.timeline_frame_index != 0u) throw std::runtime_error("project static timeline frame index must remain zero");
+        state.host_update_running = update.update_running;
+        if (update.update_delta_seconds == 0.0) return;
         try {
             optimize_training_batch(state);
         } catch (const std::exception& error) {
@@ -1007,7 +1008,7 @@ namespace ngp::project {
     void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        if (state.host_timeline_playing) throw std::runtime_error("pause the host timeline before rendering a preview");
+        if (state.host_update_running) throw std::runtime_error("pause the host update clock before rendering a preview");
         std::string frame_set{"train"};
         std::uint32_t image_index{};
         std::set<std::string> seen_options{};
@@ -1204,8 +1205,8 @@ namespace ngp::project {
             controls.phase("Error").headline("Project error").message(state.project_error);
         } else if (target_reached) {
             controls.phase("Complete").headline("Training complete").message(std::format("Reached target step {}.", state.training.target_steps));
-        } else if (state.host_timeline_playing) {
-            controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} from Spectra timeline ticks.", state.training.frame_set));
+        } else if (state.host_update_running) {
+            controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} from Spectra update ticks.", state.training.frame_set));
         } else if (state.latest_stats.has_value()) {
             controls.phase("Paused").headline("Training paused").message(std::format("Current step {}.", training_step));
         } else {
@@ -1252,19 +1253,18 @@ namespace ngp::project {
 
         if (!state.project_error.empty()) {
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
-        } else if (state.host_timeline_playing) {
-            controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
+        } else if (state.host_update_running) {
+            controls.disable(action_render_preview_id, "Pause the host update clock before rendering a preview.");
         } else {
             controls.enable(action_render_preview_id);
         }
     }
 
-    void Project::write_scene(plugin::SceneBuilder& scene) const {
+    void Project::write_document(plugin::SceneBuilder& scene) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const bool volume_visible = density_volume_visible(*this->state);
         std::vector<plugin::Material> materials = volume_visible ? this->state->materials : std::vector<plugin::Material>{};
-        std::vector<plugin::PointCloud> point_clouds{};
-        if (this->state->debug.show_sampler_points && this->state->sampler_point_cloud.has_value()) {
+        if (this->state->debug.show_sampler && this->state->debug.show_sampler_points) {
             materials.push_back(plugin::Material{
                 .name = sampler_material_name,
                 .model = "point_sprite",
@@ -1272,20 +1272,34 @@ namespace ngp::project {
                 .base_color = {1.0f, 0.58f, 0.16f, 1.0f},
                 .roughness = 0.2f,
             });
-            point_clouds.push_back(*this->state->sampler_point_cloud);
         }
+        scene.set_document(plugin::Document{
+            .timeline = plugin::TimelineDescriptor{
+                .kind = plugin::TimelineKind::Static,
+            },
+            .update = plugin::UpdateDescriptor{
+                .enabled = true,
+                .initial_running = false,
+                .step_delta_seconds = 1.0 / 60.0,
+            },
+            .active_camera_name = this->state->overview_camera_name,
+            .materials = std::move(materials),
+            .lights = volume_visible ? this->state->lights : std::vector<plugin::Light>{},
+        });
+    }
+
+    void Project::write_frame(plugin::SceneBuilder& scene, const plugin::FrameInfo frame) const {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        if (!std::isfinite(frame.delta_seconds) || frame.delta_seconds < 0.0) throw std::runtime_error("project frame delta time is invalid");
+        if (!std::isfinite(frame.time_seconds) || frame.time_seconds < 0.0) throw std::runtime_error("project frame time is invalid");
+        if (frame.frame_index != 0u) throw std::runtime_error("project static timeline frame index must remain zero");
+        const bool volume_visible = density_volume_visible(*this->state);
+        std::vector<plugin::PointCloud> point_clouds{};
+        if (this->state->debug.show_sampler_points && this->state->sampler_point_cloud.has_value()) point_clouds.push_back(*this->state->sampler_point_cloud);
         plugin::DebugAttachmentSet debug_attachments = this->state->debug_attachments;
         if (!volume_visible) debug_attachments.viewport_voxel_grids.clear();
         scene.set_document(plugin::Document{
-            .timeline = plugin::TimelineDescriptor{
-                .kind = plugin::TimelineKind::Live,
-                .frame_rate = 60.0,
-                .initial_playing = false,
-            },
-            .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
-            .materials = std::move(materials),
-            .lights = volume_visible ? this->state->lights : std::vector<plugin::Light>{},
             .point_clouds = std::move(point_clouds),
             .volumes = volume_visible ? std::vector<plugin::VolumeGrid>{*this->state->density_volume} : std::vector<plugin::VolumeGrid>{},
             .debug_attachments = std::move(debug_attachments),
@@ -1294,6 +1308,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v15(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v16(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

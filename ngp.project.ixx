@@ -20,7 +20,8 @@ export namespace ngp::project {
 
         void update(const plugin::UpdateInfo& update);
         [[nodiscard]] std::uint64_t revision() const;
-        void write_scene(plugin::SceneBuilder& scene) const;
+        void write_document(plugin::SceneBuilder& scene) const;
+        void write_frame(plugin::SceneBuilder& scene, plugin::FrameInfo frame) const;
         void write_controls(plugin::ControlBuilder& controls) const;
 
         void render_preview(plugin::ActionContext context);
