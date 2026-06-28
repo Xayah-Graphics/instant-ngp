@@ -27,17 +27,17 @@ int main(const int argc, const char* const* const argv) {
     struct DatasetProvider final {
         std::string_view name;
         bool (*matches)(const std::filesystem::path&);
-        std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> (*create)(const std::filesystem::path&, const std::vector<std::string>&, float);
+        std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> (*create)(const std::filesystem::path&, const std::vector<std::string>&, float, ngp::train::TrainingStateRequest);
     };
     const std::array dataset_providers{
         DatasetProvider{
             .name = "nerf-synthetic",
             .matches = dataset::nerf_synthetic::is_dataset,
-            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
+            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale, const ngp::train::TrainingStateRequest training_state) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
                 const auto loaded_dataset = dataset::nerf_synthetic::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
                 if (!loaded_dataset) return std::unexpected{loaded_dataset.error()};
                 try {
-                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset);
+                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset, training_state);
                 } catch (const std::exception& error) {
                     return std::unexpected{std::string{error.what()}};
                 }
@@ -46,11 +46,11 @@ int main(const int argc, const char* const* const argv) {
         DatasetProvider{
             .name = "dd-nerf-dataset",
             .matches = dataset::dd_nerf::is_dataset,
-            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
+            .create = [](const std::filesystem::path& path, const std::vector<std::string>& frame_sets, const float scene_scale, const ngp::train::TrainingStateRequest training_state) -> std::expected<std::unique_ptr<ngp::train::InstantNGP>, std::string> {
                 const auto loaded_dataset = dataset::dd_nerf::load(path, {.frame_sets = frame_sets, .scene_scale = scene_scale});
                 if (!loaded_dataset) return std::unexpected{loaded_dataset.error()};
                 try {
-                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset);
+                    return std::make_unique<ngp::train::InstantNGP>(*loaded_dataset, training_state);
                 } catch (const std::exception& error) {
                     return std::unexpected{std::string{error.what()}};
                 }
@@ -67,6 +67,7 @@ int main(const int argc, const char* const* const argv) {
     std::uint32_t early_stop_patience = 5u;
     bool no_optimize = false;
     bool no_evaluation = false;
+    bool disable_occupancy_grid_updates = false;
     constexpr float default_scene_scale = 0.33f;
     float scene_scale = default_scene_scale;
     float early_stop_min_delta_mse = 1e-6f;
@@ -88,6 +89,7 @@ int main(const int argc, const char* const* const argv) {
         | xayah::util::option({.long_name = "steps", .value_name = "count", .description = "total optimization steps"}, steps, {.minimum = 1.0})
         | xayah::util::option({.long_name = "log-every", .value_name = "count", .description = "optimization steps per progress log"}, log_every_steps, {.minimum = 1.0})
         | xayah::util::option({.long_name = "scene-scale", .value_name = "value", .description = "camera normalization scene scale"}, scene_scale, {.minimum = 0.0, .minimum_is_exclusive = true})
+        | xayah::util::option({.long_name = "disable-occupancy-grid-updates", .description = "skip occupancy bitfield updates from density grid values; density grid values still update", .show_default = false}, disable_occupancy_grid_updates)
         | xayah::util::option({.long_name = "early-stop-patience", .value_name = "count", .description = "first evaluation frame set checks without improvement before stopping; 0 disables early stop"}, early_stop_patience, {.minimum = 0.0})
         | xayah::util::option({.long_name = "early-stop-min-delta", .value_name = "mse", .description = "minimum first evaluation frame set MSE improvement"}, early_stop_min_delta_mse, {.minimum = 0.0})
         | xayah::util::option({.long_name = "load-weights", .value_name = "path", .description = "load safetensors weights before optimization or evaluation"}, load_weights_path, {.requirement = xayah::util::PathRequirement::existing_file})
@@ -219,10 +221,12 @@ int main(const int argc, const char* const* const argv) {
     const std::string early_stop_stage = early_stop_enabled ? std::format("frame_set:{},patience:{},min_delta:{:.6g}", evaluation_frame_sets.front(), early_stop_patience, static_cast<double>(early_stop_min_delta_mse)) : std::string{"off"};
     const std::string comparison_stage = comparison_output_dir.has_value() ? std::format("comparison_output={}", comparison_output_dir->string()) : std::string{"comparison_output=off"};
     const std::string benchmark_output_stage = benchmark_output_path.has_value() ? std::format("benchmark_output={}", benchmark_output_path->string()) : std::string{"benchmark_output=off"};
+    const bool occupancy_grid_update_active = !disable_occupancy_grid_updates;
+    const std::string occupancy_grid_stage = occupancy_grid_update_active ? "occupancy_grid_updates=active" : "occupancy_grid_updates=disabled";
 
     const auto config_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    if (optimization_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize={} steps={} log_every={} evaluation={} early_stop={} {} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, optimize_stage, steps, log_every_steps, evaluation_stage, early_stop_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
-    else std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize=off evaluation={} {} {} load_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, evaluation_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none");
+    if (optimization_enabled) std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize={} steps={} log_every={} evaluation={} early_stop={} {} {} {} load_weights={} save_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, optimize_stage, steps, log_every_steps, evaluation_stage, early_stop_stage, occupancy_grid_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none", save_weights_path.has_value() ? save_weights_path->string() : "none");
+    else std::println("{}[{:%F %T}]{} {}{:<8}{} profile={} dataset={} format={} scene_scale={} frame_sets={} optimize=off evaluation={} {} {} {} load_weights={}", ansi_dim, config_timestamp, ansi_reset, ansi_cyan, "CONFIG", ansi_reset, active_train_profile_name, dataset_path.string(), dataset_format, scene_scale, frame_set_stage, evaluation_stage, occupancy_grid_stage, comparison_stage, benchmark_output_stage, load_weights_path.has_value() ? load_weights_path->string() : "none");
 
     const auto load_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     std::println("{}[{:%F %T}]{} {}{:<8}{} loading dataset", ansi_dim, load_timestamp, ansi_reset, ansi_cyan, "INFO", ansi_reset);
@@ -235,7 +239,7 @@ int main(const int argc, const char* const* const argv) {
     std::uint32_t benchmark_final_step = 0u;
     float benchmark_optimization_elapsed_ms = 0.0f;
     float benchmark_sample_efficiency_ratio = std::numeric_limits<float>::quiet_NaN();
-    float benchmark_density_grid_occupancy_ratio = std::numeric_limits<float>::quiet_NaN();
+    float benchmark_occupancy_grid_ratio = std::numeric_limits<float>::quiet_NaN();
     std::optional<ngp::train::EvaluationStats> benchmark_primary_evaluation;
     const auto query_used_device_memory = [] -> std::expected<std::uint64_t, std::string> {
         try {
@@ -248,7 +252,7 @@ int main(const int argc, const char* const* const argv) {
         }
     };
 
-    auto created_ngp = dataset_provider->create(dataset_path, requested_frame_sets, scene_scale);
+    auto created_ngp = dataset_provider->create(dataset_path, requested_frame_sets, scene_scale, ngp::train::TrainingStateRequest{.occupancy_grid_update_active = occupancy_grid_update_active});
     if (!created_ngp) pipeline_error = created_ngp.error();
     else ngp = std::move(*created_ngp);
     if (!pipeline_error && benchmark_output_enabled) {
@@ -301,7 +305,7 @@ int main(const int argc, const char* const* const argv) {
                 benchmark_final_step = stats->step;
                 benchmark_optimization_elapsed_ms = optimize_ms;
                 benchmark_sample_efficiency_ratio = stats->sample_efficiency_ratio;
-                benchmark_density_grid_occupancy_ratio = stats->density_grid_occupancy_ratio;
+                benchmark_occupancy_grid_ratio = stats->occupancy_grid_ratio;
                 const auto memory = query_used_device_memory();
                 if (!memory) {
                     pipeline_error = memory.error();
@@ -311,7 +315,7 @@ int main(const int argc, const char* const* const argv) {
             }
             optimized_steps += requested_steps;
             const auto optimize_timestamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-            std::println("{}[{:%F %T}]{} {}{:<8}{} frame_set={} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms rate={:>7.2f} step/s next_rays={:>6} samples={:>7}/{:<7} sample_eff={:>6.2f}% occupied={:>7} occupancy={:>6.2f}%", ansi_dim, optimize_timestamp, ansi_reset, ansi_green, "OPTIMIZE", ansi_reset, optimize_frame_set, stats->step, steps, stats->loss, stats->elapsed_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->next_rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->sample_efficiency_ratio * 100.0f, stats->density_grid_occupied_cells, stats->density_grid_occupancy_ratio * 100.0f);
+            std::println("{}[{:%F %T}]{} {}{:<8}{} frame_set={} step={:>6}/{} loss={:>10.6f} chunk={:>8.3f}ms rate={:>7.2f} step/s next_rays={:>6} samples={:>7}/{:<7} sample_eff={:>6.2f}% occupancy_cells={:>7} occupancy_grid={:>6.2f}%", ansi_dim, optimize_timestamp, ansi_reset, ansi_green, "OPTIMIZE", ansi_reset, optimize_frame_set, stats->step, steps, stats->loss, stats->elapsed_ms, static_cast<float>(requested_steps) * 1000.0f / stats->elapsed_ms, stats->next_rays_per_batch, stats->measured_sample_count, stats->measured_sample_count_before_compaction, stats->sample_efficiency_ratio * 100.0f, stats->occupancy_grid_occupied_cells, stats->occupancy_grid_ratio * 100.0f);
 
             if (evaluation_enabled && (stats->step >= next_evaluation_step || stats->step >= static_cast<std::uint32_t>(steps))) {
                 bool first_evaluation_improved = false;
@@ -426,7 +430,7 @@ int main(const int argc, const char* const* const argv) {
         try {
             const float benchmark_elapsed_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - benchmark_start).count();
             const float benchmark_step_rate = benchmark_optimization_elapsed_ms > 0.0f ? static_cast<float>(benchmark_final_step) * 1000.0f / benchmark_optimization_elapsed_ms : 0.0f;
-            const bool has_optimization_metrics = std::isfinite(benchmark_sample_efficiency_ratio) && std::isfinite(benchmark_density_grid_occupancy_ratio);
+            const bool has_optimization_metrics = std::isfinite(benchmark_sample_efficiency_ratio) && std::isfinite(benchmark_occupancy_grid_ratio);
             const bool has_evaluation_metrics = benchmark_primary_evaluation.has_value();
             const bool has_json_mse = has_evaluation_metrics && std::isfinite(benchmark_primary_evaluation->mse);
             const bool has_json_psnr = has_evaluation_metrics && std::isfinite(benchmark_primary_evaluation->psnr);
@@ -438,11 +442,11 @@ int main(const int argc, const char* const* const argv) {
                 row["elapsed_ms"] = benchmark_elapsed_ms;
                 row["step_per_second"] = benchmark_step_rate;
                 row["sample_eff"] = nullptr;
-                row["occupancy"] = nullptr;
+                row["occupancy_grid_ratio"] = nullptr;
                 row["mse"] = nullptr;
                 row["psnr"] = nullptr;
                 if (has_optimization_metrics) row["sample_eff"] = benchmark_sample_efficiency_ratio;
-                if (has_optimization_metrics) row["occupancy"] = benchmark_density_grid_occupancy_ratio;
+                if (has_optimization_metrics) row["occupancy_grid_ratio"] = benchmark_occupancy_grid_ratio;
                 if (has_json_mse) row["mse"] = benchmark_primary_evaluation->mse;
                 if (has_json_psnr) row["psnr"] = benchmark_primary_evaluation->psnr;
                 row["peak_vram_bytes"] = benchmark_peak_vram_bytes;
@@ -456,11 +460,11 @@ int main(const int argc, const char* const* const argv) {
                 const bool write_header = !std::filesystem::exists(*benchmark_output_path) || std::filesystem::file_size(*benchmark_output_path) == 0u;
                 std::ofstream output{*benchmark_output_path, std::ios::app};
                 if (!output) throw std::runtime_error{std::format("failed to open benchmark output '{}'.", benchmark_output_path->string())};
-                if (write_header) output << "profile,dataset,steps,elapsed_ms,step_per_second,sample_eff,occupancy,mse,psnr,peak_vram_bytes\n";
+                if (write_header) output << "profile,dataset,steps,elapsed_ms,step_per_second,sample_eff,occupancy_grid_ratio,mse,psnr,peak_vram_bytes\n";
                 output << std::quoted(std::string{active_train_profile_name}) << ',' << std::quoted(dataset_path.string()) << ',' << benchmark_final_step << ',' << std::setprecision(9) << benchmark_elapsed_ms << ',' << benchmark_step_rate << ',';
                 if (has_optimization_metrics) output << benchmark_sample_efficiency_ratio;
                 output << ',';
-                if (has_optimization_metrics) output << benchmark_density_grid_occupancy_ratio;
+                if (has_optimization_metrics) output << benchmark_occupancy_grid_ratio;
                 output << ',';
                 if (has_evaluation_metrics) output << benchmark_primary_evaluation->mse;
                 output << ',';

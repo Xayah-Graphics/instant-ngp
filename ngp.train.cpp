@@ -8,7 +8,7 @@ module ngp.train;
 import std;
 
 namespace ngp::train {
-    void InstantNGP::initialize(const std::span<const FrameSetView> frame_sets, const float scene_scale) {
+    void InstantNGP::initialize(const std::span<const FrameSetView> frame_sets, const float scene_scale, const TrainingStateRequest request) {
         try {
             this->host.scene_scale = scene_scale;
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
@@ -69,7 +69,7 @@ namespace ngp::train {
             {
                 cuda::allocate_sampler_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy);
                 cuda::allocate_network_buffers(this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
-                cuda::allocate_density_grid_buffers(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count);
+                cuda::allocate_density_grid_buffers(this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.occupancy_grid_occupied_count);
                 cuda::allocate_training_loss_buffers(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values);
                 cuda::allocate_evaluation_buffers(this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum);
                 cuda::allocate_evaluation_comparison_buffer(this->host.comparison_width, this->host.comparison_height, this->device.comparison_pixels);
@@ -85,22 +85,22 @@ namespace ngp::train {
             this->host.measured_sample_count_before_compaction = 0u;
             this->host.measured_sample_count = 0u;
             this->host.density_grid_ema_step = 0u;
-            this->host.density_grid_occupied_cells = 0u;
+            this->host.occupancy_grid_occupied_cells = 0u;
+            this->host.occupancy_grid_revision = 0u;
+            this->host.occupancy_grid_from_density = false;
+            this->host.occupancy_grid_update_state = request.occupancy_grid_update_active ? OccupancyGridUpdateState::Active : OccupancyGridUpdateState::Disabled;
 
             // ====================================================================================================
-            // 3. INITIALIZE DIRECT DENSITY GRID
+            // 3. INITIALIZE CONSERVATIVE OCCUPANCY BITFIELD
             // ====================================================================================================
-            {
-                const HostFrameSet& host_frame_set = this->host.frame_sets.front();
-                const DeviceFrameSet& device_frame_set = this->device.frame_sets.front();
-                cuda::update_density_grid(device_frame_set.camera, host_frame_set.frame_count, host_frame_set.width, host_frame_set.height, host_frame_set.focal_x, host_frame_set.focal_y, host_frame_set.principal_x, host_frame_set.principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, true);
-                cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-            }
+            cuda::set_occupancy_grid_full(this->device.occupancy, this->device.occupancy_grid_occupied_count);
+            this->host.occupancy_grid_occupied_cells = config::nerf_grid_cells;
+            this->host.occupancy_grid_revision = 1u;
 
         } catch (...) {
             for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
             cuda::destroy_cublaslt(this->device.cublaslt_handle);
-            cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients,
+            cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.occupancy_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients,
                 this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
             throw;
         }
@@ -109,8 +109,29 @@ namespace ngp::train {
     InstantNGP::~InstantNGP() noexcept {
         for (DeviceFrameSet& frame_set : this->device.frame_sets) cuda::free_device_buffers(frame_set.pixels, frame_set.camera);
         cuda::destroy_cublaslt(this->device.cublaslt_handle);
-        cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
+        cuda::free_device_buffers(this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter, this->device.occupancy, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.occupancy_grid_occupied_count, this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.loss_values, this->device.evaluation_numsteps, this->device.evaluation_sample_counter, this->device.evaluation_overflow_counter, this->device.evaluation_loss_sum, this->device.comparison_pixels, this->device.density_input, this->device.rgb_input, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients,
             this->device.density_input_gradients, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_workspace, this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+    }
+
+    std::expected<void, std::string> InstantNGP::update_training_state(const TrainingStateRequest request) {
+        try {
+            const bool occupancy_grid_update_active = this->host.occupancy_grid_update_state != OccupancyGridUpdateState::Disabled;
+            if (occupancy_grid_update_active == request.occupancy_grid_update_active) return {};
+            if (request.occupancy_grid_update_active) {
+                this->host.occupancy_grid_update_state = this->host.density_grid_ema_step > 0u ? OccupancyGridUpdateState::ActiveForceUpdate : OccupancyGridUpdateState::Active;
+                return {};
+            }
+            if (this->host.density_grid_ema_step == 0u) {
+                cuda::set_occupancy_grid_full(this->device.occupancy, this->device.occupancy_grid_occupied_count);
+                this->host.occupancy_grid_occupied_cells = config::nerf_grid_cells;
+                this->host.occupancy_grid_from_density = false;
+                ++this->host.occupancy_grid_revision;
+            }
+            this->host.occupancy_grid_update_state = OccupancyGridUpdateState::Disabled;
+            return {};
+        } catch (const std::exception& error) {
+            return std::unexpected{std::string{error.what()}};
+        }
     }
 
     std::expected<OptimizationStats, std::string> InstantNGP::optimize(const OptimizationRequest request) {
@@ -133,7 +154,15 @@ namespace ngp::train {
             for (std::int32_t i = 0; i < request.iterations; ++i) {
                 loss_value_count = this->host.rays_per_batch;
                 const bool reset_density_grid = this->host.density_grid_ema_step == 0u;
-                cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, reset_density_grid);
+                const bool density_grid_updated = cuda::update_density_grid_values(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->host.density_grid_ema_step, reset_density_grid);
+                const bool occupancy_grid_force_update = this->host.occupancy_grid_update_state == OccupancyGridUpdateState::ActiveForceUpdate;
+                if ((density_grid_updated && this->host.occupancy_grid_update_state == OccupancyGridUpdateState::Active) || occupancy_grid_force_update) {
+                    cuda::update_occupancy_grid_from_density_grid(this->device.density_grid_values, this->device.density_grid_mean, this->device.occupancy_grid_occupied_count, this->device.occupancy);
+                    cuda::read_counter(this->device.occupancy_grid_occupied_count, this->host.occupancy_grid_occupied_cells);
+                    this->host.occupancy_grid_from_density = true;
+                    ++this->host.occupancy_grid_revision;
+                    if (occupancy_grid_force_update) this->host.occupancy_grid_update_state = OccupancyGridUpdateState::Active;
+                }
                 cuda::sample_training_batch(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                 cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.network_output);
                 cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, device_frame_set->pixels, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
@@ -144,8 +173,8 @@ namespace ngp::train {
                 cuda::read_counter(this->device.sample_counter, this->host.measured_sample_count_before_compaction);
                 cuda::read_counter(this->device.compacted_sample_counter, this->host.measured_sample_count);
                 if (this->host.measured_sample_count == 0u) {
-                    cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
-                    throw std::runtime_error{std::format("Optimization stopped unexpectedly. density_grid_occupied_cells={}", this->host.density_grid_occupied_cells)};
+                    cuda::read_counter(this->device.occupancy_grid_occupied_count, this->host.occupancy_grid_occupied_cells);
+                    throw std::runtime_error{std::format("Optimization stopped unexpectedly. occupancy_grid_occupied_cells={}", this->host.occupancy_grid_occupied_cells)};
                 }
 
                 this->host.inference_sample_count = ((std::min(this->host.measured_sample_count_before_compaction, config::max_samples) + config::network_batch_granularity - 1u) / config::network_batch_granularity) * config::network_batch_granularity;
@@ -156,17 +185,17 @@ namespace ngp::train {
 
             float loss_sum = 0.0f;
             cuda::read_loss_sum(this->device.loss_values, loss_value_count, loss_sum);
-            cuda::read_counter(this->device.density_grid_occupied_count, this->host.density_grid_occupied_cells);
+            cuda::read_counter(this->device.occupancy_grid_occupied_count, this->host.occupancy_grid_occupied_cells);
             return OptimizationStats{
                 .step                                    = this->host.current_step,
                 .next_rays_per_batch                     = this->host.rays_per_batch,
                 .measured_sample_count_before_compaction = this->host.measured_sample_count_before_compaction,
                 .measured_sample_count                   = this->host.measured_sample_count,
-                .density_grid_occupied_cells             = this->host.density_grid_occupied_cells,
+                .occupancy_grid_occupied_cells           = this->host.occupancy_grid_occupied_cells,
                 .loss                                    = loss_sum * static_cast<float>(this->host.measured_sample_count) / static_cast<float>(config::network_batch_size),
                 .elapsed_ms                              = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - train_start).count(),
                 .sample_efficiency_ratio                 = this->host.measured_sample_count_before_compaction == 0u ? 0.0f : static_cast<float>(this->host.measured_sample_count) / static_cast<float>(this->host.measured_sample_count_before_compaction),
-                .density_grid_occupancy_ratio            = static_cast<float>(this->host.density_grid_occupied_cells) / static_cast<float>(config::nerf_grid_cells),
+                .occupancy_grid_ratio                    = static_cast<float>(this->host.occupancy_grid_occupied_cells) / static_cast<float>(config::nerf_grid_cells),
             };
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
@@ -186,7 +215,6 @@ namespace ngp::train {
                 }
             }
             if (host_frame_set == nullptr || device_frame_set == nullptr) throw std::runtime_error{std::format("evaluation frame set '{}' is not loaded.", request.frame_set)};
-            if (this->host.density_grid_ema_step == 0u) cuda::update_density_grid(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, 0u, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->device.density_grid_mean, this->device.density_grid_occupied_count, this->device.occupancy, this->host.density_grid_ema_step, true);
 
             const bool writes_comparison = request.comparison_output_dir.has_value();
             if (writes_comparison) {
@@ -435,7 +463,12 @@ namespace ngp::train {
                 if (!std::isfinite(value)) throw std::runtime_error{"weights file contains non-finite values."};
 
             cuda::upload_trainable_parameters(host_params.data(), this->device.params_full_precision, this->device.params, this->device.param_gradients, this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
+            cuda::set_occupancy_grid_full(this->device.occupancy, this->device.occupancy_grid_occupied_count);
             this->host.density_grid_ema_step = 0u;
+            if (this->host.occupancy_grid_update_state == OccupancyGridUpdateState::ActiveForceUpdate) this->host.occupancy_grid_update_state = OccupancyGridUpdateState::Active;
+            this->host.occupancy_grid_occupied_cells = config::nerf_grid_cells;
+            this->host.occupancy_grid_from_density = false;
+            ++this->host.occupancy_grid_revision;
             return {};
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};

@@ -155,7 +155,7 @@ namespace ngp::cuda {
             return tmax >= out_tmin;
         }
 
-        __device__ bool is_density_grid_occupied(const float3 pos, const std::uint8_t* occupancy) {
+        __device__ bool is_occupancy_grid_cell_occupied(const float3 pos, const std::uint8_t* occupancy) {
             const int x = static_cast<int>(pos.x * static_cast<float>(train::config::nerf_grid_size));
             const int y = static_cast<int>(pos.y * static_cast<float>(train::config::nerf_grid_size));
             const int z = static_cast<int>(pos.z * static_cast<float>(train::config::nerf_grid_size));
@@ -401,7 +401,7 @@ namespace ngp::cuda {
             if (threadIdx.x == 0u) atomicAdd(density_grid_mean, sums[0] / static_cast<float>(train::config::nerf_grid_cells));
         }
 
-        __global__ void build_density_grid_bitfield_kernel(const float* __restrict__ density_grid_values, const float* __restrict__ density_grid_mean, std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ density_grid_occupied_count) {
+        __global__ void build_density_grid_bitfield_kernel(const float* __restrict__ density_grid_values, const float* __restrict__ density_grid_mean, std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ occupancy_grid_occupied_count) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= train::config::nerf_grid_cells / 8u) return;
 
@@ -411,7 +411,7 @@ namespace ngp::cuda {
 
             occupancy[i]                 = bits;
             const std::uint32_t occupied = __popc(static_cast<std::uint32_t>(bits));
-            if (occupied != 0u) atomicAdd(density_grid_occupied_count, occupied);
+            if (occupied != 0u) atomicAdd(occupancy_grid_occupied_count, occupied);
         }
 
         __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
@@ -465,7 +465,7 @@ namespace ngp::cuda {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
                 if (!unit_aabb_contains(pos)) break;
 
-                if (is_density_grid_occupied(pos, occupancy)) {
+                if (is_occupancy_grid_cell_occupied(pos, occupancy)) {
                     ++numsteps;
                     t += dt;
                 } else {
@@ -500,7 +500,7 @@ namespace ngp::cuda {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
                 if (!unit_aabb_contains(pos)) break;
 
-                if (is_density_grid_occupied(pos, occupancy)) {
+                if (is_occupancy_grid_cell_occupied(pos, occupancy)) {
                     float* coord = coords_out + static_cast<std::uint64_t>(base + j) * train::config::sample_coord_floats;
                     coord[0]     = pos.x;
                     coord[1]     = pos.y;
@@ -562,7 +562,7 @@ namespace ngp::cuda {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
                 if (!unit_aabb_contains(pos)) break;
 
-                if (is_density_grid_occupied(pos, occupancy)) {
+                if (is_occupancy_grid_cell_occupied(pos, occupancy)) {
                     ++numsteps;
                     t += dt;
                 } else {
@@ -589,7 +589,7 @@ namespace ngp::cuda {
                 pos = {ray_origin.x + ray_direction_normalized.x * t, ray_origin.y + ray_direction_normalized.y * t, ray_origin.z + ray_direction_normalized.z * t};
                 if (!unit_aabb_contains(pos)) break;
 
-                if (is_density_grid_occupied(pos, occupancy)) {
+                if (is_occupancy_grid_cell_occupied(pos, occupancy)) {
                     float* coord = coords_out + static_cast<std::uint64_t>(base + j) * train::config::sample_coord_floats;
                     coord[0]     = pos.x;
                     coord[1]     = pos.y;
@@ -1240,6 +1240,13 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemcpy(const_cast<float*>(out_camera), camera, camera_count * sizeof(float), cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy camera failed: "} + cudaGetErrorString(status)};
     }
 
+    void set_occupancy_grid_full(std::uint8_t* const occupancy, std::uint32_t* const occupancy_grid_occupied_count) {
+        if (occupancy == nullptr || occupancy_grid_occupied_count == nullptr) throw std::runtime_error{"invalid occupancy grid full update input."};
+        if (const cudaError_t status = cudaMemset(occupancy, 0xFF, train::config::nerf_grid_cells / 8u); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset full occupancy grid failed: "} + cudaGetErrorString(status)};
+        const std::uint32_t occupied_count = train::config::nerf_grid_cells;
+        if (const cudaError_t status = cudaMemcpy(occupancy_grid_occupied_count, &occupied_count, sizeof(std::uint32_t), cudaMemcpyHostToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy full occupancy count failed: "} + cudaGetErrorString(status)};
+    }
+
     void allocate_sampler_buffers(float*& out_sample_coords, float*& out_rays, std::uint32_t*& out_ray_indices, std::uint32_t*& out_numsteps, std::uint32_t*& out_ray_counter, std::uint32_t*& out_sample_counter, std::uint8_t*& out_occupancy) {
         out_sample_coords  = nullptr;
         out_rays           = nullptr;
@@ -1259,26 +1266,25 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_ray_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc sampler ray counter failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_sample_counter, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc sampler sample counter failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_occupancy, train::config::nerf_grid_cells / 8u); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc sampler occupancy failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMemset(out_occupancy, 0xFF, train::config::nerf_grid_cells / 8u); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler occupancy failed: "} + cudaGetErrorString(status)};
     }
 
-    void allocate_density_grid_buffers(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_density_grid_occupied_count) {
-        out_density_grid_values         = nullptr;
-        out_density_grid_scratch        = nullptr;
-        out_density_grid_indices        = nullptr;
-        out_density_grid_mean           = nullptr;
-        out_density_grid_occupied_count = nullptr;
+    void allocate_density_grid_buffers(float*& out_density_grid_values, float*& out_density_grid_scratch, std::uint32_t*& out_density_grid_indices, float*& out_density_grid_mean, std::uint32_t*& out_occupancy_grid_occupied_count) {
+        out_density_grid_values            = nullptr;
+        out_density_grid_scratch           = nullptr;
+        out_density_grid_indices           = nullptr;
+        out_density_grid_mean              = nullptr;
+        out_occupancy_grid_occupied_count = nullptr;
 
         if (const cudaError_t status = cudaMalloc(&out_density_grid_values, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density grid values failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_density_grid_scratch, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density grid scratch failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_density_grid_indices, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density grid indices failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMalloc(&out_density_grid_mean, sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density grid mean failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMalloc(&out_density_grid_occupied_count, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc density grid occupied count failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMalloc(&out_occupancy_grid_occupied_count, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc occupancy grid occupied count failed: "} + cudaGetErrorString(status)};
 
         if (const cudaError_t status = cudaMemset(out_density_grid_values, 0, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid values failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(out_density_grid_scratch, 0, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid scratch failed: "} + cudaGetErrorString(status)};
         if (const cudaError_t status = cudaMemset(out_density_grid_mean, 0, sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid mean failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMemset(out_density_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid occupied count failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(out_occupancy_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset occupancy grid occupied count failed: "} + cudaGetErrorString(status)};
     }
 
     void allocate_network_buffers(std::uint16_t*& out_density_input, std::uint16_t*& out_rgb_input, std::uint16_t*& out_network_output, std::uint16_t*& out_network_output_gradients, std::uint16_t*& out_rgb_output_gradients, std::uint16_t*& out_rgb_input_gradients, std::uint16_t*& out_density_input_gradients, std::uint16_t*& out_density_forward_hidden, std::uint16_t*& out_rgb_forward_hidden, std::uint16_t*& out_density_backward_hidden, std::uint16_t*& out_rgb_backward_hidden, void*& out_cublaslt_handle, std::uint8_t*& out_cublaslt_workspace) {
@@ -1464,11 +1470,11 @@ namespace ngp::cuda {
         }
     }
 
-    void update_density_grid(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, float* const density_grid_mean, std::uint32_t* const density_grid_occupied_count, std::uint8_t* const occupancy, std::uint32_t& density_grid_ema_step, const bool reset_density_grid) {
+    bool update_density_grid_values(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, std::uint32_t& density_grid_ema_step, const bool reset_density_grid) {
         const std::uint32_t density_grid_skip = std::clamp(current_step / train::config::density_grid_skip_interval, 1u, train::config::density_grid_max_skip);
-        if (!reset_density_grid && current_step % density_grid_skip != 0u) return;
+        if (!reset_density_grid && current_step % density_grid_skip != 0u) return false;
 
-        if (frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || camera == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr || density_grid_mean == nullptr || density_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid density grid update input."};
+        if (frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || camera == nullptr || params == nullptr || sample_coords == nullptr || density_input == nullptr || density_grid_output == nullptr || density_grid_values == nullptr || density_grid_scratch == nullptr || density_grid_indices == nullptr) throw std::runtime_error{"invalid density grid update input."};
 
         const std::uint32_t uniform_sample_count    = current_step < train::config::density_grid_warmup_steps ? train::config::density_grid_warmup_samples : train::config::density_grid_steady_uniform_samples;
         const std::uint32_t nonuniform_sample_count = current_step < train::config::density_grid_warmup_steps ? 0u : train::config::density_grid_steady_nonuniform_samples;
@@ -1517,14 +1523,18 @@ namespace ngp::cuda {
         update_density_grid_ema_kernel<<<(train::config::nerf_grid_cells + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(density_grid_scratch, density_grid_values);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"update_density_grid_ema_kernel failed: "} + cudaGetErrorString(status)};
         ++density_grid_ema_step;
+        return true;
+    }
 
+    void update_occupancy_grid_from_density_grid(const float* const density_grid_values, float* const density_grid_mean, std::uint32_t* const occupancy_grid_occupied_count, std::uint8_t* const occupancy) {
+        if (density_grid_values == nullptr || density_grid_mean == nullptr || occupancy_grid_occupied_count == nullptr || occupancy == nullptr) throw std::runtime_error{"invalid occupancy grid update input."};
         if (const cudaError_t status = cudaMemset(density_grid_mean, 0, sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid mean failed: "} + cudaGetErrorString(status)};
-        if (const cudaError_t status = cudaMemset(density_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid occupied count failed: "} + cudaGetErrorString(status)};
+        if (const cudaError_t status = cudaMemset(occupancy_grid_occupied_count, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset occupancy grid occupied count failed: "} + cudaGetErrorString(status)};
 
         reduce_density_grid_mean_kernel<<<(train::config::nerf_grid_cells / 4u + 1023u) / 1024u, 1024u>>>(density_grid_values, density_grid_mean);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"reduce_density_grid_mean_kernel failed: "} + cudaGetErrorString(status)};
 
-        build_density_grid_bitfield_kernel<<<(train::config::nerf_grid_cells / 8u + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(density_grid_values, density_grid_mean, occupancy, density_grid_occupied_count);
+        build_density_grid_bitfield_kernel<<<(train::config::nerf_grid_cells / 8u + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(density_grid_values, density_grid_mean, occupancy, occupancy_grid_occupied_count);
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"build_density_grid_bitfield_kernel failed: "} + cudaGetErrorString(status)};
     }
 

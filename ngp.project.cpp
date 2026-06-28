@@ -35,6 +35,7 @@ namespace ngp::project {
         constexpr char open_option_steps_per_update_key[] = "steps_per_update";
         constexpr char preview_option_frame_set_key[] = "frame_set";
         constexpr char preview_option_image_index_key[] = "image_index";
+        constexpr char setting_update_occupancy_grid_key[] = "update_occupancy_grid";
         constexpr char setting_show_volume_key[] = "show_volume";
         constexpr char setting_show_occupancy_key[] = "show_occupancy";
         constexpr char setting_occupancy_alpha_key[] = "occupancy_alpha";
@@ -72,10 +73,11 @@ namespace ngp::project {
             std::uint64_t max_frames{};
         };
 
-        struct TrainingOptions {
+        struct TrainingSettings {
             std::string frame_set{"train"};
             std::uint32_t target_steps{200000u};
             std::uint32_t steps_per_update{1u};
+            bool update_occupancy_grid{true};
         };
 
         struct DebugOptions {
@@ -92,7 +94,7 @@ namespace ngp::project {
 
         struct ProjectOpenOptions {
             DatasetOptions dataset{};
-            TrainingOptions training{};
+            TrainingSettings training{};
         };
 
         struct PreviewState {
@@ -268,7 +270,7 @@ namespace ngp::project {
 
     struct Project::State {
         DatasetOptions dataset_options{};
-        TrainingOptions training{};
+        TrainingSettings training{};
         DebugOptions debug{};
         std::shared_ptr<plugin::HostServices> host_services{};
         std::variant<std::monostate, dataset::nerf_synthetic::Dataset, dataset::dd_nerf::Dataset> dataset{};
@@ -298,9 +300,7 @@ namespace ngp::project {
         std::vector<plugin::Light> lights{};
         std::optional<plugin::VolumeGrid> density_volume{};
         plugin::DebugAttachmentSet debug_attachments{};
-        bool training_active{};
-        bool training_complete{};
-        bool host_timeline_playing{true};
+        bool host_timeline_playing{};
         std::string project_error{};
         std::uint64_t scene_revision{1u};
         std::vector<plugin::Camera> cameras{};
@@ -375,13 +375,15 @@ namespace ngp::project {
                 plugin::unsigned_integer(open_option_steps_per_update_key, "Steps Per Update", 1u).describe("Optimization iterations executed during each GUI project update.").section(section_training_id),
             },
             .actions = {
-                ngp::plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
+                plugin::action(action_render_preview_id, "Render Preview", &Project::render_preview)
                     .description("Render one loaded frame through the current model and publish preview metrics.")
                     .section(section_preview_id)
                     .option(plugin::choice(preview_option_frame_set_key, "Frame Set", {"train", "validation", "test"}).describe("Loaded frame set used for preview rendering.").section(section_preview_id).defaulted("train"))
                     .option(plugin::unsigned_integer(preview_option_image_index_key, "Image Index", 0u).describe("Zero-based image index in the selected frame set.").section(section_preview_id)),
             },
             .settings = {
+                plugin::toggle(setting_update_occupancy_grid_key, "Update Occupancy Grid", true, &Project::set_update_occupancy_grid)
+                    .section(section_training_id),
                 plugin::toggle(setting_show_volume_key, "Show Volume", true, &Project::set_show_volume)
                     .section(section_field_id),
                 plugin::toggle(setting_show_occupancy_key, "Show Occupancy", false, &Project::set_show_occupancy)
@@ -710,7 +712,7 @@ namespace ngp::project {
                 if constexpr (std::same_as<std::remove_cvref_t<decltype(dataset)>, std::monostate>) {
                     throw std::runtime_error("dataset must be loaded before training");
                 } else {
-                    state.ngp = std::make_unique<train::InstantNGP>(dataset);
+                    state.ngp = std::make_unique<train::InstantNGP>(dataset, train::TrainingStateRequest{.occupancy_grid_update_active = state.training.update_occupancy_grid});
                 }
             }, state.dataset);
         }
@@ -827,8 +829,27 @@ namespace ngp::project {
 
         void set_project_error(Project::State& state, std::string message) {
             state.project_error = std::move(message);
-            state.training_active = false;
-            state.training_complete = false;
+        }
+
+        void optimize_training_batch(Project::State& state) {
+            create_trainer_if_needed(state);
+            const std::uint32_t current_step = current_training_step(state);
+            if (current_step >= state.training.target_steps) return;
+            const std::uint32_t remaining_steps = state.training.target_steps - current_step;
+            const std::uint32_t requested_steps = std::min(state.training.steps_per_update, remaining_steps);
+            const std::expected<train::OptimizationStats, std::string> stats = state.ngp->optimize(train::OptimizationRequest{
+                .frame_set = state.training.frame_set,
+                .iterations = static_cast<std::int32_t>(requested_steps),
+            });
+            if (!stats) throw std::runtime_error(stats.error());
+            state.latest_stats = *stats;
+            const VisualizationSnapshot previous_visualization = visualization_snapshot(state);
+            const inspector::Inspector inspector{*state.ngp};
+            const inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
+            if (state.debug.show_volume && density_view.initialized && density_view.revision != state.exported_density_revision) publish_density_grid_volume(state);
+            refresh_debug_attachments(state);
+            if (!(previous_visualization == visualization_snapshot(state))) ++state.scene_revision;
+            state.project_error.clear();
         }
 
     }
@@ -964,9 +985,7 @@ namespace ngp::project {
             }
         }, created->dataset);
 
-        publish_density_grid_volume(*created);
         refresh_debug_attachments(*created);
-        created->training_active = true;
         return Project{std::move(created)};
     }
 
@@ -977,38 +996,9 @@ namespace ngp::project {
         if (!std::isfinite(update.scene_delta_seconds) || update.scene_delta_seconds < 0.0f) throw std::runtime_error("project update scene delta time is invalid");
         if (!std::isfinite(update.time_seconds) || update.time_seconds < 0.0f) throw std::runtime_error("project update timeline time is invalid");
         state.host_timeline_playing = update.timeline_playing;
-        if (!state.training_active) return;
         if (update.scene_delta_seconds == 0.0) return;
         try {
-            create_trainer_if_needed(state);
-            const std::uint32_t current_step = current_training_step(state);
-            if (current_step >= state.training.target_steps) {
-                state.training_active = false;
-                state.training_complete = true;
-                return;
-            }
-            const std::uint32_t remaining_steps = state.training.target_steps - current_step;
-            const std::uint32_t requested_steps = std::min(state.training.steps_per_update, remaining_steps);
-            const std::expected<train::OptimizationStats, std::string> stats = state.ngp->optimize(train::OptimizationRequest{
-                .frame_set = state.training.frame_set,
-                .iterations = static_cast<std::int32_t>(requested_steps),
-            });
-            if (!stats) {
-                set_project_error(state, stats.error());
-                return;
-            }
-            state.latest_stats = *stats;
-            const bool reached_target = stats->step >= state.training.target_steps;
-            const VisualizationSnapshot previous_visualization = visualization_snapshot(state);
-            const inspector::Inspector inspector{*state.ngp};
-            const inspector::DensityGridDeviceView density_view = inspector.density_grid_device_view();
-            if (state.debug.show_volume && density_view.initialized && density_view.revision != state.exported_density_revision) publish_density_grid_volume(state);
-            refresh_debug_attachments(state);
-            if (!(previous_visualization == visualization_snapshot(state))) ++state.scene_revision;
-            if (reached_target) {
-                state.training_active = false;
-                state.training_complete = true;
-            }
+            optimize_training_batch(state);
         } catch (const std::exception& error) {
             set_project_error(state, error.what());
         }
@@ -1017,7 +1007,7 @@ namespace ngp::project {
     void Project::render_preview(plugin::ActionContext context) {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         State& state = *this->state;
-        if (state.training_active && state.host_timeline_playing) throw std::runtime_error("pause the host timeline before rendering a preview");
+        if (state.host_timeline_playing) throw std::runtime_error("pause the host timeline before rendering a preview");
         std::string frame_set{"train"};
         std::uint32_t image_index{};
         std::set<std::string> seen_options{};
@@ -1051,6 +1041,26 @@ namespace ngp::project {
             .revision = revision,
         };
         state.latest_preview = std::move(next_preview);
+        state.project_error.clear();
+    }
+
+    void Project::set_update_occupancy_grid(const bool value) {
+        if (this->state == nullptr) throw std::runtime_error("project is not open");
+        State& state = *this->state;
+        const bool changed = state.training.update_occupancy_grid != value;
+        if (!changed) return;
+        if (state.ngp != nullptr) {
+            const std::expected<void, std::string> updated = state.ngp->update_training_state(train::TrainingStateRequest{
+                .occupancy_grid_update_active = value,
+            });
+            if (!updated) throw std::runtime_error(updated.error());
+        }
+        state.occupancy_buffer.reset();
+        state.exported_occupancy_revision = 0u;
+        state.occupancy_grid.reset();
+        state.training.update_occupancy_grid = value;
+        refresh_debug_attachments(state);
+        ++state.scene_revision;
         state.project_error.clear();
     }
 
@@ -1188,16 +1198,16 @@ namespace ngp::project {
     void Project::write_controls(plugin::ControlBuilder& controls) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
         const State& state = *this->state;
+        const std::uint32_t training_step = current_training_step(state);
+        const bool target_reached = training_step >= state.training.target_steps;
         if (!state.project_error.empty()) {
             controls.phase("Error").headline("Project error").message(state.project_error);
-        } else if (state.training_active && state.host_timeline_playing) {
-            controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} in GUI project updates.", state.training.frame_set));
-        } else if (state.training_active) {
-            controls.phase("Paused").headline("Timeline paused").message(std::format("Training is armed for frame_set={} but the host timeline is not advancing.", state.training.frame_set));
-        } else if (state.training_complete) {
+        } else if (target_reached) {
             controls.phase("Complete").headline("Training complete").message(std::format("Reached target step {}.", state.training.target_steps));
+        } else if (state.host_timeline_playing) {
+            controls.phase("Running").headline("Training running").message(std::format("Optimizing frame_set={} from Spectra timeline ticks.", state.training.frame_set));
         } else if (state.latest_stats.has_value()) {
-            controls.phase("Paused").headline("Training paused").message(std::format("Current step {}.", current_training_step(state)));
+            controls.phase("Paused").headline("Training paused").message(std::format("Current step {}.", training_step));
         } else {
             controls.phase("Paused").headline("Training paused").message("Training is paused at step 0.");
         }
@@ -1206,9 +1216,11 @@ namespace ngp::project {
         controls.metric("format", "Format", state.dataset_options.format).section(section_diagnostics_id);
         controls.metric("frame_sets", "Frame Sets", joined_frame_sets(state.dataset_options.frame_sets)).section(section_training_id);
         controls.metric("training_frame_set", "Training Set", state.training.frame_set).section(section_training_id);
-        controls.metric("step", "Step", current_training_step(state)).section(section_training_id).display_primary().color({0.55f, 0.85f, 1.0f, 1.0f});
+        controls.metric("step", "Step", training_step).section(section_training_id).display_primary().color({0.55f, 0.85f, 1.0f, 1.0f});
         controls.metric("target_steps", "Target", state.training.target_steps).section(section_training_id);
         controls.metric("steps_per_update", "Steps/Update", state.training.steps_per_update).section(section_training_id);
+        const std::string occupancy_update_mode = state.training.update_occupancy_grid ? "active" : state.ngp != nullptr && state.ngp->host.occupancy_grid_from_density ? "frozen" : "full";
+        controls.metric("occupancy_update_mode", "Occupancy Updates", occupancy_update_mode).section(section_training_id);
         const bool volume_visible = density_volume_visible(state);
         controls.metric("density_visible", "Density", volume_visible ? "visible" : "hidden").section(section_field_id);
         controls.metric("density_grid_revision", "Density Rev", state.exported_density_revision).section(section_diagnostics_id);
@@ -1227,7 +1239,7 @@ namespace ngp::project {
         if (state.latest_stats.has_value()) {
             controls.metric("loss", "Loss", std::format("{:.6f}", state.latest_stats->loss)).section(section_training_id).display_primary().color({1.0f, 0.38f, 0.25f, 1.0f});
             controls.metric("sample_efficiency", "Sample Eff", std::format("{:.2f}%", state.latest_stats->sample_efficiency_ratio * 100.0f)).section(section_training_id).display_primary().color({0.25f, 0.75f, 1.0f, 1.0f});
-            controls.metric("occupancy", "Occupancy", std::format("{:.2f}%", state.latest_stats->density_grid_occupancy_ratio * 100.0f)).section(section_training_id).display_primary().color({0.16f, 0.86f, 0.55f, 1.0f});
+            controls.metric("occupancy_grid_ratio", "Occupancy Grid", std::format("{:.2f}%", state.latest_stats->occupancy_grid_ratio * 100.0f)).section(section_training_id).display_primary().color({0.16f, 0.86f, 0.55f, 1.0f});
             controls.metric("occupancy_revision", "Occupancy Revision", state.exported_occupancy_revision).section(section_diagnostics_id);
         }
         if (state.latest_preview.has_value()) {
@@ -1240,7 +1252,7 @@ namespace ngp::project {
 
         if (!state.project_error.empty()) {
             controls.disable(action_render_preview_id, "Close and reopen the dataset before rendering a preview.");
-        } else if (state.training_active && state.host_timeline_playing) {
+        } else if (state.host_timeline_playing) {
             controls.disable(action_render_preview_id, "Pause the host timeline before rendering a preview.");
         } else {
             controls.enable(action_render_preview_id);
@@ -1268,6 +1280,7 @@ namespace ngp::project {
             .timeline = plugin::TimelineDescriptor{
                 .kind = plugin::TimelineKind::Live,
                 .frame_rate = 60.0,
+                .initial_playing = false,
             },
             .active_camera_name = this->state->overview_camera_name,
             .cameras = this->state->cameras,
@@ -1281,6 +1294,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v14(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v15(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

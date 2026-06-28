@@ -25,6 +25,7 @@ export namespace ngp::project {
 
         void render_preview(plugin::ActionContext context);
 
+        void set_update_occupancy_grid(bool value);
         void set_show_volume(bool value);
         void set_show_occupancy(bool value);
         void set_occupancy_alpha(float value);

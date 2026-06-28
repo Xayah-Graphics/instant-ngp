@@ -59,16 +59,26 @@ namespace ngp::train {
         std::optional<std::filesystem::path> comparison_output_dir;
     };
 
+    export struct TrainingStateRequest final {
+        bool occupancy_grid_update_active = true;
+    };
+
+    export enum class OccupancyGridUpdateState : std::uint8_t {
+        Disabled,
+        Active,
+        ActiveForceUpdate,
+    };
+
     export struct OptimizationStats final {
         std::uint32_t step                                    = 0u;
         std::uint32_t next_rays_per_batch                     = 0u;
         std::uint32_t measured_sample_count_before_compaction = 0u;
         std::uint32_t measured_sample_count                   = 0u;
-        std::uint32_t density_grid_occupied_cells             = 0u;
+        std::uint32_t occupancy_grid_occupied_cells           = 0u;
         float loss                                            = 0.0f;
         float elapsed_ms                                      = 0.0f;
         float sample_efficiency_ratio                         = 0.0f;
-        float density_grid_occupancy_ratio                    = 0.0f;
+        float occupancy_grid_ratio                            = 0.0f;
     };
 
     export struct EvaluationStats final {
@@ -85,7 +95,7 @@ namespace ngp::train {
 
     export struct InstantNGP final {
         template <DatasetLike Dataset>
-        explicit InstantNGP(const Dataset& dataset) {
+        explicit InstantNGP(const Dataset& dataset, const TrainingStateRequest request = {}) {
             std::vector<std::string_view> frame_set_names;
             std::vector<std::vector<FrameView>> frame_views_by_set;
             for (const auto& frame_set : dataset.frame_sets) {
@@ -113,7 +123,7 @@ namespace ngp::train {
                     .frames = std::span<const FrameView>{frame_views_by_set[frame_set_index]},
                 });
             }
-            this->initialize(frame_set_views, static_cast<float>(dataset.scene_scale));
+            this->initialize(frame_set_views, static_cast<float>(dataset.scene_scale), request);
         }
 
         ~InstantNGP() noexcept;
@@ -124,10 +134,11 @@ namespace ngp::train {
 
         std::expected<OptimizationStats, std::string> optimize(OptimizationRequest request);
         std::expected<EvaluationStats, std::string> evaluate(EvaluationRequest request) const;
+        std::expected<void, std::string> update_training_state(TrainingStateRequest request);
         std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
         std::expected<void, std::string> load_weights(const std::filesystem::path& path);
 
-        void initialize(std::span<const FrameSetView> frame_sets, float scene_scale);
+        void initialize(std::span<const FrameSetView> frame_sets, float scene_scale, TrainingStateRequest request = {});
 
         struct HostFrameSet final {
             std::string name;
@@ -147,14 +158,17 @@ namespace ngp::train {
             std::uint32_t comparison_height      = 0u;
             float scene_scale                    = 0.0f;
 
-            // Mutated by optimize(): step, adaptive batch shape, and latest counters.
+            // Mutated by optimize()/update_training_state(): step, adaptive batch shape, counters, and occupancy update mode.
             std::uint32_t current_step                            = 0u;
             std::uint32_t rays_per_batch                          = 0u;
             std::uint32_t inference_sample_count                  = 0u;
             std::uint32_t measured_sample_count_before_compaction = 0u;
             std::uint32_t measured_sample_count                   = 0u;
-            mutable std::uint32_t density_grid_ema_step           = 0u;
-            std::uint32_t density_grid_occupied_cells             = 0u;
+            std::uint32_t density_grid_ema_step                   = 0u;
+            std::uint32_t occupancy_grid_occupied_cells           = 0u;
+            std::uint64_t occupancy_grid_revision                 = 0u;
+            bool occupancy_grid_from_density                      = false;
+            OccupancyGridUpdateState occupancy_grid_update_state  = OccupancyGridUpdateState::Active;
         } host;
 
         struct DeviceFrameSet final {
@@ -178,7 +192,7 @@ namespace ngp::train {
             float* density_grid_scratch                = nullptr;
             std::uint32_t* density_grid_indices        = nullptr;
             float* density_grid_mean                   = nullptr;
-            std::uint32_t* density_grid_occupied_count = nullptr;
+            std::uint32_t* occupancy_grid_occupied_count = nullptr;
 
             // Loss and compaction.
             std::uint32_t* compacted_sample_counter    = nullptr;

@@ -418,6 +418,7 @@ export namespace ngp::plugin {
         TimelineKind kind{TimelineKind::Static};
         double frame_rate{};
         std::uint64_t frame_count{};
+        bool initial_playing{true};
     };
 
     struct Document {
@@ -1218,6 +1219,7 @@ namespace ngp::plugin {
         std::uint32_t kind{};
         double frame_rate{};
         std::uint64_t frame_count{};
+        std::uint32_t initial_playing{};
     };
 
     struct SpectraSceneDocumentView {
@@ -1657,18 +1659,21 @@ namespace ngp::plugin {
                     .kind = SPECTRA_SCENE_TIMELINE_STATIC,
                     .frame_rate = timeline.frame_rate,
                     .frame_count = timeline.frame_count,
+                    .initial_playing = timeline.initial_playing ? 1u : 0u,
                 };
             case TimelineKind::Live:
                 return SpectraSceneTimeline{
                     .kind = SPECTRA_SCENE_TIMELINE_LIVE,
                     .frame_rate = timeline.frame_rate,
                     .frame_count = timeline.frame_count,
+                    .initial_playing = timeline.initial_playing ? 1u : 0u,
                 };
             case TimelineKind::Indexed:
                 return SpectraSceneTimeline{
                     .kind = SPECTRA_SCENE_TIMELINE_INDEXED,
                     .frame_rate = timeline.frame_rate,
                     .frame_count = timeline.frame_count,
+                    .initial_playing = timeline.initial_playing ? 1u : 0u,
                 };
             }
             throw std::runtime_error("plugin timeline kind is invalid");
