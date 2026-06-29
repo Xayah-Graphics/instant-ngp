@@ -1282,6 +1282,13 @@ namespace ngp::project {
                 .initial_running = false,
                 .step_delta_seconds = 1.0 / 60.0,
             },
+            .navigation_target = plugin::ViewportNavigationTarget{
+                .revision = 1u,
+                .focus = {0.5f, 0.5f, 0.5f},
+                .bounds_minimum = {0.0f, 0.0f, 0.0f},
+                .bounds_maximum = {1.0f, 1.0f, 1.0f},
+                .navigation_up = {0.0f, 1.0f, 0.0f},
+            },
             .active_camera_name = this->state->overview_camera_name,
             .materials = std::move(materials),
             .lights = volume_visible ? this->state->lights : std::vector<plugin::Light>{},
@@ -1308,6 +1315,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v16(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v17(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

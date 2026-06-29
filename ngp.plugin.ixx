@@ -431,9 +431,18 @@ export namespace ngp::plugin {
         double step_delta_seconds{1.0 / 60.0};
     };
 
+    struct ViewportNavigationTarget {
+        std::uint64_t revision{1u};
+        std::array<float, 3u> focus{0.5f, 0.5f, 0.5f};
+        std::array<float, 3u> bounds_minimum{0.0f, 0.0f, 0.0f};
+        std::array<float, 3u> bounds_maximum{1.0f, 1.0f, 1.0f};
+        std::array<float, 3u> navigation_up{0.0f, 1.0f, 0.0f};
+    };
+
     struct Document {
         TimelineDescriptor timeline{};
         UpdateDescriptor update{};
+        ViewportNavigationTarget navigation_target{};
         std::string active_camera_name{};
         std::vector<Camera> cameras{};
         std::vector<Material> materials{};
@@ -799,7 +808,7 @@ export namespace ngp::plugin {
 } // namespace ngp::plugin
 
 namespace ngp::plugin {
-    constexpr std::uint32_t plugin_abi_version = 16u;
+    constexpr std::uint32_t plugin_abi_version = 17u;
     typedef void SpectraSceneInstance;
 
     typedef std::uint32_t SpectraSceneResult;
@@ -1239,10 +1248,19 @@ namespace ngp::plugin {
         double step_delta_seconds{};
     };
 
+    struct SpectraSceneViewportNavigationTarget {
+        std::uint64_t revision{};
+        float focus[3]{};
+        float bounds_minimum[3]{};
+        float bounds_maximum[3]{};
+        float navigation_up[3]{};
+    };
+
     struct SpectraSceneDocumentView {
         std::uint64_t struct_size{};
         SpectraSceneTimeline timeline{};
         SpectraSceneUpdateDescriptor update{};
+        SpectraSceneViewportNavigationTarget navigation_target{};
         const char* active_camera_name{};
         SpectraSceneItems items{};
     };
@@ -1696,6 +1714,17 @@ namespace ngp::plugin {
             };
         }
 
+        [[nodiscard]] SpectraSceneViewportNavigationTarget make_navigation_target_view(const ViewportNavigationTarget& target) {
+            SpectraSceneViewportNavigationTarget view{
+                .revision = target.revision,
+            };
+            copy_array(view.focus, target.focus);
+            copy_array(view.bounds_minimum, target.bounds_minimum);
+            copy_array(view.bounds_maximum, target.bounds_maximum);
+            copy_array(view.navigation_up, target.navigation_up);
+            return view;
+        }
+
         [[nodiscard]] SpectraSceneDocumentView make_document_abi_view(SceneAbiStorage& cache) {
             cache.material_views.clear();
             cache.material_views.reserve(cache.document.materials.size());
@@ -1716,6 +1745,7 @@ namespace ngp::plugin {
                 .struct_size               = sizeof(SpectraSceneDocumentView),
                 .timeline                  = make_timeline_view(cache.document.timeline),
                 .update                    = make_update_view(cache.document.update),
+                .navigation_target         = make_navigation_target_view(cache.document.navigation_target),
                 .active_camera_name        = cache.document.active_camera_name.c_str(),
                 .items =
                     SpectraSceneItems{
