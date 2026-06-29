@@ -913,7 +913,7 @@ namespace ngp::project {
 
         created->cameras.reserve(selected_camera_count + 1u);
         constexpr Vector3 overview_target{0.5f, 0.5f, 0.5f};
-        constexpr Vector3 overview_eye{0.5f, 1.55f, -1.65f};
+        constexpr Vector3 overview_eye{0.5f, 1.55f, 2.65f};
         constexpr Vector3 overview_up{0.0f, 1.0f, 0.0f};
         const Vector3 overview_forward = normalize(subtract(overview_target, overview_eye), "overview camera forward");
         const Vector3 overview_down = multiply(overview_up, -1.0f);
