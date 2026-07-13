@@ -3,11 +3,7 @@ name: Windows
 on:
   workflow_dispatch:
   push:
-    paths:
-      - '**'
   pull_request:
-    paths:
-      - '**'
 
 permissions:
   contents: read
@@ -25,15 +21,12 @@ jobs:
     env:
       CMAKE_BUILD_TYPE: Release
       INSTANT_NGP_BUILD_DIR: build
-      INSTANT_NGP_CMAKE_VERSION: '4.3.0'
+      INSTANT_NGP_CMAKE_VERSION: '4.4.0'
       INSTANT_NGP_CUDA_VERSION: '13.2.0'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -74,8 +67,8 @@ jobs:
           }
           $cmakeMajor = [int]$Matches[1]
           $cmakeMinor = [int]$Matches[2]
-          if ($cmakeMajor -lt 4 -or ($cmakeMajor -eq 4 -and $cmakeMinor -lt 3)) {
-            throw "CMake 4.3 or newer is required; found $cmakeVersionLine."
+          if ($cmakeMajor -lt 4 -or ($cmakeMajor -eq 4 -and $cmakeMinor -lt 4)) {
+            throw "CMake 4.4 or newer is required; found $cmakeVersionLine."
           }
 
           $nvccVersion = (nvcc --version) -join "`n"

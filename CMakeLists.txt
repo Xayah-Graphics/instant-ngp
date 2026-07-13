@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 4.3.0)
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
+cmake_minimum_required(VERSION 4.4.0)
+set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
 project(InstantNGP VERSION 1.2.1 LANGUAGES CXX CUDA)
 
 option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
@@ -11,8 +11,6 @@ option(NGP_BUILD_PROJECT_PLUGIN "Build the Spectra scene project plugin" OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API ON)
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 
 
 # ============================================================================
@@ -86,8 +84,14 @@ endif ()
 string(MAKE_C_IDENTIFIER "${NGP_TRAIN_PROFILE}" NGP_TRAIN_PROFILE_DEFINITION_SUFFIX)
 string(TOUPPER "${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}" NGP_TRAIN_PROFILE_DEFINITION_SUFFIX)
 
-function(download_if_needed url out_path)
+function(download_if_needed url out_path sha256)
+    string(TOLOWER "${sha256}" expected_sha256)
     if (EXISTS "${out_path}")
+        file(SHA256 "${out_path}" existing_sha256)
+        string(TOLOWER "${existing_sha256}" existing_sha256)
+        if (NOT existing_sha256 STREQUAL expected_sha256)
+            message(FATAL_ERROR "Cached file hash mismatch for ${out_path}: expected ${expected_sha256}, got ${existing_sha256}")
+        endif ()
         message(STATUS "Using cached file: ${out_path}")
         return()
     endif ()
@@ -96,27 +100,34 @@ function(download_if_needed url out_path)
     file(MAKE_DIRECTORY "${out_dir}")
 
     message(STATUS "Downloading ${url}")
+    set(tmp_path "${out_path}.download")
+    file(REMOVE "${tmp_path}")
     file(DOWNLOAD
             "${url}"
-            "${out_path}"
+            "${tmp_path}"
             TLS_VERIFY ON
+            EXPECTED_HASH "SHA256=${sha256}"
             STATUS dl_status
     )
 
     list(GET dl_status 0 dl_code)
     list(GET dl_status 1 dl_msg)
     if (NOT dl_code EQUAL 0)
+        file(REMOVE "${tmp_path}")
         message(FATAL_ERROR "Failed to download ${url}: [${dl_code}] ${dl_msg}")
     endif ()
+    file(RENAME "${tmp_path}" "${out_path}")
 endfunction()
 
 download_if_needed(
         "https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp"
         "${CMAKE_CURRENT_BINARY_DIR}/vendor/json/json.hpp"
+        "AAF127C04CB31C406E5B04A63F1AE89369FCCDE6D8FA7CDDA1ED4F32DFC5DE63"
 )
 download_if_needed(
         "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image_write.h"
         "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image_write.h"
+        "CBD5F0AD7A9CF4468AFFB36354A1D2338034F2C12473CF1A8E32053CB6914A05"
 )
 
 # ============================================================================
@@ -153,22 +164,27 @@ if (NGP_BUILD_APP OR NGP_BUILD_PROJECT_PLUGIN)
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.ixx"
             "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.ixx"
+            "0E2D0EB41BAD298103BBB873C5C4DA5BB3AF3A40E913DD92CB4BCF4CF621C179"
     )
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/nerf_synthetic.cpp"
             "${NGP_DATASET_VENDOR_DIR}/nerf_synthetic.cpp"
+            "F786677A654C47CF7253BFB3F49D4A7E34112DF6E108E2A3C4C59DBF1B4BC27E"
     )
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/dd_nerf.ixx"
             "${NGP_DATASET_VENDOR_DIR}/dd_nerf.ixx"
+            "FC0DD63059EA6743CBBD0CA3AD4401185AD0169B1F75013879DDD7BBAE29F216"
     )
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/dataset/${NGP_DATASET_COMMIT}/dd_nerf.cpp"
             "${NGP_DATASET_VENDOR_DIR}/dd_nerf.cpp"
+            "C41104BEB22DA837FE361EF3FEDFC91BFE99A6A52CA2F604A76D30CDB587967D"
     )
     download_if_needed(
             "https://raw.githubusercontent.com/nothings/stb/28d546d5eb77d4585506a20480f4de2e706dff4c/stb_image.h"
             "${CMAKE_CURRENT_BINARY_DIR}/vendor/stb/stb_image.h"
+            "594C2FE35D49488B4382DBFAEC8F98366DEFCA819D916AC95BECF3E75F4200B3"
     )
 
     add_library(dataset-loader)
@@ -196,10 +212,12 @@ if (NGP_BUILD_APP)
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/util/${NGP_UTIL_COMMIT}/xcli.ixx"
             "${NGP_UTIL_VENDOR_DIR}/xcli.ixx"
+            "2F80115AA7B739BDE4BF990EC1C0D0AFD85CF6B5610AF9A9D22A8C6686898F8D"
     )
     download_if_needed(
             "https://raw.githubusercontent.com/Xayah-Graphics/util/${NGP_UTIL_COMMIT}/xcli.cpp"
             "${NGP_UTIL_VENDOR_DIR}/xcli.cpp"
+            "A1386CE6782CF267CD9AFB002FA66E70B7BF019CFA19ADC9C5EF0470BE445E69"
     )
 
     add_library(xayah-util-xcli)
@@ -218,6 +236,9 @@ if (NGP_BUILD_APP)
     target_compile_definitions(instant_ngp PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
     target_link_libraries(instant_ngp PRIVATE xayah-util-xcli dataset-loader libngp CUDA::cudart)
     set_property(TARGET instant_ngp PROPERTY CXX_MODULE_STD ON)
+    if (MSVC)
+        target_link_options(instant_ngp PRIVATE "/WHOLEARCHIVE:${CMAKE_CURRENT_BINARY_DIR}/@cmake_cxx_std.lib")
+    endif ()
 endif ()
 
 
@@ -239,4 +260,7 @@ if (NGP_BUILD_PROJECT_PLUGIN)
     target_compile_definitions(ngp_project_plugin PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
     target_link_libraries(ngp_project_plugin PRIVATE dataset-loader libngp CUDA::cudart)
     set_property(TARGET ngp_project_plugin PROPERTY CXX_MODULE_STD ON)
+    if (MSVC)
+        target_link_options(ngp_project_plugin PRIVATE "/WHOLEARCHIVE:${CMAKE_CURRENT_BINARY_DIR}/@cmake_cxx_std.lib")
+    endif ()
 endif ()

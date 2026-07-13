@@ -115,7 +115,7 @@ namespace ngp::project {
             ExternalGpuBuffer& operator=(ExternalGpuBuffer&&) = delete;
             ~ExternalGpuBuffer() noexcept;
 
-            void ensure(std::shared_ptr<plugin::HostServices> host_services, std::uint32_t kind, std::uint64_t requested_byte_size, std::string_view debug_name, std::string_view label);
+            void ensure(std::shared_ptr<plugin::HostServices> host_services, std::uint32_t kind, std::uint64_t requested_byte_size, std::string_view label);
             void reset() noexcept;
 
             [[nodiscard]] bool has_capacity(std::uint64_t requested_byte_size) const noexcept;
@@ -493,14 +493,14 @@ namespace ngp::project {
 #endif
         }
 
-        void ExternalGpuBuffer::ensure(std::shared_ptr<plugin::HostServices> next_host_services, const std::uint32_t kind, const std::uint64_t requested_byte_size, const std::string_view debug_name, const std::string_view label) {
+        void ExternalGpuBuffer::ensure(std::shared_ptr<plugin::HostServices> next_host_services, const std::uint32_t kind, const std::uint64_t requested_byte_size, const std::string_view label) {
             if (this->has_capacity(requested_byte_size)) return;
             this->reset();
             if (next_host_services == nullptr) throw std::runtime_error{std::format("Spectra host services are required for {} visualization.", label)};
             if (requested_byte_size == 0u) throw std::runtime_error{std::format("{} byte size is invalid.", label)};
             if (!next_host_services->request_gpu_buffer) throw std::runtime_error{"Spectra host services request_gpu_buffer callback is not configured."};
             if (!next_host_services->release_gpu_buffer) throw std::runtime_error{"Spectra host services release_gpu_buffer callback is not configured."};
-            plugin::GpuBufferAllocation next_allocation = next_host_services->request_gpu_buffer(kind, requested_byte_size, debug_name);
+            plugin::GpuBufferAllocation next_allocation = next_host_services->request_gpu_buffer(kind, requested_byte_size);
             if (next_allocation.resource_id == 0u) throw std::runtime_error{std::format("Spectra returned an invalid {} resource id.", label)};
             if (next_allocation.kind != kind) throw std::runtime_error{std::format("Spectra returned an unexpected GPU buffer kind for {}.", label)};
             if (next_allocation.byte_size < requested_byte_size) {
@@ -580,7 +580,7 @@ namespace ngp::project {
                 state.occupancy_grid->cell_scale = state.debug.occupancy_cell_scale;
                 return;
             }
-            state.occupancy_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "instant-ngp occupancy grid bitfield", "occupancy grid");
+            state.occupancy_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportVoxelGrid, view.bitfield_bytes, "occupancy grid");
             std::uint8_t* const occupancy_bitfield = state.occupancy_buffer.mapped_as<std::uint8_t>();
             if (occupancy_bitfield == nullptr) throw std::runtime_error{"Occupancy grid bitfield buffer was not mapped."};
             if (const cudaError_t status = cudaMemcpy(occupancy_bitfield, view.bitfield, view.bitfield_bytes, cudaMemcpyDeviceToDevice); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemcpy occupancy grid bitfield failed: "} + cudaGetErrorString(status)};
@@ -600,7 +600,6 @@ namespace ngp::project {
                 .index_encoding = plugin::ViewportVoxelGridIndexEncoding::Morton3D,
                 .buffer_id = state.occupancy_buffer.resource_id(),
                 .source_byte_size = view.bitfield_bytes,
-                .revision = view.revision,
             };
         }
 
@@ -641,7 +640,7 @@ namespace ngp::project {
             const bool needs_point_cloud = state.debug.show_sampler_points;
 
             if (needs_point_cloud) {
-                state.sampler_points_buffer.ensure(state.host_services, plugin::GpuBufferKindPointCloud, point_byte_size, "instant-ngp sampler compacted samples", "sampler point cloud");
+                state.sampler_points_buffer.ensure(state.host_services, plugin::GpuBufferKindPointCloud, point_byte_size, "sampler point cloud");
                 point_instances = state.sampler_points_buffer.mapped_as<std::byte>();
                 if (point_instances == nullptr) throw std::runtime_error{"Sampler point cloud external buffer was not mapped."};
                 requested_point_bytes = point_byte_size;
@@ -651,7 +650,7 @@ namespace ngp::project {
             }
 
             if (state.debug.show_sampler_rays) {
-                state.sampler_segments_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportSegmentSet, segment_byte_size, "instant-ngp sampler ray segments", "sampler ray segments");
+                state.sampler_segments_buffer.ensure(state.host_services, plugin::GpuBufferKindViewportSegmentSet, segment_byte_size, "sampler ray segments");
                 segment_instances = state.sampler_segments_buffer.mapped_as<std::byte>();
                 if (segment_instances == nullptr) throw std::runtime_error{"Sampler ray segment external buffer was not mapped."};
                 requested_segment_bytes = segment_byte_size;
@@ -681,7 +680,6 @@ namespace ngp::project {
                     .point_count = stats->point_count,
                     .buffer_id = state.sampler_points_buffer.resource_id(),
                     .source_byte_size = stats->point_byte_size,
-                    .revision = stats->revision,
                     .material_name = sampler_material_name,
                     .transform = {},
                     .bounds = plugin::Bounds{
@@ -698,7 +696,6 @@ namespace ngp::project {
                     .segment_count = stats->ray_count,
                     .buffer_id = state.sampler_segments_buffer.resource_id(),
                     .source_byte_size = stats->segment_byte_size,
-                    .revision = stats->revision,
                     .width = state.debug.sampler_ray_width,
                     .width_mode = plugin::ViewportSegmentWidthMode::Screen,
                     .depth_mode = plugin::ViewportSegmentDepthMode::DepthTested,
@@ -745,8 +742,8 @@ namespace ngp::project {
             if (value_count > std::numeric_limits<std::uint64_t>::max() / (3u * sizeof(float))) throw std::runtime_error("Instant NGP color grid byte size overflows uint64");
             const std::uint64_t color_byte_size = value_count * 3u * sizeof(float);
             if (color_byte_size > std::numeric_limits<std::size_t>::max()) throw std::runtime_error("Instant NGP color grid byte size exceeds host addressable size");
-            state.density_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, byte_size, "instant-ngp direct density grid volume", "density volume");
-            state.color_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, color_byte_size, "instant-ngp color grid volume", "color volume");
+            state.density_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, byte_size, "density volume");
+            state.color_buffer.ensure(state.host_services, plugin::GpuBufferKindVolumeChannel, color_byte_size, "color volume");
             float* const density_values = state.density_buffer.mapped_as<float>();
             float* const color_values = state.color_buffer.mapped_as<float>();
             if (density_values == nullptr) throw std::runtime_error("Density volume external buffer was not mapped");
@@ -773,8 +770,18 @@ namespace ngp::project {
                     .alpha_mode = "blend",
                     .base_color = {1.0f, 1.0f, 1.0f, 1.0f},
                     .roughness = 0.35f,
-                    .volume_density_scale = volume_density_scale,
-                    .volume_temperature_scale = 1.0f,
+                    .volume = plugin::VolumeMaterial{
+                        .mode = plugin::VolumeMaterialMode::Medium,
+                        .density = plugin::VolumeChannelBinding{
+                            .channel_name = "density",
+                            .scale = volume_density_scale,
+                            .enabled = true,
+                        },
+                        .color = plugin::VolumeChannelBinding{
+                            .channel_name = "color",
+                            .enabled = true,
+                        },
+                    },
                 },
             };
             state.lights = {
@@ -797,25 +804,21 @@ namespace ngp::project {
                 .channels = {
                     plugin::VolumeChannel{
                         .name = "density",
-                        .dimensions = view.dimensions,
                         .format = plugin::VolumeChannelFormat::Float32,
                         .source_kind = plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
                         .index_encoding = plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.density_buffer.resource_id(),
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(density_values),
                         .source_byte_size = byte_size,
-                        .revision = view.revision,
                     },
                     plugin::VolumeChannel{
                         .name = "color",
-                        .dimensions = view.dimensions,
                         .format = plugin::VolumeChannelFormat::Float32x3,
                         .source_kind = plugin::VolumeChannelSourceKind::ExternalGpuBuffer,
                         .index_encoding = plugin::VolumeChannelIndexEncoding::Morton3D,
                         .buffer_id = state.color_buffer.resource_id(),
                         .external_device_pointer = reinterpret_cast<std::uintptr_t>(color_values),
                         .source_byte_size = color_byte_size,
-                        .revision = view.revision,
                     },
                 },
                 .material_name = density_material_name,
@@ -1297,7 +1300,6 @@ namespace ngp::project {
 
     void Project::write_frame(plugin::SceneBuilder& scene, const plugin::FrameInfo frame) const {
         if (this->state == nullptr) throw std::runtime_error("project is not open");
-        if (!std::isfinite(frame.delta_seconds) || frame.delta_seconds < 0.0) throw std::runtime_error("project frame delta time is invalid");
         if (!std::isfinite(frame.time_seconds) || frame.time_seconds < 0.0) throw std::runtime_error("project frame time is invalid");
         if (frame.frame_index != 0u) throw std::runtime_error("project static timeline frame index must remain zero");
         const bool volume_visible = density_volume_visible(*this->state);
@@ -1315,6 +1317,6 @@ namespace ngp::project {
 
 }
 
-extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v17(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
+extern "C" SPECTRA_SCENE_EXPORT auto spectra_scene_plugin_v18(void) -> decltype(ngp::plugin::export_plugin<ngp::project::Project>()) {
     return ngp::plugin::export_plugin<ngp::project::Project>();
 }

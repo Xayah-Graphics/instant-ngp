@@ -3,11 +3,7 @@ name: Arch Linux
 on:
   workflow_dispatch:
   push:
-    paths:
-      - '**'
   pull_request:
-    paths:
-      - '**'
 
 permissions:
   contents: read
@@ -28,7 +24,7 @@ jobs:
     env:
       CMAKE_BUILD_TYPE: Release
       INSTANT_NGP_BUILD_DIR: build
-      INSTANT_NGP_MIN_CMAKE_VERSION: '4.3'
+      INSTANT_NGP_MIN_CMAKE_VERSION: '4.4'
       INSTANT_NGP_CUDA_MAJOR_VERSION: '13'
       CUDAToolkit_ROOT: /opt/cuda
 
@@ -70,7 +66,7 @@ jobs:
           cmake_major="${cmake_version%%.*}"
           cmake_rest="${cmake_version#*.}"
           cmake_minor="${cmake_rest%%.*}"
-          if (( cmake_major < 4 || (cmake_major == 4 && cmake_minor < 3) )); then
+          if (( cmake_major < 4 || (cmake_major == 4 && cmake_minor < 4) )); then
             echo "::error::CMake ${INSTANT_NGP_MIN_CMAKE_VERSION} or newer is required; found ${cmake_version}."
             exit 1
           fi
@@ -79,9 +75,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
       - name: Configure
         shell: bash
