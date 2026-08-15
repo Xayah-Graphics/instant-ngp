@@ -61,6 +61,17 @@ namespace ngp::train {
 
     export struct TrainingStateRequest final {
         bool occupancy_grid_update_active = true;
+        std::uint64_t seed                 = 1337u;
+    };
+
+    export struct NeuralFieldParameters final {
+        std::span<const std::uint16_t> hash_grid;
+        std::span<const std::uint16_t> density_input;
+        std::span<const std::uint16_t> density_output;
+        std::span<const std::uint16_t> rgb_input;
+        std::span<const std::uint16_t> rgb_hidden;
+        std::span<const std::uint16_t> rgb_output;
+        std::span<const std::uint32_t> occupancy;
     };
 
     export enum class OccupancyGridUpdateState : std::uint8_t {
@@ -137,6 +148,7 @@ namespace ngp::train {
         std::expected<void, std::string> update_training_state(TrainingStateRequest request);
         std::expected<void, std::string> export_weights(const std::filesystem::path& path) const;
         std::expected<void, std::string> load_weights(const std::filesystem::path& path);
+        [[nodiscard]] NeuralFieldParameters neural_field_parameters() const noexcept;
 
         void initialize(std::span<const FrameSetView> frame_sets, float scene_scale, TrainingStateRequest request = {});
 
@@ -157,6 +169,7 @@ namespace ngp::train {
             std::uint32_t comparison_width       = 0u;
             std::uint32_t comparison_height      = 0u;
             float scene_scale                    = 0.0f;
+            std::uint64_t seed                    = 1337u;
 
             // Mutated by optimize()/update_training_state(): step, adaptive batch shape, counters, and occupancy update mode.
             std::uint32_t current_step                            = 0u;

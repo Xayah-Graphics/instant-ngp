@@ -80,7 +80,6 @@ namespace ngp::train::config {
     };
 
     struct RandomConfig final {
-        std::uint64_t train_seed = 1337u;
         std::uint64_t pcg32_default_state = 0x853c49e6748fea9bULL;
         std::uint64_t pcg32_default_stream = 0xda3e39cb94b95bdbULL;
         std::uint64_t pcg32_mult = 0x5851f42d4c957f2dULL;
@@ -504,7 +503,6 @@ namespace ngp::train::config {
     inline constexpr float density_regularization_max_depth = active_profile.optimizer.density_regularization_max_depth;
     inline constexpr float density_regularization_strength = active_profile.optimizer.density_regularization_strength;
 
-    inline constexpr std::uint64_t train_seed = active_profile.random.train_seed;
     inline constexpr std::uint64_t pcg32_default_state = active_profile.random.pcg32_default_state;
     inline constexpr std::uint64_t pcg32_default_stream = active_profile.random.pcg32_default_stream;
     inline constexpr std::uint64_t pcg32_mult = active_profile.random.pcg32_mult;

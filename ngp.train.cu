@@ -321,11 +321,11 @@ namespace ngp::cuda {
             density_grid_values[i] = visible_to_training_camera ? 0.0f : -1.0f;
         }
 
-        __global__ void generate_density_grid_samples_kernel(const std::uint32_t sample_count, const std::uint32_t density_grid_ema_step, const std::uint32_t rng_phase, const float threshold, const float* __restrict__ density_grid_values, float* __restrict__ sample_coords, std::uint32_t* __restrict__ density_grid_indices) {
+        __global__ void generate_density_grid_samples_kernel(const std::uint32_t sample_count, const std::uint64_t seed, const std::uint32_t density_grid_ema_step, const std::uint32_t rng_phase, const float threshold, const float* __restrict__ density_grid_values, float* __restrict__ sample_coords, std::uint32_t* __restrict__ density_grid_indices) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= sample_count) return;
 
-            Pcg32 rng{train::config::train_seed};
+            Pcg32 rng{seed};
             rng.advance(((static_cast<std::uint64_t>(density_grid_ema_step) * 2ull + static_cast<std::uint64_t>(rng_phase) + 1ull) << 32u) + static_cast<std::uint64_t>(i) * train::config::random_values_per_thread);
 
             std::uint32_t idx = 0u;
@@ -414,14 +414,14 @@ namespace ngp::cuda {
             if (occupied != 0u) atomicAdd(occupancy_grid_occupied_count, occupied);
         }
 
-        __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
+        __global__ void generate_training_samples_kernel(const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint64_t seed, const std::uint32_t current_step, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const float* __restrict__ camera, const std::uint8_t* __restrict__ occupancy, std::uint32_t* __restrict__ ray_counter, std::uint32_t* __restrict__ sample_counter, std::uint32_t* __restrict__ ray_indices_out, float* __restrict__ rays_out, std::uint32_t* __restrict__ numsteps_out, float* __restrict__ coords_out) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= rays_per_batch) return;
 
             const std::uint32_t image = static_cast<std::uint32_t>((static_cast<std::uint64_t>(i) * frame_count) / rays_per_batch) % frame_count;
             const float* frame_camera = camera + static_cast<std::uint64_t>(image) * 12u;
 
-            Pcg32 rng{train::config::train_seed};
+            Pcg32 rng{seed};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(i) * train::config::max_random_samples_per_ray);
 
@@ -685,7 +685,7 @@ namespace ngp::cuda {
             if (threadIdx.x == 0u) atomicAdd(evaluation_loss_sum, sums[0]);
         }
 
-        __global__ void compute_training_loss_and_compact_kernel(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* __restrict__ ray_counter, const std::uint8_t* __restrict__ pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const __half* __restrict__ network_output, std::uint32_t* __restrict__ compacted_sample_counter, const std::uint32_t* __restrict__ ray_indices_in, const float* __restrict__ rays_in, std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, float* __restrict__ coords_out, __half* __restrict__ dloss_doutput, float* __restrict__ loss_output) {
+        __global__ void compute_training_loss_and_compact_kernel(const std::uint32_t rays_per_batch, const std::uint64_t seed, const std::uint32_t current_step, const std::uint32_t* __restrict__ ray_counter, const std::uint8_t* __restrict__ pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const __half* __restrict__ network_output, std::uint32_t* __restrict__ compacted_sample_counter, const std::uint32_t* __restrict__ ray_indices_in, const float* __restrict__ rays_in, std::uint32_t* __restrict__ numsteps_in, const float* __restrict__ coords_in, float* __restrict__ coords_out, __half* __restrict__ dloss_doutput, float* __restrict__ loss_output) {
             const std::uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
             if (i >= *ray_counter) return;
 
@@ -720,7 +720,7 @@ namespace ngp::cuda {
             }
 
             const std::uint32_t ray_index = ray_indices_in[i];
-            Pcg32 rng{train::config::train_seed};
+            Pcg32 rng{seed};
             rng.advance(static_cast<std::uint64_t>(current_step) << 32u);
             rng.advance(static_cast<std::uint64_t>(ray_index) * train::config::max_random_samples_per_ray);
 
@@ -940,10 +940,10 @@ namespace ngp::cuda {
             params[i] = static_cast<__half>(params_full_precision[i]);
         }
 
-        __global__ void initialize_grid_params_kernel(float* __restrict__ params_full_precision, __half* __restrict__ params, __half* __restrict__ param_gradients) {
+        __global__ void initialize_grid_params_kernel(const std::uint64_t seed, float* __restrict__ params_full_precision, __half* __restrict__ params, __half* __restrict__ param_gradients) {
             const std::uint32_t i         = threadIdx.x + blockIdx.x * blockDim.x;
             const std::uint32_t n_threads = blockDim.x * gridDim.x;
-            Pcg32 rng{train::config::train_seed};
+            Pcg32 rng{seed};
             rng.advance(train::config::network_parameter_layout.mlp_param_count + static_cast<std::uint64_t>(i) * train::config::random_values_per_thread);
 
             for (std::uint32_t j = 0u; j < train::config::random_values_per_thread; ++j) {
@@ -1367,11 +1367,11 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMalloc(&out_param_gradients, static_cast<std::size_t>(train::config::network_parameter_layout.total_param_count) * sizeof(__half)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMalloc trainable param gradients failed: "} + cudaGetErrorString(status)};
     }
 
-    void initialize_mlp_parameters(float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
+    void initialize_mlp_parameters(const std::uint64_t seed, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"invalid mlp parameter initialization input."};
 
         std::vector host_params(train::config::network_parameter_layout.mlp_param_count, 0.0f);
-        Pcg32 rng{train::config::train_seed};
+        Pcg32 rng{seed};
 
         {
             const float scale = std::sqrt(6.0f / static_cast<float>(train::config::mlp_width + train::config::grid_output_width));
@@ -1407,12 +1407,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"cast_params_to_half_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void initialize_grid_parameters(float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
+    void initialize_grid_parameters(const std::uint64_t seed, float* const params_full_precision, std::uint16_t* const params, std::uint16_t* const param_gradients) {
         if (params_full_precision == nullptr || params == nullptr || param_gradients == nullptr) throw std::runtime_error{"grid parameter buffers are null."};
 
         constexpr std::uint32_t n_threads = (train::config::network_parameter_layout.grid_param_count + train::config::random_values_per_thread - 1u) / train::config::random_values_per_thread;
         constexpr std::uint32_t blocks    = (n_threads + train::config::threads_per_block - 1u) / train::config::threads_per_block;
-        initialize_grid_params_kernel<<<blocks, train::config::threads_per_block>>>(params_full_precision + train::config::network_parameter_layout.grid_param_offset, reinterpret_cast<__half*>(params + train::config::network_parameter_layout.grid_param_offset), reinterpret_cast<__half*>(param_gradients + train::config::network_parameter_layout.grid_param_offset));
+        initialize_grid_params_kernel<<<blocks, train::config::threads_per_block>>>(seed, params_full_precision + train::config::network_parameter_layout.grid_param_offset, reinterpret_cast<__half*>(params + train::config::network_parameter_layout.grid_param_offset), reinterpret_cast<__half*>(param_gradients + train::config::network_parameter_layout.grid_param_offset));
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"initialize_grid_params_kernel failed: "} + cudaGetErrorString(status)};
     }
@@ -1470,7 +1470,7 @@ namespace ngp::cuda {
         }
     }
 
-    bool update_density_grid_values(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, std::uint32_t& density_grid_ema_step, const bool reset_density_grid) {
+    bool update_density_grid_values(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint64_t seed, const std::uint32_t current_step, const std::uint16_t* const params, float* const sample_coords, std::uint16_t* const density_input, std::uint16_t* const density_grid_output, float* const density_grid_values, float* const density_grid_scratch, std::uint32_t* const density_grid_indices, std::uint32_t& density_grid_ema_step, const bool reset_density_grid) {
         const std::uint32_t density_grid_skip = std::clamp(current_step / train::config::density_grid_skip_interval, 1u, train::config::density_grid_max_skip);
         if (!reset_density_grid && current_step % density_grid_skip != 0u) return false;
 
@@ -1490,12 +1490,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(density_grid_scratch, 0, static_cast<std::size_t>(train::config::nerf_grid_cells) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset density grid scratch failed: "} + cudaGetErrorString(status)};
 
         if (uniform_sample_count > 0u) {
-            generate_density_grid_samples_kernel<<<(uniform_sample_count + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(uniform_sample_count, density_grid_ema_step, 0u, -0.01f, density_grid_values, sample_coords, density_grid_indices);
+            generate_density_grid_samples_kernel<<<(uniform_sample_count + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(uniform_sample_count, seed, density_grid_ema_step, 0u, -0.01f, density_grid_values, sample_coords, density_grid_indices);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate uniform density grid samples failed: "} + cudaGetErrorString(status)};
         }
 
         if (nonuniform_sample_count > 0u) {
-            generate_density_grid_samples_kernel<<<(nonuniform_sample_count + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(nonuniform_sample_count, density_grid_ema_step, 1u, train::config::nerf_min_optical_thickness, density_grid_values, sample_coords + static_cast<std::uint64_t>(uniform_sample_count) * train::config::sample_coord_floats, density_grid_indices + uniform_sample_count);
+            generate_density_grid_samples_kernel<<<(nonuniform_sample_count + train::config::threads_per_block - 1u) / train::config::threads_per_block, train::config::threads_per_block>>>(nonuniform_sample_count, seed, density_grid_ema_step, 1u, train::config::nerf_min_optical_thickness, density_grid_values, sample_coords + static_cast<std::uint64_t>(uniform_sample_count) * train::config::sample_coord_floats, density_grid_indices + uniform_sample_count);
             if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate nonuniform density grid samples failed: "} + cudaGetErrorString(status)};
         }
 
@@ -1860,7 +1860,7 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(out_param_steps, 0, static_cast<std::size_t>(train::config::network_parameter_layout.total_param_count) * sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset optimizer param steps failed: "} + cudaGetErrorString(status)};
     }
 
-    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
+    void sample_training_batch(const float* const camera, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const float focal_x, const float focal_y, const float principal_x, const float principal_y, const std::uint64_t seed, const std::uint32_t current_step, const std::uint32_t rays_per_batch, const std::uint32_t sample_limit, const std::uint8_t* const occupancy, float* const sample_coords, float* const rays, std::uint32_t* const ray_indices, std::uint32_t* const numsteps, std::uint32_t* const ray_counter, std::uint32_t* const sample_counter) {
         if (sample_limit == 0u || sample_limit > train::config::max_samples || frame_count == 0u || width == 0u || height == 0u || focal_x <= 0.0f || focal_y <= 0.0f || !std::isfinite(principal_x) || !std::isfinite(principal_y) || (rays_per_batch != 0u && (camera == nullptr || occupancy == nullptr || sample_coords == nullptr || rays == nullptr || ray_indices == nullptr || numsteps == nullptr || ray_counter == nullptr || sample_counter == nullptr))) throw std::runtime_error{"invalid sampler input."};
         if (rays_per_batch == 0u) return;
 
@@ -1868,12 +1868,12 @@ namespace ngp::cuda {
         if (const cudaError_t status = cudaMemset(sample_counter, 0, sizeof(std::uint32_t)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset sampler sample counter failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + train::config::threads_per_block - 1u) / train::config::threads_per_block;
-        generate_training_samples_kernel<<<blocks, train::config::threads_per_block>>>(rays_per_batch, sample_limit, current_step, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
+        generate_training_samples_kernel<<<blocks, train::config::threads_per_block>>>(rays_per_batch, sample_limit, seed, current_step, frame_count, width, height, focal_x, focal_y, principal_x, principal_y, camera, occupancy, ray_counter, sample_counter, ray_indices, rays, numsteps, sample_coords);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"generate_training_samples_kernel failed: "} + cudaGetErrorString(status)};
     }
 
-    void compute_training_loss_and_compact_samples(const std::uint32_t rays_per_batch, const std::uint32_t current_step, const std::uint32_t* const ray_counter, const std::uint8_t* const pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const std::uint16_t* const network_output, std::uint32_t* const compacted_sample_counter, const std::uint32_t* const ray_indices, const float* const rays, std::uint32_t* const numsteps, const float* const sample_coords, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients, float* const loss_values) {
+    void compute_training_loss_and_compact_samples(const std::uint32_t rays_per_batch, const std::uint64_t seed, const std::uint32_t current_step, const std::uint32_t* const ray_counter, const std::uint8_t* const pixels, const std::uint32_t frame_count, const std::uint32_t width, const std::uint32_t height, const std::uint16_t* const network_output, std::uint32_t* const compacted_sample_counter, const std::uint32_t* const ray_indices, const float* const rays, std::uint32_t* const numsteps, const float* const sample_coords, float* const compacted_sample_coords, std::uint16_t* const network_output_gradients, float* const loss_values) {
         if (rays_per_batch == 0u) return;
         if (frame_count == 0u || width == 0u || height == 0u || ray_counter == nullptr || pixels == nullptr || network_output == nullptr || compacted_sample_counter == nullptr || ray_indices == nullptr || rays == nullptr || numsteps == nullptr || sample_coords == nullptr || compacted_sample_coords == nullptr || network_output_gradients == nullptr) throw std::runtime_error{"invalid loss and compaction input."};
 
@@ -1882,7 +1882,7 @@ namespace ngp::cuda {
             if (const cudaError_t status = cudaMemset(loss_values, 0, static_cast<std::size_t>(rays_per_batch) * sizeof(float)); status != cudaSuccess) throw std::runtime_error{std::string{"cudaMemset loss values failed: "} + cudaGetErrorString(status)};
 
         const std::uint32_t blocks = (rays_per_batch + train::config::threads_per_block - 1u) / train::config::threads_per_block;
-        compute_training_loss_and_compact_kernel<<<blocks, train::config::threads_per_block>>>(rays_per_batch, current_step, ray_counter, pixels, frame_count, width, height, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
+        compute_training_loss_and_compact_kernel<<<blocks, train::config::threads_per_block>>>(rays_per_batch, seed, current_step, ray_counter, pixels, frame_count, width, height, reinterpret_cast<const __half*>(network_output), compacted_sample_counter, ray_indices, rays, numsteps, sample_coords, compacted_sample_coords, reinterpret_cast<__half*>(network_output_gradients), loss_values);
 
         if (const cudaError_t status = cudaGetLastError(); status != cudaSuccess) throw std::runtime_error{std::string{"compute_training_loss_and_compact_kernel failed: "} + cudaGetErrorString(status)};
     }

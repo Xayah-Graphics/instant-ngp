@@ -1,0 +1,33 @@
+spectra 35 "Instant NGP Neural Field" {
+    active camera=1 film=1 sampler=1
+    neural-fields {
+        hash-grid-radiance-field 1 "Lego Neural Field"
+    }
+    cameras {
+        perspective 1 "Lego Camera" {
+            transform {
+                row 0 -0.734109997749329 0.67903059720993 1.40329583406448
+                row 0 0.679030656814575 0.734109878540039 1.47656625986099
+                row -0.999999940395355 0 0 0.5
+                row 0 0 0 1
+            }
+            vertical-fov 39.5977553357713
+            near-plane 0.01
+            far-plane 10
+        }
+    }
+    films {
+        film 1 "Lego View" gbuffer=#true {
+            resolution 800 800
+        }
+    }
+    samplers {
+        sampler 1 "Viewport Sampler" samples=1
+    }
+    dynamics seed=1337 {
+        system "field" "Instant NGP" provider="instant-ngp.field" {
+            parameter "iterations_per_step" integer 1
+            scene-bind "field" 1
+        }
+    }
+}

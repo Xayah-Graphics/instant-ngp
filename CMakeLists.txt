@@ -3,7 +3,11 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
 project(InstantNGP VERSION 1.2.1 LANGUAGES CXX CUDA)
 
 option(NGP_BUILD_APP "Build the optional Instant NGP executable" OFF)
-option(NGP_BUILD_PROJECT_PLUGIN "Build the Spectra scene project plugin" OFF)
+option(NGP_BUILD_SPECTRA_PROVIDER "Build the Spectra Neural Field Provider" OFF)
+
+if (NGP_BUILD_SPECTRA_PROVIDER AND NOT WIN32)
+    message(FATAL_ERROR "The Spectra Neural Field Provider is supported only on Windows")
+endif ()
 
 # ============================================================================
 # C++ Configuration
@@ -138,16 +142,12 @@ target_sources(
         libngp
         PRIVATE
         ngp.train.cpp
-        ngp.inspector.cpp
         ngp.train.cu
-        ngp.inspector.cu
-        ngp.inspector.h
         ngp.train.config.h
         ngp.train.h
         PUBLIC
         FILE_SET cxx_modules TYPE CXX_MODULES FILES
         ngp.train.ixx
-        ngp.inspector.ixx
 )
 target_include_directories(libngp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
 target_compile_definitions(libngp PRIVATE "NGP_TRAIN_PROFILE_${NGP_TRAIN_PROFILE_DEFINITION_SUFFIX}=1")
@@ -158,7 +158,7 @@ set_property(TARGET libngp PROPERTY CXX_MODULE_STD ON)
 # ============================================================================
 # Optional Dataset Loading
 # ============================================================================
-if (NGP_BUILD_APP OR NGP_BUILD_PROJECT_PLUGIN)
+if (NGP_BUILD_APP OR NGP_BUILD_SPECTRA_PROVIDER)
     set(NGP_DATASET_COMMIT "bc636fbfc7507e8173156393f71c0b569f5fe95b")
     set(NGP_DATASET_VENDOR_DIR "${CMAKE_CURRENT_BINARY_DIR}/vendor/dataset/${NGP_DATASET_COMMIT}")
     download_if_needed(
@@ -243,24 +243,31 @@ endif ()
 
 
 # ============================================================================
-# Optional Spectra Project Plugin
+# Optional Spectra Provider
 # ============================================================================
-if (NGP_BUILD_PROJECT_PLUGIN)
-    add_library(ngp_project_plugin SHARED)
+if (NGP_BUILD_SPECTRA_PROVIDER)
+    find_package(SpectraSDK 1 CONFIG REQUIRED)
+
+    spectra_add_provider(
+            instant-ngp-provider
+            MODULE ngp.provider
+            TYPE ngp::Provider
+    )
     target_sources(
-            ngp_project_plugin
-            PRIVATE
-            ngp.project.cpp
+            instant-ngp-provider
             PRIVATE
             FILE_SET cxx_modules TYPE CXX_MODULES FILES
-            ngp.plugin.ixx
-            ngp.project.ixx
+            ngp.provider.ixx
     )
-    target_include_directories(ngp_project_plugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
-    target_compile_definitions(ngp_project_plugin PRIVATE "NGP_TRAIN_PROFILE_NAME=\"${NGP_TRAIN_PROFILE}\"")
-    target_link_libraries(ngp_project_plugin PRIVATE dataset-loader libngp CUDA::cudart)
-    set_property(TARGET ngp_project_plugin PROPERTY CXX_MODULE_STD ON)
+    target_include_directories(instant-ngp-provider PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+    target_link_libraries(instant-ngp-provider PRIVATE dataset-loader libngp CUDA::cudart)
+    set_target_properties(
+            instant-ngp-provider
+            PROPERTIES
+            CXX_MODULE_STD ON
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/spectra"
+    )
     if (MSVC)
-        target_link_options(ngp_project_plugin PRIVATE "/WHOLEARCHIVE:${CMAKE_CURRENT_BINARY_DIR}/@cmake_cxx_std.lib")
+        target_link_options(instant-ngp-provider PRIVATE "/WHOLEARCHIVE:${CMAKE_CURRENT_BINARY_DIR}/@cmake_cxx_std.lib")
     endif ()
 endif ()

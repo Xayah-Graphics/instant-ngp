@@ -11,6 +11,7 @@ namespace ngp::train {
     void InstantNGP::initialize(const std::span<const FrameSetView> frame_sets, const float scene_scale, const TrainingStateRequest request) {
         try {
             this->host.scene_scale = scene_scale;
+            this->host.seed        = request.seed;
             if (!std::isfinite(scene_scale) || scene_scale <= 0.0f) throw std::runtime_error{"scene scale must be finite and positive."};
             if (frame_sets.empty()) throw std::runtime_error{"dataset must contain at least one loaded frame set."};
 
@@ -75,8 +76,8 @@ namespace ngp::train {
                 cuda::allocate_evaluation_comparison_buffer(this->host.comparison_width, this->host.comparison_height, this->device.comparison_pixels);
                 cuda::allocate_trainable_parameter_buffers(this->device.params_full_precision, this->device.params, this->device.param_gradients);
                 cuda::allocate_adam_state(this->device.optimizer_first_moments, this->device.optimizer_second_moments, this->device.optimizer_param_steps);
-                cuda::initialize_mlp_parameters(this->device.params_full_precision, this->device.params, this->device.param_gradients);
-                cuda::initialize_grid_parameters(this->device.params_full_precision, this->device.params, this->device.param_gradients);
+                cuda::initialize_mlp_parameters(request.seed, this->device.params_full_precision, this->device.params, this->device.param_gradients);
+                cuda::initialize_grid_parameters(request.seed, this->device.params_full_precision, this->device.params, this->device.param_gradients);
             }
 
             this->host.current_step = 0u;
@@ -154,7 +155,7 @@ namespace ngp::train {
             for (std::int32_t i = 0; i < request.iterations; ++i) {
                 loss_value_count = this->host.rays_per_batch;
                 const bool reset_density_grid = this->host.density_grid_ema_step == 0u;
-                const bool density_grid_updated = cuda::update_density_grid_values(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->host.density_grid_ema_step, reset_density_grid);
+                const bool density_grid_updated = cuda::update_density_grid_values(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.seed, this->host.current_step, this->device.params, this->device.sample_coords, this->device.density_input, this->device.network_output, this->device.density_grid_values, this->device.density_grid_scratch, this->device.density_grid_indices, this->host.density_grid_ema_step, reset_density_grid);
                 const bool occupancy_grid_force_update = this->host.occupancy_grid_update_state == OccupancyGridUpdateState::ActiveForceUpdate;
                 if ((density_grid_updated && this->host.occupancy_grid_update_state == OccupancyGridUpdateState::Active) || occupancy_grid_force_update) {
                     cuda::update_occupancy_grid_from_density_grid(this->device.density_grid_values, this->device.density_grid_mean, this->device.occupancy_grid_occupied_count, this->device.occupancy);
@@ -163,9 +164,9 @@ namespace ngp::train {
                     ++this->host.occupancy_grid_revision;
                     if (occupancy_grid_force_update) this->host.occupancy_grid_update_state = OccupancyGridUpdateState::Active;
                 }
-                cuda::sample_training_batch(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
+                cuda::sample_training_batch(device_frame_set->camera, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, host_frame_set->focal_x, host_frame_set->focal_y, host_frame_set->principal_x, host_frame_set->principal_y, this->host.seed, this->host.current_step, this->host.rays_per_batch, this->host.inference_sample_count, this->device.occupancy, this->device.sample_coords, this->device.rays, this->device.ray_indices, this->device.numsteps, this->device.ray_counter, this->device.sample_counter);
                 cuda::evaluate_network(this->host.inference_sample_count, this->device.sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.network_output);
-                cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.current_step, this->device.ray_counter, device_frame_set->pixels, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
+                cuda::compute_training_loss_and_compact_samples(this->host.rays_per_batch, this->host.seed, this->host.current_step, this->device.ray_counter, device_frame_set->pixels, host_frame_set->frame_count, host_frame_set->width, host_frame_set->height, this->device.network_output, this->device.compacted_sample_counter, this->device.ray_indices, this->device.rays, this->device.numsteps, this->device.sample_coords, this->device.compacted_sample_coords, this->device.network_output_gradients, this->device.loss_values);
                 cuda::pad_compacted_training_batch(this->device.compacted_sample_counter, this->device.compacted_sample_coords, this->device.network_output_gradients);
                 cuda::forward_network(this->device.compacted_sample_coords, this->device.params, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output);
                 cuda::backward_network(this->device.compacted_sample_coords, this->device.params, this->device.param_gradients, this->device.density_input, this->device.rgb_input, this->device.density_forward_hidden, this->device.rgb_forward_hidden, this->device.network_output, this->device.network_output_gradients, this->device.rgb_output_gradients, this->device.rgb_input_gradients, this->device.density_input_gradients, this->device.density_backward_hidden, this->device.rgb_backward_hidden, this->device.cublaslt_handle, this->device.cublaslt_workspace);
@@ -473,5 +474,18 @@ namespace ngp::train {
         } catch (const std::exception& error) {
             return std::unexpected{std::string{error.what()}};
         }
+    }
+
+    NeuralFieldParameters InstantNGP::neural_field_parameters() const noexcept {
+        const std::uint16_t* const parameters = this->device.params;
+        return {
+            {parameters + config::network_parameter_layout.grid_param_offset, config::network_parameter_layout.grid_param_count},
+            {parameters + config::network_parameter_layout.density_input_weight_offset, config::mlp_width * config::grid_output_width},
+            {parameters + config::network_parameter_layout.density_output_weight_offset, config::density_output_width * config::mlp_width},
+            {parameters + config::network_parameter_layout.rgb_input_weight_offset, config::mlp_width * config::rgb_input_width},
+            {parameters + config::network_parameter_layout.rgb_hidden_weight_offset, config::mlp_width * config::mlp_width},
+            {parameters + config::network_parameter_layout.rgb_output_weight_offset, config::network_output_width * config::mlp_width},
+            {reinterpret_cast<const std::uint32_t*>(this->device.occupancy), config::nerf_grid_cells / 32u},
+        };
     }
 } // namespace ngp::train
