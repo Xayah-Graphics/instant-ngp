@@ -26,6 +26,7 @@ export namespace ngp {
                 {},
                 {.minimum = 1.0, .maximum = 64.0, .step = 1.0, .section = "Training"}
             ),
+            spectra::sdk::cameras<"training">(),
             spectra::sdk::hash_grid_radiance_field<"field">(),
             spectra::sdk::metric<"loss", float>("Loss", {}, "Training", true),
             spectra::sdk::metric<"iteration", std::uint64_t>("Iteration", {}, "Training")
@@ -51,6 +52,25 @@ export namespace ngp {
     }
 
     void Provider::setup(spectra::sdk::cuda::Setup& setup) {
+        const dataset::nerf_synthetic::FrameSet& training = dataset.frame_sets.front();
+        const std::uint32_t width                          = training.frames.front().width;
+        const std::uint32_t height                         = training.frames.front().height;
+        std::vector<spectra::sdk::Camera> cameras{};
+        cameras.reserve(training.frames.size());
+        for (const dataset::nerf_synthetic::Frame& frame : training.frames) {
+            cameras.emplace_back(spectra::sdk::Camera{
+                .right     = {frame.camera[0], frame.camera[1], frame.camera[2]},
+                .down      = {frame.camera[3], frame.camera[4], frame.camera[5]},
+                .forward   = {frame.camera[6], frame.camera[7], frame.camera[8]},
+                .position  = {frame.camera[9], frame.camera[10], frame.camera[11]},
+                .focal     = {frame.focal_x, frame.focal_y},
+                .principal = {frame.principal_x, frame.principal_y},
+            });
+        }
+        spectra::sdk::cuda::CamerasSetup camera_output = setup.cameras<"training">(cameras, width, height);
+        const std::size_t layer_byte_size              = static_cast<std::size_t>(width) * height * sizeof(spectra::sdk::Rgba8);
+        for (std::size_t index = 0; index != training.frames.size(); ++index)
+            if (cudaMemcpy(camera_output.images.data() + index * static_cast<std::size_t>(width) * height, training.frames[index].rgba.data(), layer_byte_size, cudaMemcpyHostToDevice) != cudaSuccess) throw std::runtime_error("Instant NGP training Camera reference upload failed");
         setup.hash_grid_radiance_field<"field">();
     }
 
