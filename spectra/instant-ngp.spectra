@@ -1,4 +1,4 @@
-spectra 35 "Instant NGP Neural Field" {
+spectra 36 "Instant NGP Neural Field" {
     active camera=1 film=1 sampler=1
     neural-fields {
         hash-grid-radiance-field 1 "Lego Neural Field"
