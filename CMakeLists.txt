@@ -246,7 +246,7 @@ endif ()
 # Optional Spectra Provider
 # ============================================================================
 if (NGP_BUILD_SPECTRA_PROVIDER)
-    find_package(SpectraSDK 1.3 CONFIG REQUIRED)
+    find_package(SpectraSDK 2.0.5 CONFIG REQUIRED)
 
     spectra_add_provider(
             instant-ngp-provider

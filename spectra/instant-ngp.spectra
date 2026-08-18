@@ -1,4 +1,4 @@
-spectra 36 "Instant NGP Neural Field" {
+spectra 37 "Instant NGP Neural Field" {
     active camera=1 film=1 sampler=1
     neural-fields {
         hash-grid-radiance-field 1 "Lego Neural Field"
@@ -24,7 +24,7 @@ spectra 36 "Instant NGP Neural Field" {
     samplers {
         sampler 1 "Viewport Sampler" samples=1
     }
-    dynamics seed=1337 {
+    simulation seed=1337 {
         system "field" "Instant NGP" provider="instant-ngp.field" {
             parameter "iterations_per_step" integer 1
             scene-bind "field" 1
