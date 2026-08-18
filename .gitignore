@@ -3,5 +3,4 @@
 cmake-build-*
 build*
 data/
-*.spectra-provider.dll
 AGENTS.md

@@ -261,12 +261,21 @@ if (NGP_BUILD_SPECTRA_PROVIDER)
     )
     target_include_directories(instant-ngp-provider PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vendor")
     target_link_libraries(instant-ngp-provider PRIVATE dataset-loader libngp CUDA::cudart)
+    set(bundle_directory "${PROJECT_BINARY_DIR}/spectra/instant-ngp")
     set_target_properties(
             instant-ngp-provider
             PROPERTIES
             CXX_MODULE_STD ON
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/spectra"
+            RUNTIME_OUTPUT_DIRECTORY "${bundle_directory}"
     )
+    add_custom_target(
+            instant-ngp-bundle
+            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_CURRENT_SOURCE_DIR}/spectra" "${bundle_directory}"
+            SOURCES
+            spectra/instant-ngp.spectra
+            VERBATIM
+    )
+    add_dependencies(instant-ngp-provider instant-ngp-bundle)
     if (MSVC)
         target_link_options(instant-ngp-provider PRIVATE "/WHOLEARCHIVE:${CMAKE_CURRENT_BINARY_DIR}/@cmake_cxx_std.lib")
     endif ()

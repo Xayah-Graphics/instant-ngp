@@ -29,6 +29,7 @@ export namespace ngp {
             spectra::sdk::cameras<"training">(),
             spectra::sdk::hash_grid_radiance_field<"field">(),
             spectra::sdk::metric<"loss", float>("Loss", {}, "Training", true),
+            spectra::sdk::metric<"psnr", float>("PSNR", "dB", "Training", true),
             spectra::sdk::metric<"iteration", std::uint64_t>("Iteration", {}, "Training")
         );
 
@@ -43,10 +44,11 @@ export namespace ngp {
         dataset::nerf_synthetic::Dataset dataset;
         std::unique_ptr<train::InstantNGP> neural_field;
         float loss{};
+        float psnr{};
     };
 
     Provider::Provider(Settings source, const std::filesystem::path& assets) : settings(std::move(source)) {
-        std::expected<dataset::nerf_synthetic::Dataset, std::string> loaded = dataset::nerf_synthetic::load(assets.parent_path() / "data/nerf-synthetic/lego", {.frame_sets = {"train"}, .scene_scale = 0.33F});
+        std::expected<dataset::nerf_synthetic::Dataset, std::string> loaded = dataset::nerf_synthetic::load(assets.parent_path().parent_path().parent_path() / "data/nerf-synthetic/lego", {.frame_sets = {"train"}, .scene_scale = 0.33F});
         if (!loaded) throw std::runtime_error(std::format("Failed to load Instant NGP dataset: {}", loaded.error()));
         dataset = std::move(*loaded);
     }
@@ -77,12 +79,14 @@ export namespace ngp {
     void Provider::reset(const std::uint64_t seed) {
         neural_field = std::make_unique<train::InstantNGP>(dataset, train::TrainingStateRequest{.seed = seed});
         loss = 0.0F;
+        psnr = std::numeric_limits<float>::quiet_NaN();
     }
 
     void Provider::step(const double) {
         const std::expected<train::OptimizationStats, std::string> optimized = neural_field->optimize({.frame_set = "train", .iterations = static_cast<std::int32_t>(settings.iterations_per_step)});
         if (!optimized) throw std::runtime_error(std::format("Instant NGP optimization failed: {}", optimized.error()));
         loss = optimized->loss;
+        psnr = -10.0F * std::log10(loss);
     }
 
     void Provider::publish(spectra::sdk::cuda::Output& output) {
@@ -98,6 +102,7 @@ export namespace ngp {
         if (cudaMemcpyAsync(field.rgb_output.data(), parameters.rgb_output.data(), parameters.rgb_output.size_bytes(), cudaMemcpyDeviceToDevice, stream) != cudaSuccess) throw std::runtime_error("Instant NGP RGB output publication failed");
         if (cudaMemcpyAsync(field.occupancy.data(), parameters.occupancy.data(), parameters.occupancy.size_bytes(), cudaMemcpyDeviceToDevice, stream) != cudaSuccess) throw std::runtime_error("Instant NGP occupancy publication failed");
         frame.metric<"loss">().upload(loss);
+        frame.metric<"psnr">().upload(psnr);
         frame.metric<"iteration">().upload(static_cast<std::uint64_t>(neural_field->host.current_step));
         frame.commit();
     }
